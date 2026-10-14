@@ -4,8 +4,7 @@
  * Everything is integer maths so the simulation stays deterministic.
  */
 
-/** Ticks in one day/night cycle (2 minutes at 10 Hz). Daylight during the first half. */
-export const DAY_LENGTH = 1200;
+import { DAY_LENGTH, WIND_CHANGE_TICKS } from './rules';
 
 /** Sunlight 0..100: rises and falls across the day, 0 at night. */
 export function daylight(tick: number): number {
@@ -24,9 +23,9 @@ function hash(seed: number, k: number): number {
   return h >>> 0;
 }
 
-/** Wind strength 0..100, drifting smoothly between random values every 10 seconds. */
+/** Wind strength 0..100, drifting smoothly between random values every WIND_CHANGE_TICKS. */
 export function wind(seed: number, tick: number): number {
-  const span = 100;
+  const span = WIND_CHANGE_TICKS;
   const k = Math.floor(tick / span);
   const f = tick % span;
   const a = hash(seed, k) % 101;

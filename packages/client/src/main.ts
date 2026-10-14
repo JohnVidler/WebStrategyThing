@@ -77,7 +77,7 @@ async function main(): Promise<void> {
           defineClass: (name, parts) => send({ t: 'defineBlueprint', name, parts }),
           uploadProgram: (blueprint, source) => send({ t: 'setProgram', blueprint, source }),
           retireClass: (blueprint, retired) => send({ t: 'retireClass', blueprint, retired }),
-          preview: (stats) => renderer.previewImage(stats, 96),
+          preview: (parts, pxPerTile, rival) => renderer.previewImage(parts, pxPerTile, rival ? (state.myId === 1 ? 2 : 1) : state.myId),
           iconFor: (blueprint) => renderer.iconFor(state.blueprints.get(blueprint)!),
         })),
     );

@@ -20,7 +20,8 @@ export interface DesignerActions {
   uploadProgram(blueprint: number, source: string): void;
   retireClass(blueprint: number, retired: boolean): void;
   /** Image of a (possibly unsaved) design, drawn with the game's sprite art. */
-  preview(stats: BlueprintStats): Promise<string>;
+  /** Image of a (possibly unsaved) design at `pxPerTile` pixels per map tile, in the player's colours or a rival's. */
+  preview(parts: readonly string[], pxPerTile: number, rival?: boolean): Promise<string>;
   iconFor(blueprint: number): Promise<string>;
 }
 
@@ -66,6 +67,8 @@ export class Designer {
   private readonly classList: HTMLDivElement;
   private readonly nameInput: HTMLInputElement;
   private readonly preview: HTMLImageElement;
+  private readonly previewOwn: HTMLImageElement;
+  private readonly previewRival: HTMLImageElement;
   private readonly previewNote: HTMLDivElement;
   private readonly statsView: HTMLDivElement;
   private readonly partsView: HTMLOListElement;
@@ -119,7 +122,11 @@ export class Designer {
         </section>
         <section class="designer-design">
           <div class="design-head">
-            <div class="preview"><img data-role="preview" alt=""><div data-role="preview-note" class="muted"></div></div>
+            <div class="preview">
+              <div class="preview-stage"><img data-role="preview" alt=""></div>
+              <div class="preview-small"><img data-role="preview-own" alt="" title="In-game size, your colours"><img data-role="preview-rival" alt="" title="In-game size, a rival's colours"></div>
+              <div data-role="preview-note" class="muted"></div>
+            </div>
             <div class="design-meta">
               <input data-role="name" maxlength="24" placeholder="Class name">
               <div data-role="stats" class="stats-grid"></div>
@@ -169,6 +176,8 @@ export class Designer {
     this.classList = q('classes');
     this.nameInput = q('name');
     this.preview = q('preview');
+    this.previewOwn = q('preview-own');
+    this.previewRival = q('preview-rival');
     this.previewNote = q('preview-note');
     this.statsView = q('stats');
     this.partsView = q('parts');
@@ -593,20 +602,29 @@ export class Designer {
     this.renderDesign();
   }
 
+  /** Large view, plus true-size thumbnails in own and rival colours to judge how it reads on the map. */
   private renderPreview(): void {
     const token = ++this.previewToken;
     const s = this.stats;
     if (!s) {
-      this.preview.removeAttribute('src');
+      for (const img of [this.preview, this.previewOwn, this.previewRival]) img.removeAttribute('src');
       this.previewNote.textContent = 'Invalid design';
       return;
     }
     this.previewNote.textContent = s.structure ? `${s.footprint}×${s.footprint} building` : s.flying ? 'flying unit' : 'ground unit';
-    this.actions
-      .preview(s)
-      .then((src) => {
-        if (token === this.previewToken) this.preview.src = src;
-      })
-      .catch(() => {});
+    const parts = this.currentParts();
+    // The same scale for every design, so body sizes compare directly.
+    const views: [HTMLImageElement, number, boolean][] = [[this.preview, 64, false], [this.previewOwn, 32, false], [this.previewRival, 32, true]];
+    for (const [img, pxPerTile, rival] of views) {
+      this.actions
+        .preview(parts, pxPerTile, rival)
+        .then((src) => {
+          if (token !== this.previewToken) return;
+          // Rendered at 2× for sharpness: show it at logical size.
+          img.onload = () => (img.style.width = `${img.naturalWidth / 2}px`);
+          img.src = src;
+        })
+        .catch(() => {});
+    }
   }
 }

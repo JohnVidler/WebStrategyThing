@@ -1,7 +1,7 @@
 import type { World } from '../ecs/world';
 import type { BlueprintStats } from './blueprint';
 import { Position, Resource, Unit } from './components';
-import { TILE } from './parts';
+import { BUILDING_VISION, TILE, UNIT_VISION } from './rules';
 
 /*
  * Fog of war. A player sees their own units and buildings, every resource field
@@ -9,10 +9,6 @@ import { TILE } from './parts';
  * least a small radius, more with sensor modules. The server sends each player
  * only what they can see; the client draws the same vision as fog.
  */
-
-/** Vision without sensors, in sub-tile units. */
-export const UNIT_VISION = 4 * TILE;
-export const BUILDING_VISION = 6 * TILE;
 
 export function visionRange(s: BlueprintStats): number {
   return Math.max(s.sensorRange, s.structure ? BUILDING_VISION : UNIT_VISION);

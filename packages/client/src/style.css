@@ -142,6 +142,10 @@ body {
 .lobby-room .name { font-weight: 600; }
 .lobby-room .name small { display: block; font-weight: 400; color: var(--muted); }
 #lobby-create { width: min(900px, 100%); display: flex; flex-direction: column; gap: 8px; }
+.lobby-changes { width: min(900px, 100%); display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.lobby-changes details { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 4px 10px; }
+.lobby-changes summary { cursor: pointer; color: var(--muted); }
+.lobby-changes ul { margin: 6px 0 4px; padding-left: 18px; display: flex; flex-direction: column; gap: 3px; }
 #lobby-name { width: min(320px, 100%); }
 .map-picker { min-width: 0; margin: 0; padding: 8px; border: 1px solid var(--line); }
 .map-picker legend { padding: 0 5px; color: var(--muted); font-size: 12px; }
@@ -413,19 +417,30 @@ button.primary { border-color: var(--accent); background: #1b2a40; }
 .design-head { display: flex; gap: 12px; }
 .preview {
   flex: none;
-  width: 120px;
-  height: 120px;
+  width: 210px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 4px;
-  background: #0e1116;
-  border: 1px solid var(--line);
-  border-radius: 6px;
+  gap: 6px;
   font-size: 11px;
 }
-.preview img { max-width: 96px; max-height: 96px; }
+.preview-stage {
+  width: 210px;
+  height: 210px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: #0e1116;
+  /* One grid square per map tile at the preview's 64 px/tile. */
+  background-image: linear-gradient(#1a212b 1px, transparent 1px), linear-gradient(90deg, #1a212b 1px, transparent 1px);
+  background-size: 64px 64px;
+  background-position: center;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.preview-stage img { max-width: 100%; max-height: 100%; }
+.preview-small { display: flex; gap: 10px; align-items: center; justify-content: center; min-height: 40px; }
+.preview-small img { max-width: 96px; max-height: 96px; }
 .design-meta { flex: 1; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .stats-grid { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font-size: 12px; }
 .stats-grid span:nth-child(odd) { color: var(--muted); }

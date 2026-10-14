@@ -4,6 +4,35 @@ Changes to the codebase, grouped by day (newest first).
 
 ## 2026-10-14
 
+### Lobby release notes
+- New `client/src/changelog.ts` holds short player-facing notes per update (newest first). The lobby shows them as a "What’s new" section under the room list: latest update open, older ones folded. Add a block there when a change matters to players.
+
+### Player-facing text audit
+- The tesla coil's description said "Range and timing are in rules.ts"; it now states the actual range, stun length, recharge time and self-stun share, generated from the `TESLA_*` rules. Checked the other part descriptions, API docs and starter scripts: no other developer references (script `#` comments are player-facing teaching notes).
+
+### rules.ts is now the balance sheet
+- `game/rules.ts` now owns `TILE` (re-exported from `parts.ts`) and every tunable gameplay number. Moved in: `DAY_LENGTH`, new `WIND_CHANGE_TICKS`, `UNIT_VISION`/`BUILDING_VISION`, new `SEPARATION_RADIUS`, `SPEED_FACTOR`, `BASE_STACK`, `BASE_LINK_RANGE`, new `COST_PER_MASS`/`CYCLE_COST`/`BUILD_TIME_BASE`/`BUILD_TIME_PER_MASS`, `SITE_START_HP`, `MAX_SITES_PER_PLAYER`, `MAX_PRODUCTION_QUEUE`, `MAX_UNITS_PER_PLAYER`, `MAX_CLASSES_PER_PLAYER` (server), `STARTING_CREDITS` (server), new `BASE_FIELD_PATCHES`/`CENTRE_FIELD_PATCHES`/`NEUTRAL_UNITS` (map), and `SOLAR_PANEL_OUTPUT`/`WIND_TURBINE_OUTPUT`.
+- New `PART_TUNING` table: mass, hp, slots, energy, cycles, memory, thrust, sensor/weapon/antenna ranges, damage, cooldown, matter, cargo, harvest/charge/build rates, outputs and energy use for every module. `parts.ts` builds the catalogue from it, and module names and descriptions are generated from the numbers so they can't drift. Verified the catalogue is identical to before (only `gun.light` now states `kind: 'gun'` explicitly, its old default).
+- Values are unchanged, so balance is as before; all 89 tests and typechecks pass.
+- Not moved (design or technical, not tuning): starter class designs, base layout and starting units/charge in `content.ts`, VM limits, pathfinding costs and stuck detection, reconnect grace time.
+
+### Tunable resource patch size
+- New `RESOURCE_PATCH_AMOUNT` (400) in `game/rules.ts` sets how much matter a new natural patch holds; it replaces the private `FIELD_AMOUNT` in `map.ts`, and the patch sprite fade in the renderer scales against it. Patches regenerate up to this amount.
+
+### Sharper sprites when zoomed in
+- Sprite textures (units, buildings, resources) are now rasterised at 2× (`TEX_RESOLUTION` in `renderer.ts`); logical size and layout are unchanged.
+
+### Hull variety and unit facing
+- `art.ts` hulls now vary by loadout (`hullOutline`): arrowhead (gun), squat tank (cannon), swept dart (laser), spiked gear (tesla), cab-and-bed hauler (cargo), notched dozer (build arm), quad cross (rotor), teardrop and diamond (long/short sensor), octagon pod (no motor), capsule (batteries), disc otherwise. The armour rim follows the hull outline.
+- Units now turn to face their last direction of movement (renderer keeps a per-unit facing, eased per frame by shortest angle, kept while stopped). Buildings, icons and designer previews stay facing up.
+- Added a silhouette-distinctness test. Not yet checked visually in a browser.
+
+### Module-driven unit and building art
+- New `client/src/art.ts`: `lookOf(parts)` reduces a design to its role and features, and `drawLook` draws it. Hull shape follows the main job (arrowhead for armed, rounded box for workers/builders, slim diamond for scouts, disc otherwise); tracks, rotors, barrels (gun/cannon/laser/tesla), cargo box, sensor nub/dish, build arm, batteries, CPU chip and armour rim are added per module. Buildings get a plate style per role plus a grid of module glyphs (weapon, factory, solar, wind, charger, silo, battery, antenna, sensor, CPU) and an armour border.
+- The chassis/frame still fixes the size (unit radius, building footprint). Sprites, build-bar icons and the placement ghost all use the new art.
+- Designer: bigger preview on a one-square-per-tile grid at a fixed scale (so body sizes compare), plus true-size thumbnails in your colours and a rival's. `previewImage` now takes parts and pixels per tile.
+- Added `client/test/art.test.ts`. Not yet checked visually in a browser.
+
 ### Solar and wind generation multipliers
 - Added separate solar and wind output multipliers to `game/rules.ts`; the current user-edited values are 2× each, applied after daylight or wind intensity.
 - The in-game power guide displays both current multiplier values.

@@ -2,14 +2,12 @@ import { Rng } from '../util/rng';
 import type { Blueprint } from './blueprint';
 import { BASE_FIELD, BASE_LAYOUT, BASE_UNITS, NEUTRAL_CLASS, STARTER_CLASSES, type ClassTemplate } from './content';
 import { TILE } from './parts';
+import { BASE_FIELD_PATCHES, CENTRE_FIELD_PATCHES, NEUTRAL_UNITS, RESOURCE_PATCH_AMOUNT } from './rules';
 import { Simulation } from './simulation';
 import { generateTerrain, type ClearArea, type TerrainLayout } from './terrain';
 
 export const MAP_SIZE = 64;
 export const NEUTRAL = 0;
-const FIELD_CRYSTALS = 6;
-const FIELD_AMOUNT = 400;
-const NEUTRAL_UNITS = 4;
 
 export interface MapDefinition {
   readonly id: string;
@@ -78,9 +76,9 @@ export function createMatch(seed: number, selection: MapDefinition | string | nu
   for (const c of CORNERS) placeField(sim, c);
   const centreX = width / 2;
   const centreY = height / 2;
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < CENTRE_FIELD_PATCHES; i++) {
     const cell = terrain.nearestWalkable(centreX - 2 + sim.rng.int(5), centreY - 2 + sim.rng.int(5));
-    if (cell) sim.spawnResourcePatch(cell[0] * TILE + TILE / 2, cell[1] * TILE + TILE / 2, FIELD_AMOUNT);
+    if (cell) sim.spawnResourcePatch(cell[0] * TILE + TILE / 2, cell[1] * TILE + TILE / 2, RESOURCE_PATCH_AMOUNT);
   }
   const wanderer = defineClass(sim, NEUTRAL, NEUTRAL_CLASS);
   for (let i = 0; i < NEUTRAL_UNITS; i++) {
@@ -93,11 +91,11 @@ export function createMatch(seed: number, selection: MapDefinition | string | nu
 
 function placeField(sim: Simulation, c: Corner): void {
   const { width, height } = sim.config;
-  for (let i = 0; i < FIELD_CRYSTALS; i++) {
+  for (let i = 0; i < BASE_FIELD_PATCHES; i++) {
     const x = flip(c.flipX, BASE_FIELD.x - 2 + sim.rng.int(5), 1, width);
     const y = flip(c.flipY, BASE_FIELD.y - 2 + sim.rng.int(5), 1, height);
     const cell = sim.terrain.nearestWalkable(x, y, 4);
-    if (cell) sim.spawnResourcePatch(cell[0] * TILE + TILE / 2, cell[1] * TILE + TILE / 2, FIELD_AMOUNT);
+    if (cell) sim.spawnResourcePatch(cell[0] * TILE + TILE / 2, cell[1] * TILE + TILE / 2, RESOURCE_PATCH_AMOUNT);
   }
 }
 

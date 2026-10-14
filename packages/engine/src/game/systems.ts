@@ -5,7 +5,7 @@ import { SimEvent } from './events';
 import { TILE } from './parts';
 import { daylight, share, StorageMode, wind } from './power';
 import { GENERATION_SCALE } from './parts';
-import { BUILDER_ENERGY_RESERVE, DECAY_TICKS, MAX_TRANSMISSION_LOSS, RESOURCE_REGEN_INTERVAL_TICKS, SOLAR_GENERATION_MULTIPLIER, STORAGE_DISCHARGE_FRACTION, TESLA_SELF_STUN_FACTOR, TESLA_STUN_TICKS, TRANSMISSION_LOSS_PER_TILE, WIND_GENERATION_MULTIPLIER, buildEnergyCost } from './rules';
+import { BUILDER_ENERGY_RESERVE, SEPARATION_RADIUS, DECAY_TICKS, MAX_TRANSMISSION_LOSS, RESOURCE_REGEN_INTERVAL_TICKS, SOLAR_GENERATION_MULTIPLIER, STORAGE_DISCHARGE_FRACTION, TESLA_SELF_STUN_FACTOR, TESLA_STUN_TICKS, TRANSMISSION_LOSS_PER_TILE, WIND_GENERATION_MULTIPLIER, buildEnergyCost } from './rules';
 import { CHARGE_RANGE } from './rules';
 import type { Simulation } from './simulation';
 
@@ -213,7 +213,7 @@ let pushY = new Int32Array(0);
 
 /** Nudges overlapping units apart (ground and air separately), never into blocked cells. */
 export function separationSystem(sim: Simulation): void {
-  const R = Math.floor(0.7 * TILE);
+  const R = SEPARATION_RADIUS;
   const R2 = R * R;
   const p = sim.pos.f;
   if (pushX.length < sim.world.capacity) {

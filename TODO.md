@@ -12,6 +12,8 @@ Outstanding actions. Tick items off (or delete them) as they are done, and log t
 - [x] Play-test the newer features: scoreboard (names, eliminated rows, the final standings screen when one side is wiped out), resource bars, laser turret and tesla (pulse ring, stun tint), off-grid building and builder retreat, unit decay, sparser power links, camera overscroll, merge-upload, program history after a reload, storage discharge speed, factory scripts using `queueUnit()`.
 - [ ] Decide whether to put the project under git (`git init`); nothing is committed yet.
 
+- [ ] Eyeball the new module-driven unit/building art and designer preview in a browser; tune glyph sizes and colours for readability at low zoom.
+
 ## For the model
 - [ ] Visual polish after the play-test (sidebar header/resources and CPU status width updated; link widths and route decluttering remain untested guesses).
 - [ ] Fog follow-ups: remembered ("ghost") enemy buildings in explored areas; per-tick visibility cost if unit counts grow (use the spatial grid).

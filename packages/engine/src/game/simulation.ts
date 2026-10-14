@@ -31,7 +31,7 @@ import {
 import { PARTS, SWITCHABLE, TILE } from './parts';
 import { findPath } from './path';
 import { gap, powerLinks, powerNetworks, type PowerNetwork, type PowerNode } from './power';
-import { BUILD_RANGE, BUILDING_BUILD_RANGE, BUILDING_TRANSFER_RANGE, DEMOLISH_REFUND, DOCK_RANGE, HARVEST_RANGE, UNIT_TRANSFER_RANGE } from './rules';
+import { BUILD_RANGE, BUILDING_BUILD_RANGE, BUILDING_TRANSFER_RANGE, DEMOLISH_REFUND, DOCK_RANGE, HARVEST_RANGE, MAX_PRODUCTION_QUEUE, MAX_SITES_PER_PLAYER, SITE_START_HP, UNIT_TRANSFER_RANGE } from './rules';
 import { SpatialGrid } from './spatial';
 import {
   buildSystem,
@@ -78,13 +78,9 @@ export class CommandError extends Error {
   }
 }
 
-/** Construction sites start at this fraction of their hit points. */
-const SITE_START_HP = 0.1;
-const MAX_SITES_PER_PLAYER = 12;
 /** Ticks a visit waits for the building's script to pick it up before it lapses. */
 export const VISIT_TTL = 50;
 const MAX_VISITORS = 16;
-const MAX_PRODUCTION_QUEUE = 8;
 
 /** Per-player counters for the scoreboard (server-side only). */
 export interface PlayerTally {

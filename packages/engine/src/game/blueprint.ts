@@ -1,14 +1,12 @@
 import type { Program } from '../vm/types';
-import { PARTS, SWITCHABLE, TILE, type PartDef, type WeaponKind } from './parts';
+import { PARTS, SWITCHABLE, type PartDef, type WeaponKind } from './parts';
+import { BASE_LINK_RANGE, BASE_STACK, BUILD_TIME_BASE, BUILD_TIME_PER_MASS, COST_PER_MASS, CYCLE_COST, SPEED_FACTOR, TILE } from './rules';
 import { TESLA_COOLDOWN, TESLA_RANGE } from './rules';
 
 /** Converts total thrust / mass into sub-tile units per tick. */
-const SPEED_FACTOR = 24;
-const BASE_STACK = 8;
 /** Module on/off state is a 32-bit mask, one bit per part. */
 export const MAX_PARTS = 32;
 /** Buildings without an antenna link to others within this many tiles (edge to edge). */
-export const BASE_LINK_RANGE = 1;
 
 /** Capability bits, also exposed to scripts (CAN_MOVE, CAN_FIGHT, ...). */
 export const Caps = {
@@ -262,8 +260,8 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
     factoryUse,
     builderUse,
     caps,
-    cost: 10 * mass + fullCycles,
-    buildTime: 10 + 4 * mass,
+    cost: COST_PER_MASS * mass + CYCLE_COST * fullCycles,
+    buildTime: BUILD_TIME_BASE + BUILD_TIME_PER_MASS * mass,
     size: frame.size ?? 0,
   });
 }

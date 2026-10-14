@@ -7,6 +7,9 @@ import {
   mapById,
   encodeTick,
   Interest,
+  MAX_CLASSES_PER_PLAYER,
+  MAX_UNITS_PER_PLAYER,
+  STARTING_CREDITS,
   setUpPlayer,
   TICK_RATE,
   toInfo,
@@ -21,9 +24,6 @@ import {
 } from '@wst/engine';
 import { WebSocket } from 'ws';
 
-const STARTING_CREDITS = 300;
-const MAX_UNITS_PER_PLAYER = 80;
-const MAX_CLASSES_PER_PLAYER = 40;
 /** How long a disconnected player's base is kept for them to come back to. */
 const RECONNECT_GRACE_MS = 60_000;
 /** How often (ticks) power network totals are reported to their owners. */

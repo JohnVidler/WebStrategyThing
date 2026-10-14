@@ -1,6 +1,5 @@
 import {
   Cargo,
-  Caps,
   Construction,
   CpuState,
   CpuStatus,
@@ -14,17 +13,20 @@ import {
   TaskType,
   CUSTOM_TASK_BASE,
   chargeZoneRadius,
+  RESOURCE_PATCH_AMOUNT,
   TILE,
   Unit,
   type Blueprint,
-  type BlueprintStats,
   type TickInfo,
 } from '@wst/engine';
 import { AlphaFilter, Application, Container, Graphics, Sprite, type Texture } from 'pixi.js';
+import { drawLook, lookOf } from './art';
 import type { ClientState } from './state';
 
 /** Textures are drawn at this many pixels per tile, then scaled to the current zoom. */
 const TEX = 32;
+/** Sprite textures are rasterised at this multiple of TEX, so zooming in stays sharp. */
+const TEX_RESOLUTION = 2;
 const OWNER_COLOURS = [0x8a8f98, 0x4ea1ff, 0xff6b5b, 0x5bd68a, 0xf5c542, 0xc77dff, 0x4fd1c5, 0xff9f43];
 const RESOURCE_COLOUR = 0x7ee0b5;
 const ENERGY_COLOUR = 0xf5c542;
@@ -126,6 +128,9 @@ export class Renderer {
   private readonly sprites = new Map<number, Sprite>();
   private readonly textures = new Map<string, Texture>();
   private readonly routes = new Map<number, Route>();
+  /** Sprite rotation each unit is turning towards (art faces up; 0 = up). Kept while stopped. */
+  private readonly facing = new Map<number, number>();
+  private lastFrameAt = 0;
   private prevX = new Float32Array(1024);
   private prevY = new Float32Array(1024);
   private curX = new Float32Array(1024);
@@ -301,11 +306,13 @@ export class Renderer {
     if (info.full) {
       for (const s of this.sprites.values()) s.destroy();
       this.sprites.clear();
+      this.facing.clear();
     }
     for (const e of world.despawned) {
       this.sprites.get(e)?.destroy();
       this.sprites.delete(e);
       this.routes.delete(e);
+      this.facing.delete(e);
     }
 
     // Last tick's target becomes this tick's interpolation origin.
@@ -319,6 +326,10 @@ export class Renderer {
       if (!pos.has(e)) continue;
       this.curX[e] = pos.f.x[e] / TILE;
       this.curY[e] = pos.f.y[e] / TILE;
+      const dx = this.curX[e] - this.prevX[e], dy = this.curY[e] - this.prevY[e];
+      if (this.sprites.has(e) && dx * dx + dy * dy > 1e-6 && this.state.world.store(Unit).has(e) && !this.state.stats(e)?.structure) {
+        this.facing.set(e, Math.atan2(dy, dx) + Math.PI / 2);
+      }
       if (!this.sprites.has(e)) {
         this.prevX[e] = this.curX[e];
         this.prevY[e] = this.curY[e];
@@ -333,7 +344,7 @@ export class Renderer {
     const res = world.store(Resource);
     for (const e of res.changed) {
       if (!res.has(e)) continue;
-      this.ensureSprite(e, this.resourceTexture()).alpha = 0.35 + 0.65 * Math.min(1, res.f.amount[e] / 400);
+      this.ensureSprite(e, this.resourceTexture()).alpha = 0.35 + 0.65 * Math.min(1, res.f.amount[e] / RESOURCE_PATCH_AMOUNT);
     }
 
     const health = world.store(Health);
@@ -381,10 +392,18 @@ export class Renderer {
     this.layout();
     this.alpha = Math.min(1, (now - this.lastTickAt) / this.tickMs);
     const k = this.scale / TEX;
+    const turn = 1 - Math.exp(-((now - (this.lastFrameAt || now)) / 1000) * 12);
+    this.lastFrameAt = now;
     for (const [e, s] of this.sprites) {
       const p = this.screenOf(e);
       s.position.set(p.x, p.y);
       s.scale.set(k);
+      const want = this.facing.get(e);
+      if (want !== undefined) {
+        // Shortest way round.
+        const diff = Math.atan2(Math.sin(want - s.rotation), Math.cos(want - s.rotation));
+        s.rotation += diff * turn;
+      }
     }
     this.drawChargeZones();
     this.drawLinks();
@@ -804,63 +823,34 @@ export class Renderer {
 
   /** One texture per blueprint, shared by every sprite of that class. */
   private unitTexture(bp: Blueprint | undefined, owner: number): Texture {
-    return this.texture(bp ? `bp:${bp.id}` : `owner:${owner}`, (g) => this.drawClass(g, bp?.stats, owner));
+    return this.texture(bp ? `bp:${bp.id}` : `owner:${owner}`, (g) => this.drawClass(g, bp?.parts, owner));
   }
 
   /**
    * Preview of a design that may not exist yet (the designer), drawn with the
-   * same art as in-game sprites, at `px` pixels for its largest side.
+   * same art as in-game sprites, at `pxPerTile` pixels per map tile.
+   * `owner` picks the team colour (default: the local player).
    */
-  async previewImage(stats: BlueprintStats, px: number): Promise<string> {
+  async previewImage(parts: readonly string[], pxPerTile: number, owner = this.state.myId): Promise<string> {
     const g = new Graphics();
-    this.drawClass(g, stats, this.state.myId);
-    const sprite = new Sprite(this.app.renderer.generateTexture(g));
+    this.drawClass(g, parts, owner);
+    const tex = this.app.renderer.generateTexture({ target: g, resolution: 4 });
     g.destroy();
-    sprite.scale.set(px / Math.max(sprite.width, sprite.height));
+    const sprite = new Sprite(tex);
+    sprite.scale.set(pxPerTile / TEX);
     try {
-      return await this.app.renderer.extract.base64(sprite);
+      return await this.app.renderer.extract.base64({ target: sprite, resolution: 2 });
     } finally {
-      sprite.texture.destroy(true);
       sprite.destroy();
+      tex.destroy(true);
     }
   }
 
   /** Class art in texture space (TEX pixels per tile). */
-  private drawClass(g: Graphics, s: BlueprintStats | undefined, owner: number): void {
+  private drawClass(g: Graphics, parts: readonly string[] | undefined, owner: number): void {
     const colour = ownerColour(owner);
-    if (!s) {
-      g.rect(-0.2 * TEX, -0.2 * TEX, 0.4 * TEX, 0.4 * TEX).fill(colour);
-    } else if (s.structure) {
-      const h = (s.footprint * TEX) / 2 - 2;
-      g.roundRect(-h, -h, h * 2, h * 2, 4).fill({ color: colour, alpha: 0.85 }).stroke({ width: 2, color: 0xffffff, alpha: 0.5 });
-      const icon = Math.min(10, h * 0.6);
-      if (s.solar > 0) {
-        for (let i = -1; i <= 1; i += 2) for (let j = -1; j <= 1; j += 2) g.rect(i * icon * 0.55 - icon * 0.4, j * icon * 0.55 - icon * 0.4, icon * 0.8, icon * 0.8).fill(0x2b5fa8);
-      }
-      if (s.wind > 0) {
-        g.moveTo(-icon, 0).lineTo(icon, 0).moveTo(0, -icon).lineTo(0, icon).stroke({ width: 2, color: 0xffffff });
-      }
-      if (s.caps & Caps.Storage) {
-        for (let i = -1; i <= 1; i++) g.rect(-icon, i * icon * 0.6 - 2, icon * 2, 4).fill(ENERGY_COLOUR);
-      }
-      if (s.chargeRate > 0) g.poly([2, -icon, -icon * 0.5, 1, 1, 1, -2, icon, icon * 0.5, -1, -1, -1]).fill(ENERGY_COLOUR);
-      if (s.linkRange > 1 && s.cyclesPerTick === 0 && s.chargeRate === 0) {
-        g.poly([0, -icon, icon * 0.7, icon, -icon * 0.7, icon]).stroke({ width: 2, color: ENERGY_COLOUR });
-      }
-      if (s.factory) g.rect(-h + 4, -h + 4, 8, 8).fill(0x0e1116);
-      if (s.depot) g.circle(h - 7, h - 7, 4).fill(RESOURCE_COLOUR);
-    } else {
-      const r = (0.3 + s.size * 0.08) * TEX;
-      if (s.flying) {
-        for (const [dx, dy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
-          g.circle(dx * r * 0.85, dy * r * 0.85, r * 0.4).stroke({ width: 1.5, color: colour });
-        }
-      }
-      g.circle(0, 0, r).fill(colour).stroke({ width: 2, color: 0xffffff, alpha: 0.5 });
-      if (s.weapon) g.circle(0, 0, r * 0.35).fill(0x0e1116);
-      if (s.cargo > 0) g.rect(-r * 0.4, -r * 0.4, r * 0.8, r * 0.8).fill(0x0e1116);
-      if (s.sensorRange > 0) g.circle(0, -r, 2.5).fill(0xffffff);
-    }
+    if (!parts) g.rect(-0.2 * TEX, -0.2 * TEX, 0.4 * TEX, 0.4 * TEX).fill(colour);
+    else drawLook(g, lookOf(parts), colour, TEX);
   }
 
   private resourceTexture(): Texture {
@@ -875,7 +865,7 @@ export class Renderer {
     if (tex) return tex;
     const g = new Graphics();
     draw(g);
-    tex = this.app.renderer.generateTexture(g);
+    tex = this.app.renderer.generateTexture({ target: g, resolution: TEX_RESOLUTION });
     g.destroy();
     this.textures.set(key, tex);
     return tex;

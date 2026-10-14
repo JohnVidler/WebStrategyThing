@@ -1,5 +1,6 @@
 /** Room list shown when the page is opened without ?room=: pick a match or create one. */
 import { getPlayerName, getSavedPlayerName, NAME_MAX, setPlayerName } from './playerName';
+import { CHANGELOG } from './changelog';
 import { randomHex } from './random';
 import { createMapTerrain, DEFAULT_MAP_ID, MAPS } from '@wst/engine';
 
@@ -30,6 +31,13 @@ const REFRESH_MS = 3000;
 const randomRoomName = () => `room-${randomHex(6)}`;
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
+
+/** "What's new": the latest update open, older ones folded away. */
+const changelogHtml = (): string =>
+  `<section class="lobby-changes"><h2>What’s new</h2>${CHANGELOG.map(
+    (entry, i) =>
+      `<details${i === 0 ? ' open' : ''}><summary>${esc(entry.date)}</summary><ul>${entry.changes.map((c) => `<li>${esc(c)}</li>`).join('')}</ul></details>`,
+  ).join('')}</section>`;
 
 const previews = new Map<string, string>();
 const preview = (id: string): string => {
@@ -122,7 +130,8 @@ export function showLobby(apiBase: string, joinRoom?: string, preferredMapId = D
       </fieldset>
       <button type="submit">Create room</button>
     </form>
-    <div id="lobby-error" class="muted"></div>`;
+    <div id="lobby-error" class="muted"></div>
+    ${changelogHtml()}`;
   const list = root.querySelector<HTMLDivElement>('#lobby-rooms')!;
   const input = root.querySelector<HTMLInputElement>('#lobby-name')!;
   const error = root.querySelector<HTMLDivElement>('#lobby-error')!;

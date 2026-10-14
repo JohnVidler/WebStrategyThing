@@ -1,5 +1,6 @@
-/** World positions are integers in sub-tile units, keeping the simulation deterministic. */
-export const TILE = 1024;
+import { BUILDING_BUILD_RANGE, BUILDING_TRANSFER_RANGE, PART_TUNING, TESLA_COOLDOWN, TESLA_RANGE, TESLA_SELF_STUN_FACTOR, TESLA_STUN_TICKS, TILE } from './rules';
+
+export { TILE };
 
 export type WeaponKind = 'gun' | 'cannon' | 'laser' | 'tesla';
 
@@ -107,57 +108,59 @@ export interface PartDef {
 
 /** Generator outputs are stored in 1/GENERATION_SCALE energy per tick, so they can be fractional. */
 export const GENERATION_SCALE = 10;
-/** Peak output of one solar panel, in energy per tick. */
-export const SOLAR_PANEL_OUTPUT = 0.5;
-/** Peak output of one wind turbine, in energy per tick. */
-export const WIND_TURBINE_OUTPUT = 1;
+
+/** Tuned numbers for a part (see rules.ts). */
+const T = (id: string) => PART_TUNING[id];
+const tiles = (n: number) => `${n} tile${n === 1 ? '' : 's'}`;
 
 const CATALOGUE: PartDef[] = [
   // Mobile chassis
-  { id: 'chassis.light', slot: 'chassis', name: 'Light chassis', mass: 2, hp: 40, slots: 4, size: 0, energy: 600, description: 'Small, fast and fragile.' },
-  { id: 'chassis.medium', slot: 'chassis', name: 'Medium chassis', mass: 5, hp: 100, slots: 6, size: 1, energy: 1200, description: 'General-purpose body.' },
-  { id: 'chassis.heavy', slot: 'chassis', name: 'Heavy chassis', mass: 10, hp: 220, slots: 9, size: 2, energy: 2400, description: 'Slow, tough and roomy.' },
+  { id: 'chassis.light', slot: 'chassis', name: 'Light chassis', ...T('chassis.light'), size: 0, description: 'Small, fast and fragile.' },
+  { id: 'chassis.medium', slot: 'chassis', name: 'Medium chassis', ...T('chassis.medium'), size: 1, description: 'General-purpose body.' },
+  { id: 'chassis.heavy', slot: 'chassis', name: 'Heavy chassis', ...T('chassis.heavy'), size: 2, description: 'Slow, tough and roomy.' },
   // Building frames
-  { id: 'frame.small', slot: 'chassis', name: 'Small frame (1×1)', mass: 10, hp: 300, slots: 8, structure: true, footprint: 1, energy: 200, description: 'A one-tile building.' },
-  { id: 'frame.medium', slot: 'chassis', name: 'Medium frame (2×2)', mass: 20, hp: 600, slots: 16, structure: true, footprint: 2, energy: 500, description: 'A 2×2 building.' },
-  { id: 'frame.large', slot: 'chassis', name: 'Large frame (3×3)', mass: 40, hp: 1200, slots: 31, structure: true, footprint: 3, energy: 1000, description: 'A 3×3 building.' },
+  { id: 'frame.small', slot: 'chassis', name: 'Small frame (1×1)', ...T('frame.small'), structure: true, footprint: 1, description: 'A one-tile building.' },
+  { id: 'frame.medium', slot: 'chassis', name: 'Medium frame (2×2)', ...T('frame.medium'), structure: true, footprint: 2, description: 'A 2×2 building.' },
+  { id: 'frame.large', slot: 'chassis', name: 'Large frame (3×3)', ...T('frame.large'), structure: true, footprint: 3, description: 'A 3×3 building.' },
 
-  { id: 'cpu.basic', slot: 'cpu', name: 'Basic CPU', mass: 1, cycles: 20, stack: 8, memory: 4, use: 1, description: '20 cycles per tick; 1 energy per 100 cycles run.' },
-  { id: 'cpu.fast', slot: 'cpu', name: 'Fast CPU', mass: 1, cycles: 60, stack: 8, memory: 4, use: 1, description: '60 cycles per tick; 1 energy per 100 cycles run.' },
-  { id: 'cpu.quantum', slot: 'cpu', name: 'Quantum CPU', mass: 3, cycles: 200, stack: 16, memory: 8, use: 2, description: '200 cycles per tick; 2 energy per 100 cycles run.' },
+  ...(['cpu.basic', 'cpu.fast', 'cpu.quantum'] as const).map((id): PartDef => {
+    const t = T(id);
+    const name = id === 'cpu.basic' ? 'Basic CPU' : id === 'cpu.fast' ? 'Fast CPU' : 'Quantum CPU';
+    return { id, slot: 'cpu', name, ...t, description: `${t.cycles} cycles per tick; ${t.use} energy per 100 cycles run.` };
+  }),
 
-  { id: 'mem.small', slot: 'memory', name: 'Memory bank (8)', mass: 1, memory: 8, description: '+8 script variables.' },
-  { id: 'mem.large', slot: 'memory', name: 'Memory bank (32)', mass: 2, memory: 32, description: '+32 script variables.' },
+  { id: 'mem.small', slot: 'memory', name: `Memory bank (${T('mem.small').memory})`, ...T('mem.small'), description: `+${T('mem.small').memory} script variables.` },
+  { id: 'mem.large', slot: 'memory', name: `Memory bank (${T('mem.large').memory})`, ...T('mem.large'), description: `+${T('mem.large').memory} script variables.` },
 
-  { id: 'motor.small', slot: 'motor', name: 'Small motor', mass: 1, thrust: 60, use: 1, mobileOnly: true, description: 'Ground drive.' },
-  { id: 'motor.large', slot: 'motor', name: 'Large motor', mass: 3, thrust: 160, use: 3, mobileOnly: true, description: 'Powerful ground drive.' },
-  { id: 'rotor', slot: 'motor', name: 'Rotor', mass: 2, thrust: 70, flight: true, use: 3, mobileOnly: true, description: 'Flight: crosses any terrain, lands only on passable cells.' },
+  { id: 'motor.small', slot: 'motor', name: 'Small motor', ...T('motor.small'), mobileOnly: true, description: 'Ground drive.' },
+  { id: 'motor.large', slot: 'motor', name: 'Large motor', ...T('motor.large'), mobileOnly: true, description: 'Powerful ground drive.' },
+  { id: 'rotor', slot: 'motor', name: 'Rotor', ...T('rotor'), flight: true, mobileOnly: true, description: 'Flight: crosses any terrain, lands only on passable cells.' },
 
-  { id: 'sensor.short', slot: 'sensor', name: 'Short sensor (6)', mass: 1, sensorRange: 6, use: 1, description: 'Sees 6 tiles.' },
-  { id: 'sensor.long', slot: 'sensor', name: 'Long sensor (14)', mass: 2, sensorRange: 14, use: 2, description: 'Sees 14 tiles.' },
+  { id: 'sensor.short', slot: 'sensor', name: `Short sensor (${T('sensor.short').sensorRange})`, ...T('sensor.short'), description: `Sees ${T('sensor.short').sensorRange} tiles.` },
+  { id: 'sensor.long', slot: 'sensor', name: `Long sensor (${T('sensor.long').sensorRange})`, ...T('sensor.long'), description: `Sees ${T('sensor.long').sensorRange} tiles.` },
 
-  { id: 'gun.light', slot: 'weapon', name: 'Light gun', mass: 1, weapon: { range: 4, damage: 5, cooldown: 5 }, use: 0, description: '5 damage, range 4. Needs no energy or matter.' },
-  { id: 'gun.cannon', slot: 'weapon', name: 'Cannon', mass: 4, weapon: { range: 7, damage: 25, cooldown: 20, kind: 'cannon', matter: 3 }, use: 0, description: '25 damage, range 7. Uses 3 matter per shot: from the cargo bay on a vehicle, from the silos on a building.' },
-  { id: 'laser.beam', slot: 'weapon', name: 'Laser', mass: 3, weapon: { range: 8, damage: 14, cooldown: 8, kind: 'laser' }, use: 20, description: '14 damage, range 8. Heavy energy cost: 20 per shot.' },
-  { id: 'tesla.coil', slot: 'weapon', name: 'Tesla coil', mass: 5, weapon: { range: 0, damage: 0, cooldown: 0, kind: 'tesla' }, use: 40, description: 'Stuns the CPU of every unit and building nearby, friend or foe, then recharges slowly. Aim it with fire(). On a vehicle it stuns the vehicle too, for half as long. Range and timing are in rules.ts.' },
+  { id: 'gun.light', slot: 'weapon', name: 'Light gun', ...T('gun.light'), weapon: { ...T('gun.light').weapon!, kind: 'gun' }, description: `${T('gun.light').weapon!.damage} damage, range ${T('gun.light').weapon!.range}. Needs no energy or matter.` },
+  { id: 'gun.cannon', slot: 'weapon', name: 'Cannon', ...T('gun.cannon'), weapon: { ...T('gun.cannon').weapon!, kind: 'cannon' }, description: `${T('gun.cannon').weapon!.damage} damage, range ${T('gun.cannon').weapon!.range}. Uses ${T('gun.cannon').weapon!.matter} matter per shot: from the cargo bay on a vehicle, from the silos on a building.` },
+  { id: 'laser.beam', slot: 'weapon', name: 'Laser', ...T('laser.beam'), weapon: { ...T('laser.beam').weapon!, kind: 'laser' }, description: `${T('laser.beam').weapon!.damage} damage, range ${T('laser.beam').weapon!.range}. Heavy energy cost: ${T('laser.beam').use} per shot.` },
+  { id: 'tesla.coil', slot: 'weapon', name: 'Tesla coil', ...T('tesla.coil'), weapon: { ...T('tesla.coil').weapon!, kind: 'tesla' }, description: `Stuns the CPU of every unit and building within ${TESLA_RANGE / TILE} tiles for ${TESLA_STUN_TICKS / 10}s, friend or foe, then recharges for ${TESLA_COOLDOWN / 10}s. Aim it with fire(). On a vehicle it stuns the vehicle too, for ${Math.round(TESLA_SELF_STUN_FACTOR * 100)}% as long.` },
 
-  { id: 'armor.plate', slot: 'armor', name: 'Armour plate', mass: 4, hp: 60, description: '+60 hit points.' },
+  { id: 'armor.plate', slot: 'armor', name: 'Armour plate', ...T('armor.plate'), description: `+${T('armor.plate').hp} hit points.` },
 
-  { id: 'cargo.bay', slot: 'cargo', name: 'Cargo bay (40)', mass: 1, cargo: 40, harvestRate: 4, use: 1, mobileOnly: true, description: 'Harvests and carries 40 resources.' },
+  { id: 'cargo.bay', slot: 'cargo', name: `Cargo bay (${T('cargo.bay').cargo})`, ...T('cargo.bay'), mobileOnly: true, description: `Harvests and carries ${T('cargo.bay').cargo} resources.` },
 
-  { id: 'battery.cell', slot: 'battery', name: 'Battery cell', mass: 2, energy: 1000, description: '+1000 energy storage.' },
-  { id: 'battery.bank', slot: 'battery', name: 'Battery bank', mass: 6, energy: 5000, structureOnly: true, description: '+5000 energy storage.' },
+  { id: 'battery.cell', slot: 'battery', name: 'Battery cell', ...T('battery.cell'), description: `+${T('battery.cell').energy} energy storage.` },
+  { id: 'battery.bank', slot: 'battery', name: 'Battery bank', ...T('battery.bank'), structureOnly: true, description: `+${T('battery.bank').energy} energy storage.` },
 
-  { id: 'factory.basic', slot: 'factory', name: 'Factory', mass: 5, use: 4, structureOnly: true, description: 'Produces units.' },
-  { id: 'silo', slot: 'depot', name: 'Resource silo', mass: 3, storage: 1000, structureOnly: true, description: 'Stores 1000 resources; units dock here to fill it or take from it.' },
-  { id: 'build.arm', slot: 'builder', name: 'Build arm', mass: 2, buildRate: 4, use: 2, mobileOnly: true, description: 'Constructs buildings, investing 4 resources per tick.' },
-  { id: 'build.crane', slot: 'builder', name: 'Build crane', mass: 4, buildRate: 6, use: 3, structureOnly: true, description: 'Constructs buildings up to 4 tiles from this building\'s edge, investing 6 resources per tick.' },
-  { id: 'charger.pad', slot: 'charger', name: 'Charging pad', mass: 3, chargeRate: 10, structureOnly: true, description: 'Transfers 10 energy/tick from the building to each own unit within 3 tiles.' },
-  { id: 'solar.panel', slot: 'generator', name: 'Solar panel', mass: 2, generator: 'solar', output: SOLAR_PANEL_OUTPUT * GENERATION_SCALE, structureOnly: true, description: `Up to ${SOLAR_PANEL_OUTPUT}/tick, following daylight.` },
-  { id: 'wind.turbine', slot: 'generator', name: 'Wind turbine', mass: 4, generator: 'wind', output: WIND_TURBINE_OUTPUT * GENERATION_SCALE, structureOnly: true, description: `Up to ${WIND_TURBINE_OUTPUT}/tick, following the wind.` },
-  { id: 'antenna.small', slot: 'antenna', name: 'Energy antenna S (3)', mass: 1, antennaRange: 3, structureOnly: true, description: 'Power links reach 3 tiles.' },
-  { id: 'antenna.medium', slot: 'antenna', name: 'Energy antenna M (6)', mass: 2, antennaRange: 6, structureOnly: true, description: 'Power links reach 6 tiles.' },
-  { id: 'antenna.large', slot: 'antenna', name: 'Energy antenna L (12)', mass: 4, antennaRange: 12, structureOnly: true, description: 'Power links reach 12 tiles.' },
+  { id: 'factory.basic', slot: 'factory', name: 'Factory', ...T('factory.basic'), structureOnly: true, description: 'Produces units.' },
+  { id: 'silo', slot: 'depot', name: 'Resource silo', ...T('silo'), structureOnly: true, description: `Stores ${T('silo').storage} resources; units dock here to fill it or take from it.` },
+  { id: 'build.arm', slot: 'builder', name: 'Build arm', ...T('build.arm'), mobileOnly: true, description: `Constructs buildings, investing ${T('build.arm').buildRate} resources per tick.` },
+  { id: 'build.crane', slot: 'builder', name: 'Build crane', ...T('build.crane'), structureOnly: true, description: `Constructs buildings up to ${BUILDING_BUILD_RANGE / TILE} tiles from this building's edge, investing ${T('build.crane').buildRate} resources per tick.` },
+  { id: 'charger.pad', slot: 'charger', name: 'Charging pad', ...T('charger.pad'), structureOnly: true, description: `Transfers ${T('charger.pad').chargeRate} energy/tick from the building to each own unit within ${BUILDING_TRANSFER_RANGE / TILE} tiles.` },
+  { id: 'solar.panel', slot: 'generator', name: 'Solar panel', ...T('solar.panel'), output: T('solar.panel').output! * GENERATION_SCALE, generator: 'solar', structureOnly: true, description: `Up to ${T('solar.panel').output}/tick, following daylight.` },
+  { id: 'wind.turbine', slot: 'generator', name: 'Wind turbine', ...T('wind.turbine'), output: T('wind.turbine').output! * GENERATION_SCALE, generator: 'wind', structureOnly: true, description: `Up to ${T('wind.turbine').output}/tick, following the wind.` },
+  { id: 'antenna.small', slot: 'antenna', name: `Energy antenna S (${T('antenna.small').antennaRange})`, ...T('antenna.small'), structureOnly: true, description: `Power links reach ${tiles(T('antenna.small').antennaRange!)}.` },
+  { id: 'antenna.medium', slot: 'antenna', name: `Energy antenna M (${T('antenna.medium').antennaRange})`, ...T('antenna.medium'), structureOnly: true, description: `Power links reach ${tiles(T('antenna.medium').antennaRange!)}.` },
+  { id: 'antenna.large', slot: 'antenna', name: `Energy antenna L (${T('antenna.large').antennaRange})`, ...T('antenna.large'), structureOnly: true, description: `Power links reach ${tiles(T('antenna.large').antennaRange!)}.` },
 ];
 
 export const PARTS: Readonly<Record<string, PartDef>> = Object.freeze(
