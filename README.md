@@ -27,16 +27,16 @@ The **script API docs** open with the Docs button (or F1) as an overlay while th
 Requires Docker with Compose.
 
 ```sh
-docker compose up --build
+docker compose up
 ```
 
-Open `http://localhost:8081`. Compose publishes only the client port; its Nginx forwards `/api/v1/*` to the private game server, including WebSocket upgrades at `/api/v1/ws`. The room-list endpoint is `/api/v1/rooms`. For `nginx-proxy`, route the host to the client container on port 80. Set `CLIENT_PORT` to change the local published port. The client derives HTTP and WebSocket endpoints from the current origin, using `wss` on HTTPS. Set `VITE_SERVER_URL` only when the WebSocket endpoint is hosted elsewhere; it must include `/api/v1/ws`. Set `FOG=off` to disable fog of war.
+By default, Compose pulls the latest client and server images from GHCR. Use `docker compose up --build` to build both targets from the current checkout instead. Set `IMAGE_TAG` to pull another published tag. Open `http://localhost:8081`. Compose publishes only the client port; its Nginx forwards `/api/v1/*` to the private game server, including WebSocket upgrades at `/api/v1/ws`. The room-list endpoint is `/api/v1/rooms`. For `nginx-proxy`, route the host to the client container on port 80. Set `CLIENT_PORT` to change the local published port. The client derives HTTP and WebSocket endpoints from the current origin, using `wss` on HTTPS. Set `VITE_SERVER_URL` only when the WebSocket endpoint is hosted elsewhere; it must include `/api/v1/ws`. Set `FOG=off` to disable fog of war.
 
 ```sh
 docker compose down
 ```
 
-The `Publish Docker images` GitHub Action runs tests and typechecking on pull requests, then publishes the Dockerfile's two targets to GHCR on pushes to `main` and `v*` tags. The images are `ghcr.io/<owner>/<repo>-client` and `ghcr.io/<owner>/<repo>-server`; each gets branch/tag and short-SHA tags, and `latest` is updated from the default branch. The client and server images must run on the same Docker network so the client Nginx proxy can reach the server at `server:8080`.
+The `Publish Docker images` GitHub Action runs tests and typechecking on pull requests, then publishes the Dockerfile's two targets to GHCR on pushes to `main` and `v*` tags. The images are `ghcr.io/johnvidler/webstrategything-client` and `ghcr.io/johnvidler/webstrategything-server`; each gets branch/tag and short-SHA tags, and `latest` is updated from the default branch. The client and server images must run on the same Docker network so the client Nginx proxy can reach the server at `server:8080`.
 
 ## Stack
 

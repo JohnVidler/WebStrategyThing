@@ -9,6 +9,7 @@ Changes to the codebase, grouped by day (newest first).
 - `/api/v1/rooms` and `/api/v1/ws` are reverse-proxied to the server, including WebSocket upgrades; Vite mirrors the same-origin proxy during development. Promoted `tsx` to a server runtime dependency and added `.dockerignore`.
 - Validation: both images built; the versioned API returned 200 in Docker and Vite; the browser connected through the single published port and received a room invite link.
 - Added a GitHub Actions workflow to build and push client/server image tags to GHCR on `main` and version-tag pushes.
+- Compose now pulls `ghcr.io/johnvidler/webstrategything-{client,server}:latest` by default, with `IMAGE_TAG` override; `docker compose up --build` retains local builds.
 
 ### Selectable maps and silo dispatch
 - Kept Crossroads and added Small Basin (48×48), Broken Country (72×72), Twin Ridges (80×56) and Highlands (96×80) with distinct deterministic terrain layouts. The lobby renders previews from each map's generated terrain and passes the selection into room creation; active rooms report their map and dimensions.

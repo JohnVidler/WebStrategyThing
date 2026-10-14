@@ -1,5 +1,7 @@
 services:
   server:
+    image: ghcr.io/johnvidler/webstrategything-server:${IMAGE_TAG:-latest}
+    pull_policy: always
     build:
       context: .
       target: server
@@ -23,6 +25,8 @@ services:
       start_period: 5s
 
   client:
+    image: ghcr.io/johnvidler/webstrategything-client:${IMAGE_TAG:-latest}
+    pull_policy: always
     build:
       context: .
       target: client
