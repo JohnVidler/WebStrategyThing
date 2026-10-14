@@ -1,0 +1,33 @@
+{
+  "name": "web-strategy-thing",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "test": "vitest run",
+    "typecheck": "npm run typecheck --workspaces"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2",
+    "vitest": "5.0.2",
+    "vite": "8.3.1"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "overrides": {
+    "vite": "$vite",
+    "@types/node": "24.19.0",
+    "@codemirror/state": "6.7.6",
+    "@codemirror/view": "6.43.13",
+    "@codemirror/language": "6.12.4",
+    "@codemirror/autocomplete": "6.20.3",
+    "@codemirror/lint": "6.9.7",
+    "@codemirror/commands": "6.11.1",
+    "@lezer/highlight": "1.2.5",
+    "@lezer/lr": "1.4.10"
+  }
+}

@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Digital Chaos (Alpha)</title>
+  </head>
+  <body>
+    <div id="lobby" hidden></div>
+    <aside id="panel">
+      <header>
+        <div class="row-spread">
+          <h1>Digital Chaos</h1>
+          <span>
+            <button id="designer-open" title="Design classes and edit programs (F2)">Designer</button>
+            <button id="docs-open" title="Script API documentation (F1)">Docs</button>
+            <a class="button" href="docs.html" target="_blank" rel="noopener" title="Open the docs in a new tab">↗</a>
+          </span>
+        </div>
+        <div class="sidebar-meta">
+          <span id="status">connecting…</span>
+          <span id="environment" class="muted"></span>
+        </div>
+      </header>
+
+      <section>
+        <h2>Resources</h2>
+        <div id="resource-bars" aria-label="Resources" hidden></div>
+      </section>
+
+      <section>
+        <h2>Actions</h2>
+        <div id="groups" class="group-bar" aria-label="Control groups" hidden></div>
+        <div id="actions" class="action-grid" role="toolbar" aria-label="Actions for the selected units"></div>
+        <div id="action-hint" class="muted"></div>
+      </section>
+
+      <section>
+        <h2>Selection</h2>
+        <div id="selection-summary" class="muted">Nothing selected</div>
+        <div id="selection-resources" class="resource-list" hidden></div>
+        <div id="production" hidden>
+          <div id="production-status" class="muted"></div>
+          <div id="production-buttons" class="chips"></div>
+        </div>
+        <div id="modules" hidden></div>
+        <div id="result"></div>
+        <details>
+          <summary>Controls</summary>
+          <pre>Left click / drag   select (Shift adds); a drag takes
+                    combat units first, then turrets, then
+                    everything else
+Double-click unit   select all matching units on screen
+Right click         move / attack / harvest / dock / charge /
+                    build (on a building: set rally point)
+Ctrl + right click  queue instead of replace
+                    (Shift also works outside Firefox)
+Action grid         M move, A attack, S stop, H harvest,
+                    D unload, C recharge, X demolish (press
+                    twice; sites refund fully), plus class buttons
+                    (aimed ones: left-click a target; Ctrl
+                    keeps aiming; right-click/Esc cancels)
+Mouse wheel         zoom; middle-drag or arrows pan; Home resets
+Build bar (bottom)  place a building; selected builders build it
+                    (Ctrl/Shift + click places several)
+Esc                 cancel aim / placement / deselect / docs
+Ctrl+1..9, 1..9     set / recall group (press twice
+                    quickly to centre on it)
+Shift+1..9          add the selection to a group
+Ctrl+A              select all units
+F1 / F2             script docs / class designer</pre>
+        </details>
+      </section>
+
+      <footer id="designs-bar" aria-label="Your designs">
+        <div class="row">
+          <button id="designs-download" title="Save your unit and building designs and their scripts as a JSON file">⬇ Download designs</button>
+          <button id="designs-upload" title="Load designs from a JSON file (asks first)">⬆ Upload designs</button>
+        </div>
+        <button id="designs-reset" class="link" title="Put every default class back and retire your own (asks first)">Reset designs to defaults…</button>
+        <input id="designs-file" type="file" accept=".json,application/json" hidden>
+        <button id="resign" title="Leave this match and go back to the room list (press twice)">Resign and Quit</button>
+      </footer>
+    </aside>
+    <main id="stage">
+      <div id="map">
+        <div id="hoverbar" hidden></div>
+        <table id="scoreboard" aria-label="Players" hidden></table>
+        <div id="standings" hidden></div>
+        <div id="pause" hidden></div>
+        <div id="docs-overlay" hidden>
+          <div class="docs-bar">
+            <span>Script API docs — the game keeps running underneath</span>
+            <span>
+              <a class="button" href="docs.html" target="_blank" rel="noopener">Open in new tab ↗</a>
+              <button id="docs-close" title="Close (Esc)">✕</button>
+            </span>
+          </div>
+          <iframe id="docs-frame" title="Script API documentation"></iframe>
+        </div>
+      </div>
+      <nav id="buildbar" aria-label="Place a building"></nav>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

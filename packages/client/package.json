@@ -1,0 +1,27 @@
+{
+  "name": "@wst/client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit -p . && tsc --noEmit -p tsconfig.node.json"
+  },
+  "dependencies": {
+    "@wst/engine": "*",
+    "pixi.js": "8.21.0",
+    "@codemirror/state": "6.7.6",
+    "@codemirror/view": "6.43.13",
+    "@codemirror/language": "6.12.4",
+    "@codemirror/autocomplete": "6.20.3",
+    "@codemirror/lint": "6.9.7",
+    "@codemirror/commands": "6.11.1",
+    "@lezer/highlight": "1.2.5"
+  },
+  "devDependencies": {
+    "vite": "8.3.1",
+    "@types/node": "24.19.0"
+  }
+}
