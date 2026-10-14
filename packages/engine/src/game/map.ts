@@ -80,7 +80,7 @@ export function createMatch(seed: number, selection: MapDefinition | string | nu
   const centreY = height / 2;
   for (let i = 0; i < 6; i++) {
     const cell = terrain.nearestWalkable(centreX - 2 + sim.rng.int(5), centreY - 2 + sim.rng.int(5));
-    if (cell) sim.spawnResource(cell[0] * TILE + TILE / 2, cell[1] * TILE + TILE / 2, FIELD_AMOUNT);
+    if (cell) sim.spawnResourcePatch(cell[0] * TILE + TILE / 2, cell[1] * TILE + TILE / 2, FIELD_AMOUNT);
   }
   const wanderer = defineClass(sim, NEUTRAL, NEUTRAL_CLASS);
   for (let i = 0; i < NEUTRAL_UNITS; i++) {
@@ -97,7 +97,7 @@ function placeField(sim: Simulation, c: Corner): void {
     const x = flip(c.flipX, BASE_FIELD.x - 2 + sim.rng.int(5), 1, width);
     const y = flip(c.flipY, BASE_FIELD.y - 2 + sim.rng.int(5), 1, height);
     const cell = sim.terrain.nearestWalkable(x, y, 4);
-    if (cell) sim.spawnResource(cell[0] * TILE + TILE / 2, cell[1] * TILE + TILE / 2, FIELD_AMOUNT);
+    if (cell) sim.spawnResourcePatch(cell[0] * TILE + TILE / 2, cell[1] * TILE + TILE / 2, FIELD_AMOUNT);
   }
 }
 

@@ -4,6 +4,15 @@ Changes to the codebase, grouped by day (newest first).
 
 ## 2026-10-14
 
+### Solar and wind generation multipliers
+- Added separate solar and wind output multipliers to `game/rules.ts`; the current user-edited values are 2× each, applied after daylight or wind intensity.
+- The in-game power guide displays both current multiplier values.
+
+### Regenerating matter fields
+- Natural map patches regenerate one matter every 10 ticks (1 second), capped at their starting amount. Depleted patches stay available for regrowth; matter drops remain finite, and resource scans skip empty patches.
+- The in-game resource guide describes the rate and cap. Focused simulation and docs tests pass (31 tests).
+- Full suite currently has one unrelated failure: the transmission-loss test expects supply 4, but the current 2× solar multiplier yields 8.
+
 ### HTTP random-ID compatibility
 - Replaced `crypto.randomUUID()` in reconnect-token and room-name generation with a shared helper that uses `crypto.getRandomValues()` when available and falls back when Web Crypto is missing.
 - Tests: 84 pass. Browser-checked room creation and joining with `crypto.randomUUID` disabled.
@@ -24,6 +33,7 @@ Changes to the codebase, grouped by day (newest first).
 - Removed the duplicate matter amount/capacity readout from the header while retaining its internal value for production affordability.
 - The header now shows the player's name and room on row one, then daylight, wind and net grid balance on row two. Matter and Energy resource bars now include matching symbols.
 - CPU status in the map's top info bar now has a fixed 160px slot, so changing status text does not shift following stats. Client typecheck/build passed; browser-checked equal widths across status strings.
+- Single-selection details now render as one `Key: value` attribute per line with tabular numerals; the live browser confirmed the multiline layout.
 
 ### Disconnect pause and resignation
 - A server connection loss uses the existing pause modal while reconnecting. Disconnected players shown to the room have a live reconnect-timeout countdown.

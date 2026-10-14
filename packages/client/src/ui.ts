@@ -509,41 +509,45 @@ export class Ui {
   private describe(e: number): string {
     const { world, blueprints } = this.state;
     const res = world.store(Resource);
-    if (res.has(e)) return `Resource field — ${res.f.amount[e]} left`;
+    if (res.has(e)) return `Type: Resource field\nAmount remaining: ${res.f.amount[e]}`;
     const unit = world.store(Unit);
     if (!unit.has(e)) return '';
     const bp = blueprints.get(unit.f.blueprint[e]);
     const s = this.state.stats(e);
     const owner = this.state.isMine(e) ? 'yours' : unit.f.owner[e] === 0 ? 'neutral' : `player ${unit.f.owner[e]}`;
-    const parts = [`${bp?.name ?? '?'} (${owner})`];
+    const sparklineKeys = new Set(
+      this.state.isMine(e) ? METRICS.filter((metric) => metric.read(this.state, e)).map((metric) => metric.key) : [],
+    );
+    const parts = [`Class: ${bp?.name ?? '?'}`, `Owner: ${owner}`];
     const hp = world.store(Health);
-    if (hp.has(e)) parts.push(`hp ${hp.f.hp[e]}/${s?.hp ?? '?'}`);
-    if (!this.state.isMine(e)) return parts.join(' · ');
+    if (hp.has(e) && !sparklineKeys.has('hp')) parts.push(`Health: ${hp.f.hp[e]}/${s?.hp ?? '?'}`);
+    if (!this.state.isMine(e)) return parts.join('\n');
     const energy = world.store(EnergyView);
-    if (energy.has(e) && s) parts.push(`energy ${energy.f.pct[e]}% of ${s.energyCapacity}`);
+    if (energy.has(e) && s && !sparklineKeys.has('energy')) parts.push(`Energy: ${energy.f.pct[e]}% of ${s.energyCapacity}`);
     const cpu = world.store(CpuStatus);
-    if (cpu.has(e) && s?.cyclesPerTick) {
+    if (cpu.has(e) && s?.cyclesPerTick && !sparklineKeys.has('cpu')) {
       const fault = cpu.f.fault[e] ? ` (fault: ${FAULT_NAMES[cpu.f.fault[e]]})` : '';
-      parts.push(`cpu ${CPU_STATES[cpu.f.state[e]]} ${cpu.f.used[e]}/${s.cyclesPerTick}c${fault}`);
+      parts.push(`CPU: ${CPU_STATES[cpu.f.state[e]]} ${cpu.f.used[e]}/${s.cyclesPerTick}c${fault}`);
     }
     const cargo = world.store(Cargo);
-    if (cargo.has(e)) parts.push(`cargo ${cargo.f.amount[e]}/${s?.cargo ?? '?'}`);
+    if (cargo.has(e) && !sparklineKeys.has('cargo')) parts.push(`Cargo: ${cargo.f.amount[e]}/${s?.cargo ?? '?'}`);
     const site = world.store(Construction);
-    if (site.has(e)) parts.push(`under construction ${site.f.progress[e]}% of ◆${s?.cost ?? '?'}`);
+    if (site.has(e) && !sparklineKeys.has('built')) parts.push(`Construction: ${site.f.progress[e]}% of ◆${s?.cost ?? '?'}`);
     const stock = world.store(Stockpile);
-    if (stock.has(e)) parts.push(`silos ${stock.f.amount[e]}/${s?.resourceCapacity ?? '?'}`);
+    if (stock.has(e) && !sparklineKeys.has('silos')) parts.push(`Silos: ${stock.f.amount[e]}/${s?.resourceCapacity ?? '?'}`);
     const tasks = this.state.tasks.get(e);
-    parts.push(`${(tasks?.length ?? 0) / 4} task(s) queued`);
+    parts.push(`Tasks queued: ${(tasks?.length ?? 0) / 4}`);
     if (s?.structure) {
       const links = this.state.links.filter(([a, b]) => a === e || b === e).length;
-      parts.push(`${links} power link(s)`);
+      parts.push(`Power links: ${links}`);
       const net = this.state.networkOf(e);
       if (net) {
         parts.push(
-          `grid of ${net.members.length}: +${net.supply}/−${net.demand} per tick, stored ${net.stored}/${net.capacity}${net.depot ? ', has a silo' : ', no silo (sites here need hauling)'}`,
+          `Grid: ${net.members.length} buildings, +${net.supply}/−${net.demand} per tick`,
         );
+        parts.push(`Grid storage: ${net.stored}/${net.capacity}${net.depot ? ' (silo connected)' : ' (no silo)'}`);
       }
     }
-    return parts.join(' · ');
+    return parts.join('\n');
   }
 }

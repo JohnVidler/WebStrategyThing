@@ -5,7 +5,7 @@ import { SimEvent } from './events';
 import { TILE } from './parts';
 import { daylight, share, StorageMode, wind } from './power';
 import { GENERATION_SCALE } from './parts';
-import { BUILDER_ENERGY_RESERVE, DECAY_TICKS, MAX_TRANSMISSION_LOSS, STORAGE_DISCHARGE_FRACTION, TESLA_SELF_STUN_FACTOR, TESLA_STUN_TICKS, TRANSMISSION_LOSS_PER_TILE, buildEnergyCost } from './rules';
+import { BUILDER_ENERGY_RESERVE, DECAY_TICKS, MAX_TRANSMISSION_LOSS, RESOURCE_REGEN_INTERVAL_TICKS, SOLAR_GENERATION_MULTIPLIER, STORAGE_DISCHARGE_FRACTION, TESLA_SELF_STUN_FACTOR, TESLA_STUN_TICKS, TRANSMISSION_LOSS_PER_TILE, WIND_GENERATION_MULTIPLIER, buildEnergyCost } from './rules';
 import { CHARGE_RANGE } from './rules';
 import type { Simulation } from './simulation';
 
@@ -32,7 +32,10 @@ export function powerSystem(sim: Simulation): void {
       const s = sim.stats(b);
       // Output is in 1/GENERATION_SCALE energy; the fraction left over carries to the next tick.
       const unit = 100 * GENERATION_SCALE;
-      const total = s.solar * sun + s.wind * air + (sim.genCarry[b] ?? 0);
+      const total =
+        s.solar * sun * SOLAR_GENERATION_MULTIPLIER +
+        s.wind * air * WIND_GENERATION_MULTIPLIER +
+        (sim.genCarry[b] ?? 0);
       gen[i] = Math.floor(total / unit);
       sim.genCarry[b] = total - gen[i] * unit;
       gen[i] = Math.floor(gen[i] * efficiency);
@@ -290,7 +293,19 @@ export function harvestSystem(sim: Simulation): void {
     res.f.amount[t] -= take;
     cargo.markChanged(e);
     res.markChanged(t);
-    if (res.f.amount[t] === 0) sim.destroyEntity(t);
+    if (res.f.amount[t] === 0 && !sim.resourcePatch.has(t)) sim.destroyEntity(t);
+  }
+}
+
+/** Natural matter patches slowly regrow to the amount they started with. */
+export function resourceRegenerationSystem(sim: Simulation): void {
+  if (sim.tick % RESOURCE_REGEN_INTERVAL_TICKS !== 0) return;
+  const amount = sim.resource.f.amount;
+  const patches = sim.resourcePatch;
+  for (const e of patches.dense) {
+    if (amount[e] >= patches.f.maximum[e]) continue;
+    amount[e]++;
+    sim.resource.markChanged(e);
   }
 }
 

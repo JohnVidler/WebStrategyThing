@@ -302,6 +302,7 @@ pre {
 
 .row-spread { display: flex; justify-content: space-between; gap: 8px; }
 .muted { color: var(--muted); }
+#selection-summary { white-space: pre-line; font-variant-numeric: tabular-nums; }
 #credits { color: #7ee0b5; font-variant-numeric: tabular-nums; }
 
 /* Global resource bars at the top of the side panel. */

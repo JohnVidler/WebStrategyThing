@@ -22,6 +22,7 @@ import {
   Position,
   Production,
   Resource,
+  ResourcePatch,
   Stockpile,
   Storage,
   Unit,
@@ -43,6 +44,7 @@ import {
   movementSystem,
   powerSystem,
   productionSystem,
+  resourceRegenerationSystem,
   scriptSystem,
   separationSystem,
 } from './systems';
@@ -149,6 +151,7 @@ export class Simulation {
   readonly health = this.world.store(Health);
   readonly cpu = this.world.store(CpuStatus);
   readonly resource = this.world.store(Resource);
+  readonly resourcePatch = this.world.store(ResourcePatch);
   readonly cargo = this.world.store(Cargo);
   readonly production = this.world.store(Production);
   readonly energyView = this.world.store(EnergyView);
@@ -499,6 +502,12 @@ export class Simulation {
     const e = this.world.create();
     this.pos.add(e, { x: this.clamp(x, this.widthSub), y: this.clamp(y, this.heightSub) });
     this.resource.add(e, { amount: Math.min(0xffff, amount) });
+    return e;
+  }
+
+  spawnResourcePatch(x: number, y: number, amount: number): number {
+    const e = this.spawnResource(x, y, amount);
+    this.resourcePatch.add(e, { maximum: this.resource.f.amount[e] });
     return e;
   }
 
@@ -1068,6 +1077,7 @@ export class Simulation {
     movementSystem(this);
     separationSystem(this);
     harvestSystem(this);
+    resourceRegenerationSystem(this);
     combatSystem(this);
     buildSystem(this);
     chargingSystem(this);

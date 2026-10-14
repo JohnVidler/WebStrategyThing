@@ -19,7 +19,9 @@ import {
   MAX_PARTS,
   MAX_TASKS,
   PART_LIST,
+  RESOURCE_REGEN_INTERVAL_TICKS,
   SCRIPT_CONSTANT_DOCS,
+  SOLAR_GENERATION_MULTIPLIER,
   STARTER_CLASSES,
   SWITCHABLE,
   TICK_RATE,
@@ -27,6 +29,7 @@ import {
   UNIT_API,
   UNIT_TRANSFER_RANGE,
   VISIT_TTL,
+  WIND_GENERATION_MULTIPLIER,
 } from '@wst/engine';
 
 /*
@@ -328,7 +331,7 @@ if r != 0 && visitorCaps() & CAN_HARVEST {
       ${BASE_LINK_RANGE} tile by default, more with an <b>energy antenna</b> module (3, 6 or 12 tiles; the larger
       of the two buildings' reaches counts). Linked buildings form a network. Each tick, per network:</p>
       <ol>
-        <li>Generators produce: <b>solar panels</b> follow daylight (a ${DAY_LENGTH / TICK_RATE}s day/night cycle; dark half the time), <b>wind turbines</b> follow the wind (drifting 0–100%).</li>
+        <li>Generators produce: <b>solar panels</b> follow daylight (a ${DAY_LENGTH / TICK_RATE}s day/night cycle; dark half the time; ${SOLAR_GENERATION_MULTIPLIER}× multiplier), <b>wind turbines</b> follow the wind (drifting 0–100%; ${WIND_GENERATION_MULTIPLIER}× multiplier).</li>
         <li>If generation is short of demand, buildings in <code>DISCHARGE</code> mode supply the gap from their stores.</li>
         <li><code>NORMAL</code> buildings are topped up (shared in proportion to what each needs).</li>
         <li>What is left goes to buildings in <code>CHARGE_STORE</code> mode. <code>HOLD</code> buildings neither take nor give.</li>
@@ -350,6 +353,7 @@ sleep(4)`)}
       <p>Harvested resources are stored in buildings with <b>silo</b> modules (the HQ has two; a Resource Silo has six).
       Your <b>common pool</b> is everything held in all your silos — shown at the top of the side panel as
       <i>stored / capacity</i>. Silos can fill up (build more), and a destroyed silo loses its contents.</p>
+      <p>Natural matter fields regenerate one unit every ${RESOURCE_REGEN_INTERVAL_TICKS / TICK_RATE}s, up to their starting amount. Matter drops from destroyed units remain finite.</p>
       <ul>
         <li>${fnLink('dock')} fills the depot's silos with as much cargo as fits (and makes the unit a visitor).</li>
         <li>${fnLink('take')} loads resources from a depot back into a unit's cargo bay.</li>

@@ -180,7 +180,7 @@ export const UNIT_API: HostApi<UnitContext> = [
   api('Sensing', 'scanResource()', 8, 'Nearest resource in sensor range, or -1. Energy: sensor use.', (c) => {
     if (!powerSensor(c)) return -1;
     const { sim, e } = c;
-    return handleOf(c, sim.spatial.nearest(sim.pos.f.x[e], sim.pos.f.y[e], c.stats.sensorRange, (o) => sim.resource.has(o)));
+    return handleOf(c, sim.spatial.nearest(sim.pos.f.x[e], sim.pos.f.y[e], c.stats.sensorRange, (o) => sim.resource.has(o) && sim.resource.f.amount[o] > 0));
   }),
   api('Sensing', 'nearestDepot()', 4, 'Nearest own finished building with silo space to spare, or -1.',
     (c) => handleOf(c, c.sim.nearestOwn(c.e, Caps.Depot, (b) => c.sim.stockpile.f.amount[b] < c.sim.stats(b).resourceCapacity))),

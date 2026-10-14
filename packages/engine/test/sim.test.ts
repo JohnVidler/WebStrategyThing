@@ -16,6 +16,7 @@ import {
   GAME_COMPONENTS,
   Interest,
   Resource,
+  RESOURCE_REGEN_INTERVAL_TICKS,
   visibleTo,
   Position,
   Simulation,
@@ -344,6 +345,29 @@ t = "hi"`)).toThrow(/button declarations/);
     for (const h of own(1, 'Harvester')) expect(sim.energy.f.amount[h]).toBeGreaterThan(0);
     const [hq] = own(1, 'HQ');
     expect(sim.cpu.f.state[hq]).not.toBe(CpuState.NoPower);
+  });
+
+  it('matter patches slowly regenerate to their starting amount and remain harvestable when empty', () => {
+    const sim = new Simulation({ width: 20, height: 20, seed: 1 });
+    const harvesterBp = sim.blueprints.define(1, 'Test Harvester', ['chassis.light', 'motor.small', 'cargo.bay']);
+    const harvester = sim.spawnUnit(harvesterBp, at(10), at(10));
+    const patch = sim.spawnResourcePatch(at(10), at(10), 2);
+    const finiteMatter = sim.spawnResource(at(12), at(10), 2);
+    sim.harvester.f.target[harvester] = sim.world.handle(patch);
+    sim.resource.f.amount[finiteMatter] = 0;
+    sim.tick = 1;
+
+    run(sim, 1);
+    expect(sim.world.isAlive(patch)).toBe(true);
+    expect(sim.resource.f.amount[patch]).toBe(0);
+    sim.harvester.f.target[harvester] = -1;
+    run(sim, RESOURCE_REGEN_INTERVAL_TICKS - 2);
+    expect(sim.resource.f.amount[patch]).toBe(0);
+    run(sim, 1);
+    expect(sim.resource.f.amount[patch]).toBe(1);
+    run(sim, RESOURCE_REGEN_INTERVAL_TICKS * 2);
+    expect(sim.resource.f.amount[patch]).toBe(2);
+    expect(sim.resource.f.amount[finiteMatter]).toBe(0);
   });
 
   it('passes a rally point to produced units via the HQ script', () => {

@@ -28,9 +28,17 @@ export const BUILDER_ENERGY_RESERVE = 0.25;
 /** A unit with no energy for this many ticks falls apart into a matter block worth its cost. */
 export const DECAY_TICKS = 600;
 
+/** Multiplier applied to solar output after scaling by daylight (1 = unchanged). */
+export const SOLAR_GENERATION_MULTIPLIER = 2;
+/** Multiplier applied to wind output after scaling by wind intensity (1 = unchanged). */
+export const WIND_GENERATION_MULTIPLIER = 2;
+
+/** Natural matter patches regenerate one unit at this interval, up to their initial amount. */
+export const RESOURCE_REGEN_INTERVAL_TICKS = 10;
+
 /** Share of generation lost per tile of link gap in a network, up to a maximum. */
-export const TRANSMISSION_LOSS_PER_TILE = 0.01;
-export const MAX_TRANSMISSION_LOSS = 0.5;
+export const TRANSMISSION_LOSS_PER_TILE = 0.0001;
+export const MAX_TRANSMISSION_LOSS = 0.7;
 
 /** A discharging storage building gives at most this share of its capacity to the network per tick. */
 export const STORAGE_DISCHARGE_FRACTION = 0.02;
