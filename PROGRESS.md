@@ -7,11 +7,11 @@ Changes to the codebase, grouped by day (newest first).
 ### Solar and wind generation multipliers
 - Added separate solar and wind output multipliers to `game/rules.ts`; the current user-edited values are 2× each, applied after daylight or wind intensity.
 - The in-game power guide displays both current multiplier values.
+- Transmission-loss coverage now derives its full-output expectation from the solar panel output and multiplier rather than assuming 1×; all 85 tests and workspace typecheck pass.
 
 ### Regenerating matter fields
 - Natural map patches regenerate one matter every 10 ticks (1 second), capped at their starting amount. Depleted patches stay available for regrowth; matter drops remain finite, and resource scans skip empty patches.
 - The in-game resource guide describes the rate and cap. Focused simulation and docs tests pass (31 tests).
-- Full suite currently has one unrelated failure: the transmission-loss test expects supply 4, but the current 2× solar multiplier yields 8.
 
 ### HTTP random-ID compatibility
 - Replaced `crypto.randomUUID()` in reconnect-token and room-name generation with a shared helper that uses `crypto.getRandomValues()` when available and falls back when Web Crypto is missing.

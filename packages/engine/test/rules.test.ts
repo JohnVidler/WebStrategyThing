@@ -3,6 +3,8 @@ import {
   BUILDER_ENERGY_RESERVE,
   DECAY_TICKS,
   Simulation,
+  SOLAR_GENERATION_MULTIPLIER,
+  SOLAR_PANEL_OUTPUT,
   TESLA_STUN_TICKS,
   TILE,
   buildEnergyCost,
@@ -236,8 +238,9 @@ describe('transmission losses', () => {
   };
 
   it('costs a share of generation per tile of link gap, and nothing for touching buildings', () => {
-    expect(supplyWith(undefined)).toBe(4);
-    expect(supplyWith(4)).toBe(4); // touching: no gap
-    expect(supplyWith(5)).toBeLessThan(4); // one tile apart
+    const fullOutput = 8 * SOLAR_PANEL_OUTPUT * SOLAR_GENERATION_MULTIPLIER;
+    expect(supplyWith(undefined)).toBe(fullOutput);
+    expect(supplyWith(4)).toBe(fullOutput); // touching: no gap
+    expect(supplyWith(5)).toBeLessThan(fullOutput); // one tile apart
   });
 });
