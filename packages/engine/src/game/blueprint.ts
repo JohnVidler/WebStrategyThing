@@ -21,6 +21,7 @@ export const Caps = {
   Generator: 256,
   Storage: 512,
   Build: 1024,
+  Radar: 2048,
 } as const;
 
 export class BlueprintError extends Error {
@@ -75,6 +76,8 @@ export interface BlueprintStats {
   readonly cpuUse: number;
   readonly motorUse: number;
   readonly sensorUse: number;
+  /** Most energy one radar pulse may spend; 0 without a working radar. */
+  readonly radarMaxEnergy: number;
   readonly cargoUse: number;
   readonly factoryUse: number;
   readonly builderUse: number;
@@ -148,7 +151,7 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
   let cycles = 0, cpuUse = 0, thrust = 0, motorUse = 0, flying = false;
   let sensor = 0, sensorUse = 0, cargo = 0, rate = 0, cargoUse = 0;
   let factory = false, factoryUse = 0, silo = 0, charge = 0, solar = 0, wind = 0, antenna = 0, banks = 0;
-  let buildRate = 0, builderUse = 0;
+  let buildRate = 0, builderUse = 0, radarMax = 0;
   let weapon: BlueprintStats['weapon'] = null;
 
   defs.forEach((d, i) => {
@@ -208,6 +211,9 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
       case 'antenna':
         antenna = Math.max(antenna, d.antennaRange ?? 0);
         break;
+      case 'radar':
+        radarMax = Math.max(radarMax, d.radarMaxEnergy ?? 0);
+        break;
       case 'builder':
         buildRate += d.buildRate ?? 0;
         builderUse += d.use ?? 0;
@@ -228,7 +234,8 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
     (charge > 0 ? Caps.Charger : 0) |
     (solar + wind > 0 ? Caps.Generator : 0) |
     (banks > 0 ? Caps.Storage : 0) |
-    (buildRate > 0 ? Caps.Build : 0);
+    (buildRate > 0 ? Caps.Build : 0) |
+    (radarMax > 0 ? Caps.Radar : 0);
 
   return Object.freeze({
     hp,
@@ -256,6 +263,7 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
     cpuUse,
     motorUse,
     sensorUse,
+    radarMaxEnergy: radarMax,
     cargoUse,
     factoryUse,
     builderUse,

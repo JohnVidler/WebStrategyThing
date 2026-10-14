@@ -1,4 +1,4 @@
-import { BUILDING_BUILD_RANGE, BUILDING_TRANSFER_RANGE, PART_TUNING, TESLA_COOLDOWN, TESLA_RANGE, TESLA_SELF_STUN_FACTOR, TESLA_STUN_TICKS, TILE } from './rules';
+import { BUILDING_BUILD_RANGE, BUILDING_TRANSFER_RANGE, CHARGE_PAD_RATE_MULTIPLIER, PART_TUNING, RADAR_COOLDOWN_TICKS, RADAR_ENERGY_PER_TILE, RADAR_FADE_TICKS, TESLA_COOLDOWN, TESLA_RANGE, TESLA_SELF_STUN_FACTOR, TESLA_STUN_TICKS, TILE } from './rules';
 
 export { TILE };
 
@@ -19,7 +19,8 @@ export type PartSlot =
   | 'charger'
   | 'generator'
   | 'antenna'
-  | 'builder';
+  | 'builder'
+  | 'radar';
 
 /** Numeric slot codes, exposed to scripts via moduleKind() as M_CPU, M_MOTOR, ... */
 export const SLOT_CODES: Readonly<Record<PartSlot, number>> = {
@@ -38,11 +39,12 @@ export const SLOT_CODES: Readonly<Record<PartSlot, number>> = {
   generator: 13,
   antenna: 14,
   builder: 15,
+  radar: 16,
 };
 
 /** Modules that use or make energy can be switched off; passive ones (frame, memory, armour, batteries) cannot. */
 export const SWITCHABLE: ReadonlySet<PartSlot> = new Set<PartSlot>([
-  'cpu', 'motor', 'sensor', 'weapon', 'cargo', 'factory', 'charger', 'generator', 'antenna', 'builder',
+  'cpu', 'motor', 'sensor', 'weapon', 'cargo', 'factory', 'charger', 'generator', 'antenna', 'builder', 'radar',
 ]);
 
 /**
@@ -101,6 +103,8 @@ export interface PartDef {
    * Build arm: per tick constructing.
    */
   readonly use?: number;
+  /** Radar: the most energy one pulse may spend. */
+  readonly radarMaxEnergy?: number;
   readonly structureOnly?: boolean;
   readonly mobileOnly?: boolean;
   readonly description: string;
@@ -155,7 +159,8 @@ const CATALOGUE: PartDef[] = [
   { id: 'silo', slot: 'depot', name: 'Resource silo', ...T('silo'), structureOnly: true, description: `Stores ${T('silo').storage} resources; units dock here to fill it or take from it.` },
   { id: 'build.arm', slot: 'builder', name: 'Build arm', ...T('build.arm'), mobileOnly: true, description: `Constructs buildings, investing ${T('build.arm').buildRate} resources per tick.` },
   { id: 'build.crane', slot: 'builder', name: 'Build crane', ...T('build.crane'), structureOnly: true, description: `Constructs buildings up to ${BUILDING_BUILD_RANGE / TILE} tiles from this building's edge, investing ${T('build.crane').buildRate} resources per tick.` },
-  { id: 'charger.pad', slot: 'charger', name: 'Charging pad', ...T('charger.pad'), structureOnly: true, description: `Transfers ${T('charger.pad').chargeRate} energy/tick from the building to each own unit within ${BUILDING_TRANSFER_RANGE / TILE} tiles.` },
+  { id: 'radar.pulse', slot: 'radar', name: 'Radar', ...T('radar.pulse'), description: `Pulse scan: radarPulse(energy) spends that energy (up to ${T('radar.pulse').radarMaxEnergy}) and reveals every unit and building within ${RADAR_ENERGY_PER_TILE} energy per tile of range, up to ${Math.floor(T('radar.pulse').radarMaxEnergy! / RADAR_ENERGY_PER_TILE)} tiles. Contacts show as blips that fade over ${RADAR_FADE_TICKS / 10}s; the module rests ${RADAR_COOLDOWN_TICKS / 10}s between pulses.` },
+  { id: 'charger.pad', slot: 'charger', name: 'Charging pad', ...T('charger.pad'), structureOnly: true, description: `Transfers ${T('charger.pad').chargeRate! * CHARGE_PAD_RATE_MULTIPLIER} energy/tick (as much as the pad's store holds) from the building to each own unit within ${BUILDING_TRANSFER_RANGE / TILE} tiles.` },
   { id: 'solar.panel', slot: 'generator', name: 'Solar panel', ...T('solar.panel'), output: T('solar.panel').output! * GENERATION_SCALE, generator: 'solar', structureOnly: true, description: `Up to ${T('solar.panel').output}/tick, following daylight.` },
   { id: 'wind.turbine', slot: 'generator', name: 'Wind turbine', ...T('wind.turbine'), output: T('wind.turbine').output! * GENERATION_SCALE, generator: 'wind', structureOnly: true, description: `Up to ${T('wind.turbine').output}/tick, following the wind.` },
   { id: 'antenna.small', slot: 'antenna', name: `Energy antenna S (${T('antenna.small').antennaRange})`, ...T('antenna.small'), structureOnly: true, description: `Power links reach ${tiles(T('antenna.small').antennaRange!)}.` },

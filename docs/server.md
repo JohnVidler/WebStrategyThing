@@ -1,0 +1,15 @@
+# Server
+
+[← Back to the README](../README.md)
+
+The server is authoritative: it runs every match loop and every unit script. See [deployment.md](deployment.md) for running it.
+
+- The **server is authoritative** and runs all scripts, so opponents never receive your code and clients can't cheat by editing it.
+- Each tick the server encodes a binary delta (despawns, component removals, changed networked fields, transient events); entity ids and counts are varints, and positions travel as u16 at 1/64-tile precision (`wireShift` on the component). A joining client gets a full snapshot first.
+- **Rooms:** each room is its own `Match`, created on first use and closed a minute after it empties. A client picks one with `?room=name&map=map-id`; opening the page without a room shows the **lobby**, with open rooms and a new-game form offering five maps with terrain previews. The room list is served at `GET /api/v1/rooms`; WebSockets use `/api/v1/ws`. The maps are Crossroads (64×64), Small Basin (48×48), Broken Country (72×72), Twin Ridges (80×56) and Highlands (96×80). The **Resign and Quit** button at the bottom of the side panel (press twice, like demolish) leaves the match and returns to the lobby (up to 20 rooms). **Reconnecting:** each tab sends a per-tab token (`sessionStorage`); if the connection drops the client retries with backoff, and the server keeps the player's base for 60 seconds and, on reconnect, resends the welcome, a full snapshot, class programs and task queues. Players without a token are removed immediately. **Pausing:** a match only runs with at least two connected players and nobody missing; otherwise the server stops stepping the simulation (orders and base set-up still apply) and clients show a "Game paused" overlay listing the reasons (waiting for another player, or a named player disconnected). The reconnect grace period is measured in wall-clock time, so a paused game can't wait forever. The game clock only counts unpaused time, and the lobby shows it per room, along with each player's score and whether they are away or out, so it's clear which games are already well under way.
+- **Fog of war** (`game/vision.ts`, `Interest` in `net/codec.ts`): each client's delta is filtered to its own entities, resource fields and anything within its vision. Entities entering view are sent in full and entities leaving view are despawned on the client, so hidden positions, health and module switches never leave the server. With `FOG=off`, one shared buffer goes to everyone.
+- All client input is queued and applied at tick boundaries. With a seeded RNG, integer positions and deterministic iteration order, **seed + command log reproduces a match exactly**: the basis for replays (and verified by a test).
+
+## Background music
+
+The server lists tracks at `GET /api/v1/music` and streams them (with Range support) from `GET /api/v1/music/<file>`. Tracks and `music_manifest.json` live in `./music` in the project root, or `MUSIC_DIR`. See [deployment.md](deployment.md) for the manifest format and the Docker mount.

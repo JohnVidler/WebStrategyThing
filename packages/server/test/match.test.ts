@@ -38,6 +38,81 @@ describe('match', () => {
     expect(welcome.height).toBe(56);
   });
 
+  describe('co-op mode', () => {
+    it('runs with one human, gives each human a bot and holds two humans at most', () => {
+      const match = new Match({ mode: 'coop', mapId: 'small-basin' });
+      expect(match.capacity).toBe(2);
+      const a = new FakeSocket();
+      match.join(asSocket(a));
+      ticks(match, 3);
+      expect(match.pauseReasons).toHaveLength(0); // one human is enough
+      const id = a.messages.find((m) => m.t === 'welcome')!.playerId as number;
+      const roster = match.roster();
+      expect(roster.map((r) => r.name)).toContain('Bot 1');
+      const botId = id + 1;
+      expect(ownedBy(match, botId).length).toBeGreaterThan(0);
+      expect(match.sim.cheaters.has(botId)).toBe(true);
+      ticks(match, 600);
+      expect(ownedBy(match, botId).filter((e) => match.sim.motion.has(e)).length).toBeGreaterThanOrEqual(2); // building its small first wave
+
+      const b = new FakeSocket();
+      match.join(asSocket(b));
+      ticks(match, 3);
+      expect(match.roster()).toHaveLength(4);
+      const c = new FakeSocket();
+      match.join(asSocket(c));
+      expect(c.readyState).toBe(3); // full
+    });
+
+    it('does not end at once, and the humans win together when every bot is destroyed', () => {
+      const match = new Match({ mode: 'coop', mapId: 'small-basin' });
+      const a = new FakeSocket();
+      const b = new FakeSocket();
+      match.join(asSocket(a));
+      match.join(asSocket(b));
+      ticks(match, 60);
+      expect(a.messages.some((m) => m.t === 'matchOver')).toBe(false);
+      const ids = [a, b].map((s) => s.messages.find((m) => m.t === 'welcome')!.playerId as number);
+      expect(match.sim.allied(ids[0], ids[1])).toBe(true);
+      expect(match.sim.allied(ids[0], ids[0] + 1)).toBe(false);
+      for (const id of ids) for (const e of ownedBy(match, id + 1)) match.sim.destroyEntity(e);
+      ticks(match, 10);
+      const over = a.messages.find((m) => m.t === 'matchOver')!;
+      expect(over.winners).toEqual(ids);
+    });
+
+    it('single-player holds one human with one bot, and ends when the bot or the human falls', () => {
+      const match = new Match({ mode: 'solo', mapId: 'small-basin' });
+      expect(match.capacity).toBe(1);
+      const a = new FakeSocket();
+      match.join(asSocket(a));
+      ticks(match, 60);
+      expect(match.pauseReasons).toHaveLength(0);
+      expect(match.roster()).toHaveLength(2);
+      const b = new FakeSocket();
+      match.join(asSocket(b));
+      expect(b.readyState).toBe(3); // full
+      const id = a.messages.find((m) => m.t === 'welcome')!.playerId as number;
+      for (const e of ownedBy(match, id + 1)) match.sim.destroyEntity(e);
+      ticks(match, 10);
+      expect(a.messages.find((m) => m.t === 'matchOver')!.winners).toEqual([id]);
+    });
+
+    it('removes the bot along with its human', () => {
+      const match = new Match({ mode: 'coop' });
+      const a = new FakeSocket();
+      match.join(asSocket(a));
+      ticks(match, 3);
+      const id = a.messages.find((m) => m.t === 'welcome')!.playerId as number;
+      expect(ownedBy(match, id + 1).length).toBeGreaterThan(0);
+      match.leave(asSocket(a));
+      ticks(match, 3);
+      expect(ownedBy(match, id)).toHaveLength(0);
+      expect(ownedBy(match, id + 1)).toHaveLength(0);
+      expect(match.roster()).toHaveLength(0);
+    });
+  });
+
   it('lets a dropped player reconnect by token and resends their state', () => {
     const match = new Match();
     const first = new FakeSocket();

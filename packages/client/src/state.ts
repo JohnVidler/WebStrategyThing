@@ -6,6 +6,7 @@ import {
   daylight,
   GAME_COMPONENTS,
   gap,
+  Health,
   Modules,
   Position,
   powerLinks,
@@ -36,7 +37,26 @@ export interface PowerFlow {
  * power links and their flow direction) is recomputed locally with the same
  * engine code the server uses.
  */
+/** How long a radar pulse's ring takes to expand and vanish. */
+const RADAR_RING_TICKS = 12;
+
 export class ClientState {
+  /** Records a radar pulse report; blips from an earlier pulse at the same spot are replaced. */
+  addRadar(x: number, y: number, range: number, contacts: readonly number[][]): void {
+    const born = this.tick;
+    const key = (b: { x: number; y: number }) => `${b.x},${b.y}`;
+    const fresh = new Set(contacts.map((c) => `${c[0]},${c[1]}`));
+    this.radarBlips = this.radarBlips.filter((b) => !fresh.has(key(b)));
+    for (const [cx, cy, owner, structure, blueprint] of contacts) this.radarBlips.push({ x: cx, y: cy, owner, structure: structure === 1, blueprint, born });
+    this.radarRings.push({ x, y, range, born });
+  }
+
+  /** Drops contacts and rings that have fully faded. */
+  pruneRadar(fadeTicks: number): void {
+    this.radarBlips = this.radarBlips.filter((b) => this.tick - b.born < fadeTicks);
+    this.radarRings = this.radarRings.filter((r) => this.tick - r.born < RADAR_RING_TICKS);
+  }
+
   readonly world = new World(GAME_COMPONENTS);
   readonly blueprints = new BlueprintRegistry();
   terrain = new Terrain(1, 1);
@@ -59,6 +79,10 @@ export class ClientState {
   powerNodes: PowerNode[] = [];
   /** Bumped when buildings (footprints, links) change, so the renderer can redraw. */
   structureVersion = 0;
+  /** Radar contacts (sub-tile units) and the tick each was found; the renderer fades them out. */
+  radarBlips: { x: number; y: number; owner: number; structure: boolean; blueprint: number; born: number }[] = [];
+  /** The expanding ring of each recent pulse. */
+  radarRings: { x: number; y: number; range: number; born: number }[] = [];
   /** Own power networks (owner-only reports from the server). */
   networks: NetworkInfo[] = [];
   /** Whether the server filters by vision (fog of war). */
@@ -66,9 +90,13 @@ export class ClientState {
   /** Per tile: 2 = in view now, 1 = seen before, 0 = never seen. Updated by updateVision(). */
   vision = new Uint8Array(0);
   visionVersion = 0;
+  /** Tick of the last health loss seen on any visible unit or building (-Infinity: none yet). */
+  lastCombatTick = -Infinity;
+  private readonly lastHp = new Map<number, number>();
 
   private readonly unit = this.world.store(Unit);
   private readonly modules = this.world.store(Modules);
+  private readonly health = this.world.store(Health);
   private readonly construction = this.world.store(Construction);
   private readonly buttonCache = new Map<number, { source: string; buttons: readonly ProgramButton[] }>();
 
@@ -156,6 +184,7 @@ export class ClientState {
   /** Called on every (re)welcome: owner-only data is about to be resent. */
   resetSession(): void {
     this.tasks.clear();
+    this.lastHp.clear();
     this.programs.clear();
     this.setNetworks([]);
   }
@@ -166,7 +195,17 @@ export class ClientState {
 
   /** Call after applying a tick, before world.flush(): updates occupancy and links if buildings changed. */
   afterTick(): void {
-    for (const e of this.world.despawned) this.tasks.delete(e);
+    for (const e of this.world.despawned) {
+      this.tasks.delete(e);
+      this.lastHp.delete(e);
+    }
+    // Anything in view losing health means a fight is going on (repairs and growth are not).
+    for (const e of this.health.changed) {
+      const hp = this.health.f.hp[e];
+      const before = this.lastHp.get(e);
+      if (before !== undefined && hp < before) this.lastCombatTick = this.tick;
+      this.lastHp.set(e, hp);
+    }
     const changed =
       this.world.despawned.length > 0 ||
       this.construction.removed.length > 0 ||

@@ -16,6 +16,10 @@ export interface MapDefinition {
   readonly height: number;
   readonly layout: TerrainLayout;
   readonly description: string;
+  /** Multiplies the amount of rock (bigger maps need more to stay interesting). Default 1. */
+  readonly density?: number;
+  /** Extra resource fields strung along each corner's route to the centre. Default 0. */
+  readonly outposts?: number;
 }
 
 export const MAPS: readonly MapDefinition[] = [
@@ -24,7 +28,24 @@ export const MAPS: readonly MapDefinition[] = [
   { id: 'broken-country', name: 'Broken Country', width: 72, height: 72, layout: 'scattered', description: 'Small scattered outcrops' },
   { id: 'twin-ridges', name: 'Twin Ridges', width: 80, height: 56, layout: 'ridges', description: 'Long lanes between ridges' },
   { id: 'highlands', name: 'Highlands', width: 96, height: 80, layout: 'dense', description: 'Large, rocky battlefields' },
+  { id: 'great-plains', name: 'Great Plains', width: 128, height: 128, layout: 'open', density: 3, outposts: 2, description: 'Vast open ground, room to expand' },
+  { id: 'sprawl', name: 'Sprawl', width: 112, height: 112, layout: 'scattered', density: 2.5, outposts: 2, description: 'Wide country of small outcrops' },
+  { id: 'long-valley', name: 'Long Valley', width: 160, height: 80, layout: 'ridges', density: 2.5, outposts: 3, description: 'A very long battlefield between ridges' },
+  { id: 'bastion', name: 'Bastion', width: 128, height: 96, layout: 'citadel', density: 2, outposts: 2, description: 'A walled centre with four gates' },
+  { id: 'badlands', name: 'Badlands', width: 144, height: 112, layout: 'dense', density: 2.5, outposts: 3, description: 'Huge rocky maze with distant fields' },
 ];
+
+/**
+ * Game modes. Versus: a four-way free-for-all, one human per corner. Co-op: up to two
+ * humans on one team against a bot each (see bot.ts). Solo: co-op for one human.
+ */
+export type GameMode = 'versus' | 'coop' | 'solo';
+export const GAME_MODES: readonly { id: GameMode; name: string; description: string }[] = [
+  { id: 'versus', name: 'Free for all', description: 'Up to four players, every one against all the others' },
+  { id: 'solo', name: 'Single-player', description: 'One player against a bot that churns out waves of units (a private room)' },
+  { id: 'coop', name: 'Co-op vs bots', description: 'Up to two players on one team, against a bot each that churns out waves of units' },
+];
+export const parseGameMode = (id: string | null | undefined): GameMode => (id === 'coop' || id === 'solo' ? id : 'versus');
 
 export const DEFAULT_MAP_ID = MAPS[0].id;
 export const mapById = (id: string | undefined): MapDefinition => MAPS.find((map) => map.id === id) ?? MAPS[0];
@@ -43,7 +64,7 @@ export const CORNERS: readonly Corner[] = [
 ];
 
 /** Mirrors a top-left tile coordinate of something `size` tiles wide. */
-const flip = (on: boolean, v: number, size: number, extent: number) => (on ? extent - v - size : v);
+export const flip = (on: boolean, v: number, size: number, extent: number) => (on ? extent - v - size : v);
 
 function clearAreas(width: number, height: number): ClearArea[] {
   const areas: ClearArea[] = [];
@@ -59,7 +80,7 @@ function clearAreas(width: number, height: number): ClearArea[] {
 
 export function createMapTerrain(map: MapDefinition | string, seed = 0x5eed): ReturnType<typeof generateTerrain> {
   const selected = typeof map === 'string' ? mapById(map) : map;
-  return generateTerrain(selected.width, selected.height, new Rng(seed ^ 0x51ed), clearAreas(selected.width, selected.height), selected.layout);
+  return generateTerrain(selected.width, selected.height, new Rng(seed ^ 0x51ed), clearAreas(selected.width, selected.height), selected.layout, selected.density ?? 1);
 }
 
 /** Terrain, resource fields and neutral wanderers; players are added with setUpPlayer(). */
@@ -86,6 +107,7 @@ export function createMatch(seed: number, selection: MapDefinition | string | nu
     const y = centreY - 8 + sim.rng.int(16);
     sim.spawnUnit(wanderer, x * TILE + TILE / 2, y * TILE + TILE / 2);
   }
+  for (const c of CORNERS) placeOutposts(sim, c, selected.outposts ?? 0);
   return sim;
 }
 
@@ -96,6 +118,22 @@ function placeField(sim: Simulation, c: Corner): void {
     const y = flip(c.flipY, BASE_FIELD.y - 2 + sim.rng.int(5), 1, height);
     const cell = sim.terrain.nearestWalkable(x, y, 4);
     if (cell) sim.spawnResourcePatch(cell[0] * TILE + TILE / 2, cell[1] * TILE + TILE / 2, RESOURCE_PATCH_AMOUNT);
+  }
+}
+
+/** Resource fields spaced evenly along the line from a corner's own field to the map centre. */
+function placeOutposts(sim: Simulation, c: Corner, count: number): void {
+  const { width, height } = sim.config;
+  const fromX = flip(c.flipX, BASE_FIELD.x, 1, width);
+  const fromY = flip(c.flipY, BASE_FIELD.y, 1, height);
+  for (let i = 1; i <= count; i++) {
+    const f = i / (count + 1);
+    const x = fromX + (width / 2 - fromX) * f;
+    const y = fromY + (height / 2 - fromY) * f;
+    for (let k = 0; k < BASE_FIELD_PATCHES / 2; k++) {
+      const cell = sim.terrain.nearestWalkable(Math.round(x - 1 + sim.rng.int(3)), Math.round(y - 1 + sim.rng.int(3)), 6);
+      if (cell) sim.spawnResourcePatch(cell[0] * TILE + TILE / 2, cell[1] * TILE + TILE / 2, RESOURCE_PATCH_AMOUNT);
+    }
   }
 }
 

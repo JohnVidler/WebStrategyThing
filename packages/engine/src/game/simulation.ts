@@ -31,7 +31,7 @@ import {
 import { PARTS, SWITCHABLE, TILE } from './parts';
 import { findPath } from './path';
 import { gap, powerLinks, powerNetworks, type PowerNetwork, type PowerNode } from './power';
-import { BUILD_RANGE, BUILDING_BUILD_RANGE, BUILDING_TRANSFER_RANGE, DEMOLISH_REFUND, DOCK_RANGE, HARVEST_RANGE, MAX_PRODUCTION_QUEUE, MAX_SITES_PER_PLAYER, SITE_START_HP, UNIT_TRANSFER_RANGE } from './rules';
+import { BUILD_RANGE, BUILDING_BUILD_RANGE, BUILDING_TRANSFER_RANGE, DEMOLISH_REFUND, DOCK_RANGE, HARVEST_RANGE, MAX_PRODUCTION_QUEUE, MAX_SITES_PER_PLAYER, RADAR_COOLDOWN_TICKS, RADAR_ENERGY_PER_TILE, SITE_START_HP, UNIT_TRANSFER_RANGE } from './rules';
 import { SpatialGrid } from './spatial';
 import {
   buildSystem,
@@ -42,6 +42,7 @@ import {
   energyViewSystem,
   harvestSystem,
   movementSystem,
+  cheatSystem,
   powerSystem,
   productionSystem,
   resourceRegenerationSystem,
@@ -97,6 +98,26 @@ export interface PlayerTally {
  * the ordered list of commands applied between ticks, so it also supports
  * replays and lockstep-style verification.
  */
+/** One thing a radar pulse found (sub-tile units). */
+export interface RadarContact {
+  x: number;
+  y: number;
+  owner: number;
+  structure: boolean;
+  /** The contact's class, so clients can draw its real art. */
+  blueprint: number;
+}
+
+/** A radar pulse and everything not allied to its owner that it found. */
+export interface RadarPulse {
+  owner: number;
+  x: number;
+  y: number;
+  /** Sub-tile units. */
+  range: number;
+  contacts: RadarContact[];
+}
+
 export class Simulation {
   readonly world = new World(GAME_COMPONENTS, 1024);
   readonly blueprints = new BlueprintRegistry();
@@ -107,6 +128,10 @@ export class Simulation {
   tick = 0;
   /** Flat buffer for this tick: [type, a, b, type, a, b, ...]. */
   readonly events: number[] = [];
+  /** Radar pulses fired this tick; the server reports them to their owners, and commit() clears them. */
+  readonly radarPulses: RadarPulse[] = [];
+  /** Tick at which each radar-carrying unit (by handle) may pulse again. */
+  private readonly radarReady = new Map<number, number>();
 
   // Server-only per-entity side tables (never replicated).
   readonly vms: (VmState | undefined)[] = [];
@@ -132,6 +157,10 @@ export class Simulation {
   readonly lastHitBy: number[] = [];
   /** Building -> generation left over from last tick (in 1/100 of 1/GENERATION_SCALE energy). */
   readonly genCarry: number[] = [];
+  /** Team per owner (co-op mode: the humans share one, the bots another). Owners without a team are only allied to themselves. */
+  readonly teams = new Map<number, number>();
+  /** Owners kept at full energy with full silos (co-op mode bots). */
+  readonly cheaters = new Set<number>();
   /** Entity -> tick until which its CPU is stunned. */
   readonly stunUntil: number[] = [];
   /** Entity -> consecutive ticks spent without energy (units decay after DECAY_TICKS). */
@@ -561,6 +590,13 @@ export class Simulation {
     return Math.max(0, Math.sqrt(this.distSq(a, b)) - half);
   }
 
+  /** Same owner, or on the same team: allies never count as enemies. */
+  allied(a: number, b: number): boolean {
+    if (a === b) return true;
+    const team = this.teams.get(a);
+    return team !== undefined && team === this.teams.get(b);
+  }
+
   /** Takes `amount` energy if available. */
   spend(e: number, amount: number): boolean {
     if (amount <= 0) return true;
@@ -730,7 +766,7 @@ export class Simulation {
       if (this.resource.has(target)) {
         if (s.caps & Caps.Harvest) type = TaskType.Harvest;
       } else if (this.unit.has(target)) {
-        const theirs = this.unit.f.owner[target] !== owner;
+        const theirs = !this.allied(this.unit.f.owner[target], owner);
         const targetCaps = this.stats(target).caps;
         if (theirs && s.caps & Caps.Fight) type = TaskType.Attack;
         else if (theirs) type = TaskType.Move;
@@ -772,7 +808,7 @@ export class Simulation {
     let goal = -1;
     if (task === TaskType.Attack) {
       // An enemy, or nothing: attack-move to the point.
-      if (valid && this.unit.has(target) && this.unit.f.owner[target] !== owner) goal = target;
+      if (valid && this.unit.has(target) && !this.allied(this.unit.f.owner[target], owner)) goal = target;
     } else if (task === TaskType.Harvest) {
       goal = valid && this.resource.has(target) ? target : this.nearestResource(x, y);
       if (goal < 0) throw new CommandError('No resources left');
@@ -1068,6 +1104,7 @@ export class Simulation {
   /** Advance one tick. Read world changes / events afterwards, then call commit(). */
   step(): void {
     this.spatial.rebuild(this.pos.f.x, this.pos.f.y, this.pos.dense, this.world.capacity);
+    cheatSystem(this);
     powerSystem(this);
     scriptSystem(this);
     movementSystem(this);
@@ -1088,6 +1125,36 @@ export class Simulation {
   commit(): void {
     this.world.flush();
     this.events.length = 0;
+    this.radarPulses.length = 0;
+  }
+
+  /** Ticks until `e`'s radar can pulse again (0 when ready). */
+  radarCooldown(e: number): number {
+    return Math.max(0, (this.radarReady.get(this.world.handle(e)) ?? 0) - this.tick);
+  }
+
+  /**
+   * Fires a one-off radar pulse spending `energy` (capped by the module). Range is
+   * RADAR_ENERGY_PER_TILE energy per tile. Returns the number of contacts, or -1 if
+   * there is no working radar, it is still resting, or the unit cannot pay.
+   */
+  radarPulse(e: number, energy: number): number {
+    const max = this.stats(e).radarMaxEnergy;
+    if (max <= 0 || this.radarCooldown(e) > 0) return -1;
+    const spend = Math.min(max, Math.floor(energy));
+    if (spend < RADAR_ENERGY_PER_TILE || !this.spend(e, spend)) return -1;
+    this.radarReady.set(this.world.handle(e), this.tick + RADAR_COOLDOWN_TICKS);
+    const owner = this.unit.f.owner[e];
+    const x = this.pos.f.x[e];
+    const y = this.pos.f.y[e];
+    const range = Math.floor(spend / RADAR_ENERGY_PER_TILE) * TILE;
+    const contacts: RadarContact[] = [];
+    this.spatial.forEachInRadius(x, y, range, (o) => {
+      if (o === e || !this.unit.has(o) || this.isSite(o) || this.allied(this.unit.f.owner[o], owner)) return;
+      contacts.push({ x: Math.round(this.pos.f.x[o]), y: Math.round(this.pos.f.y[o]), owner: this.unit.f.owner[o], structure: this.stats(o).structure, blueprint: this.unit.f.blueprint[o] });
+    });
+    this.radarPulses.push({ owner, x: Math.round(x), y: Math.round(y), range, contacts });
+    return contacts.length;
   }
 
   tileX(x: number): number {

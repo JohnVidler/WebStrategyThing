@@ -67,6 +67,7 @@ export class Ui {
   private credits = 0;
   /** Rebuild buttons/toggles only when these change, so clicks aren't lost to DOM churn. */
   private productionKey = '';
+  private productionCosts: { btn: HTMLButtonElement; cost: number }[] = [];
   private modulesKey = '';
 
   constructor(
@@ -134,10 +135,10 @@ export class Ui {
   }
 
   /** Final standings, shown over the map when the match has a winner; the game keeps running underneath. */
-  showStandings(winner: number, standings: readonly ScoreEntry[], reason: MatchEndReason): void {
-    const name = standings.find((p) => p.id === winner)?.name;
-    const won = winner === this.state.myId;
-    const headline = won ? 'Victory!' : name ? `${esc(name)} wins` : 'Match over';
+  showStandings(winner: number, standings: readonly ScoreEntry[], reason: MatchEndReason, winners: readonly number[] = [winner]): void {
+    const name = standings.filter((p) => winners.includes(p.id)).map((p) => p.name).join(' & ');
+    const won = winners.includes(this.state.myId);
+    const headline = won ? 'Victory!' : name ? `${esc(name)} win${winners.length > 1 ? '' : 's'}` : 'Match over';
     const why = {
       eliminated: 'All opposing forces have been destroyed.',
       'last-player': 'Every other player has left.',
@@ -185,7 +186,7 @@ export class Ui {
 
   setCredits(amount: number): void {
     this.credits = amount;
-    this.productionKey = ''; // affordability changed
+    this.updateAffordability();
   }
 
   /**
@@ -482,18 +483,35 @@ export class Ui {
       : 'Idle — choose a class to build';
 
     const buildable = blueprints.ownedBy(this.state.myId).filter((bp) => !bp.stats.structure && !bp.retired);
-    const key = `${b}|${this.credits}|${buildable.map((bp) => bp.id).join(',')}`;
-    if (key === this.productionKey) return;
-    this.productionKey = key;
-    this.productionButtons.innerHTML = '';
-    for (const bp of buildable) {
-      const btn = document.createElement('button');
-      btn.textContent = `${bp.name} ◆${bp.stats.cost}`;
-      btn.title = `${(bp.stats.buildTime / 10).toFixed(1)}s`;
-      btn.disabled = bp.stats.cost > this.credits;
-      btn.onclick = () => this.actions.produce(b, bp.id);
-      this.productionButtons.appendChild(btn);
+    // The buttons are only rebuilt when the building or the class list changes: rebuilding them as
+    // the matter total moves would swallow clicks (the element is replaced between press and release).
+    const key = `${b}|${buildable.map((bp) => bp.id).join(',')}`;
+    if (key !== this.productionKey) {
+      this.productionKey = key;
+      this.productionButtons.innerHTML = '';
+      this.productionCosts = [];
+      for (const bp of buildable) {
+        const btn = document.createElement('button');
+        btn.className = 'action';
+        btn.title = `${bp.name}: ◆${bp.stats.cost}, ${(bp.stats.buildTime / 10).toFixed(1)}s. Click to queue one.`;
+        const img = document.createElement('img');
+        img.alt = '';
+        this.actions.iconFor(bp.id).then((src) => (img.src = src)).catch(() => img.remove());
+        const label = document.createElement('span');
+        label.className = 'label';
+        label.innerHTML = `${esc(bp.name)}<br>◆${bp.stats.cost}`;
+        btn.append(img, label);
+        btn.onclick = () => this.actions.produce(b, bp.id);
+        this.productionButtons.appendChild(btn);
+        this.productionCosts.push({ btn, cost: bp.stats.cost });
+      }
     }
+    this.updateAffordability();
+  }
+
+  /** Greys out production buttons the player can't pay for, in place. */
+  private updateAffordability(): void {
+    for (const { btn, cost } of this.productionCosts) btn.disabled = cost > this.credits;
   }
 
   updateClasses(): void {

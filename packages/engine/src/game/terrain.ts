@@ -118,12 +118,14 @@ export interface ClearArea {
   readonly r: number;
 }
 
-export type TerrainLayout = 'standard' | 'open' | 'scattered' | 'ridges' | 'dense';
+/** `citadel` walls off the centre of the map behind a ring with a gate on each side. */
+export type TerrainLayout = 'standard' | 'open' | 'scattered' | 'ridges' | 'dense' | 'citadel';
 
 /**
  * Generates rock outcrops in one quadrant and mirrors them on both axes, so
  * every corner start is equally fair. `clear` areas (bases, fields) are kept
- * open and connected to the map centre.
+ * open and connected to the map centre. `density` multiplies the number of
+ * outcrops, so bigger maps can be as cluttered as small ones.
  */
 export function generateTerrain(
   width: number,
@@ -131,6 +133,7 @@ export function generateTerrain(
   rng: Rng,
   clear: readonly ClearArea[],
   layout: TerrainLayout = 'standard',
+  density = 1,
 ): Terrain {
   const t = new Terrain(width, height);
   const qw = Math.ceil(width / 2);
@@ -149,8 +152,10 @@ export function generateTerrain(
           ? 20 + rng.int(7)
           : layout === 'ridges'
             ? 8 + rng.int(3)
-            : 15 + rng.int(5);
-  for (let n = 0; n < outcrops; n++) {
+            : layout === 'citadel'
+              ? 12 + rng.int(5)
+              : 15 + rng.int(5);
+  for (let n = 0; n < Math.round(outcrops * density); n++) {
     const cx = rng.int(qw);
     const cy = rng.int(qh);
     let rx = 1;
@@ -164,6 +169,9 @@ export function generateTerrain(
     } else if (layout === 'scattered') {
       rx += rng.int(2);
       ry += rng.int(2);
+    } else if (layout === 'citadel') {
+      rx += rng.int(3);
+      ry += rng.int(3);
     } else if (layout === 'ridges') {
       rx += rng.int(2);
       ry += 3 + rng.int(5);
@@ -176,6 +184,18 @@ export function generateTerrain(
       for (let x = cx - rx; x <= cx + rx; x++) {
         if (x < 0 || y < 0 || x >= qw || y >= qh) continue;
         if (((x - cx) * ry) ** 2 + ((y - cy) * rx) ** 2 <= (rx * ry) ** 2) block(x, y);
+      }
+    }
+  }
+
+  if (layout === 'citadel') {
+    // Ring of rock around the centre, in quadrant coordinates (the centre is the quadrant's far corner).
+    const radius = Math.floor(Math.min(width, height) * 0.2);
+    for (let y = 0; y < qh; y++) {
+      for (let x = 0; x < qw; x++) {
+        const d = Math.hypot(x - (qw - 0.5), y - (qh - 0.5));
+        const gate = Math.abs(x - (qw - 0.5)) < 3 || Math.abs(y - (qh - 0.5)) < 3;
+        if (d >= radius && d < radius + 2.5 && !gate) block(x, y);
       }
     }
   }

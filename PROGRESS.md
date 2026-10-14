@@ -4,6 +4,94 @@ Changes to the codebase, grouped by day (newest first).
 
 ## 2026-10-14
 
+### Radar contacts drawn as the real unit art
+- Report: radar seemed to show only enemies already in view. Checked the whole path: `Simulation.radarPulse` returns every non-allied unit in range regardless of fog (engine test with a contact 30 tiles away), and a new server test (`server/test/radar.test.ts`) confirms a Radar Tower in a fogged co-op match sends a `radar` message whose contacts include units the player cannot see. I could not find a fault in the client path by reading it, and could not run a browser here, so the cause is not confirmed.
+- Made contacts unmistakable: each contact now carries its class (`RadarContact.blueprint`, 5th element of the wire entry) and the client draws a faded copy of that class's real art (pooled sprites in `radarLayer`, above the fog) with the blip marker still on top. Typecheck and the full suite pass.
+
+### Radar Tower default class
+- New starter class **Radar Tower** (`content.ts`: small frame, basic CPU, radar module, battery bank). Its script looks for a switched-on `M_RADAR` module and, when the radar has rested and the tower holds over half its energy, calls `radarPulse(500)` (a 20-tile ping) every few seconds; with the module off it does nothing. Joins `STARTER_CLASSES`, so it appears in the build bar and the docs; saved designs see it as a new default. Test added to `engine/test/radar.test.ts`; full suite passes.
+
+### Radar module (pulse scan)
+- New part `radar.pulse` (slot `radar`, tuning `radarMaxEnergy` 800) and script builtins `radarPulse(energy)` / `radarCooldown()`, constant `HAS_RADAR`, module kind `M_RADAR`. Range is `RADAR_ENERGY_PER_TILE` (25) energy per tile, cooldown `RADAR_COOLDOWN_TICKS` (100), blips fade over `RADAR_FADE_TICKS` (300) — all in `rules.ts`.
+- Engine: `Simulation.radarPulse/radarCooldown/radarPulses` (cleared in `commit`). Server: `radar` message to the owner and allies. Client: `ClientState.addRadar`, blips and an expanding ring drawn in `Renderer.drawRadar` above the fog. Designer lists it under Sensors & weapons.
+- Tests in `engine/test/radar.test.ts`; typecheck and the full suite pass. Not yet seen in a browser; no default class carries a radar yet.
+
+### Charging pads deliver 2x
+- New tunable `CHARGE_PAD_RATE_MULTIPLIER` (2) in `rules.ts`; `chargingSystem` gives each unit up to `chargeRate × multiplier` per tick, capped by the unit's free capacity and by what the pad's own store holds (so a pad on a weak grid or small battery is limited by supply, and a pad holding less than a full step now hands over what it has instead of nothing). The part description shows the effective rate.
+- Fixed the server co-op test, which still expected the old endless bot production (now at least the 2-unit first wave).
+
+### Browser Back button steps up a menu level
+- The lobby now keeps browser history (`lobby.ts`): opening Single-player, Multiplayer or Credits, the API reference overlay, or the Designer each pushes a history entry, and Back pops it instead of leaving the page. The on-screen "← Main menu" button and the docs/designer close buttons (and Esc) use the same history step, so the stack stays consistent. `Designer.onClose` / `LocalDesigns.close()` let the lobby notice the designer closing itself. Typecheck passes; not checked in a browser.
+
+### README split into docs pages
+- `README.md` is now a short overview (stack, layout, next steps, quick start) linking to `docs/client.md` (playing, designer, saved designs), `docs/game.md` (engine design decisions, co-op bots, language reference), `docs/server.md` (authority, rooms, fog, reconnect, music streaming) and `docs/deployment.md` (local running, Docker, CI images, music folder). Content moved, not rewritten, apart from a new co-op bots section in `game.md`.
+
+### Bots build waves on demand instead of endlessly
+- Bots no longer keep assemblers queued up to a unit cap. `BotPlayer.produce` builds only what the upcoming wave needs (staged + queued units count) and then stops; the next wave grows by `BOT_WAVE_GROWTH` and leaves no sooner than `BOT_WAVE_INTERVAL_TICKS` after the last. Tuned in `rules.ts`: first wave 2 units (was 4), +1 per wave (was +2), 2400 ticks between waves (was 1200), `BOT_MAX_UNITS` 24 (was 40). Test updated in `engine/test/bot.test.ts`.
+
+### Music start made deterministic
+- `MusicPlayer` no longer calls `play()` before the page has user activation (`navigator.userActivation` or its own capture-phase gesture listener) and does not rely on how a browser reports a refused `play()` (Chrome rejects, Firefox leaves it pending). The first click or key press starts the newest track; the widget shows the "click anywhere" hint until something is actually playing, and a real failure is logged as "Music could not start". Checked that the server serves the files correctly (200 and 206 with Range). The browser side is not yet confirmed.
+
+### Idle music silent until the first fight
+- The idle track was refused at autoplay and its retry only listened for window input events, which the map canvas can swallow; combat music then played because the page had sticky user activation by then. `MusicPlayer.nudge()` (called from `setContext`, at most once a second) now retries a paused newest track, so it starts as soon as the browser allows it.
+
+### Music silent until a click
+- Likely cause of "no music on the menu": the browser blocks autoplay until the page gets a click or key press, and the retry listeners were removed after the first gesture even if play still failed. Now the retry stays armed (capture phase, several event types) until playback really starts, the widget shows "click anywhere to start the music" meanwhile, and the track list fetch retries a few times if the server is slow. Failures are logged to the console.
+
+### Credits screen
+- New **Credits** button on the main menu lists every track from the server's music manifest (name, composer, site link, licence link), fetched from `/api/v1/music`. Only http(s) links are made clickable. Not yet checked in a browser.
+
+### Music cross-fades
+- `MusicPlayer` keeps one audio element per track: a context change, or a track reaching its last 1.5 s, starts the next random fitting track fading in while the old one fades out (previously fade-out, then start). Not yet checked in a browser.
+
+### Music widget moved into the side panel
+- In a match the music widget sits at the bottom of the left panel, directly above the designs bar (`MusicPlayer` `dock` option, `.music.docked`); in the menu it still floats bottom-right.
+
+### Background music
+- Server (`server/src/music.ts`): `GET /api/v1/music` lists the tracks in `music_manifest.json` (only files that exist, with known tags); `GET /api/v1/music/<file>` streams a manifest file with Range support. Folder is `MUSIC_DIR` (default `<project>/music`); Compose mounts `${MUSIC_PATH:-./music}` read-only at `/app/music`.
+- Client (`client/src/music.ts`, `MusicPlayer`): `menu` tracks in the lobby, `idle` in a match, `combat` while any visible unit or building has lost health in the last 15 s (`ClientState.lastCombatTick`, set in `afterTick`). A track that fits the new context keeps playing; otherwise it fades out and a random fitting one starts. Track end picks another at random (no immediate repeat). Mute, volume (saved in localStorage) and a credit line linking to the composer's site sit bottom-right. Autoplay blocked by the browser is retried on the first click or key press.
+- Tests: `server/test/music.test.ts`. Not yet checked in a browser.
+
+### Compact map picker
+- The map choice is now a five-row list (name and size) with a single preview and description for the selected map beside it, instead of ten preview cards. Previews are generated only when a map is selected. Not yet checked in a browser.
+
+### Merged multiplayer browser
+- Multiplayer and Co-op are one "Multiplayer" screen split in two: every open game (free-for-all and co-op, each tagged with its type) on the left, and on the right a create-room panel with a game-type choice (free-for-all or co-op), room name and a two-column map picker. Single-player keeps its own map screen. The Co-op menu button is gone; joining a game uses that room's own type.
+- Stacks to one column on narrow screens. Not yet checked in a browser.
+
+### Menu buttons dead after closing the designer
+- The offline designer's full-page host element stayed on top of the menu after the designer was hidden and caught every click. It now ignores pointer events itself; only the designer inside it takes them (`#lobby-designer` in `style.css`).
+
+### Main menu, offline designer and single-player
+- The lobby is now a main menu: Single-player, Co-op, Multiplayer, Designer and API reference, with the player's name on top and "What's new" below. Each of the three game sections has a back button, a short description, its own room list (Multiplayer = free-for-all rooms, Co-op = co-op rooms) and a create form with the map picker; Single-player is just the map picker and Start.
+- New game mode `solo` (`GameMode`): one human, one bot, same team and victory rules as co-op; capacity 1, a private room that never appears in the room list.
+- API reference opens in an overlay over the menu (Esc closes; link to open in a new tab).
+- Designer from the menu: new `client/src/localdesigns.ts` loads the designs saved in this browser (or the defaults) into a local class registry, compiles and checks programs with the engine's own compiler, and saves every change back to the same storage key, so the next match restores them. Class art previews use an off-screen Pixi renderer; the drawing code moved to `artstudio.ts` (`renderClassImage`) and `Renderer.previewImage` uses it. `snapshotDesigns`, `readStorage` and `writeStorage` are now exported from `designs.ts`.
+- Tests: solo room case added (97 pass). The menu, overlay and offline designer are not yet checked in a browser.
+
+### Factory buttons: responsive and square
+- Cause of the missed clicks: the unit-creation buttons were rebuilt whenever the matter total changed (it was part of the rebuild key), so the element under the cursor was often replaced between press and release. They are now built once per building and class list, and only their greyed-out state is updated in place (`updateAffordability`).
+- They now use the square action-button style in a 4-column grid, with the class's sprite, name and cost; tooltip gives cost and build time.
+- Client typecheck, tests and build pass. Not yet checked in a browser.
+
+### Harvesters no longer stall
+- New script builtins: `nearestStorage()` (nearest own finished silo building, even if full) and `randomResource(k, min)` (a random one of the k nearest resources holding at least min matter, known map-wide).
+- Starter Harvester: a field that drops to 4 or less is swapped for a random nearby one (`randomResource(4, 10)`) instead of ending the task; a full harvester waits when every silo is full; with no tasks left it docks at the nearest storage building (when carrying cargo or more than 2 tiles away) for new orders, otherwise picks a field itself.
+- HQ and Resource Silo scripts now send each visiting harvester to a random one of the 4 nearest fields (no longer back to its last field), so one field isn't farmed out. The docs example matches.
+- Tests: silo spread and the idle and spent-field cases (96 pass). A 12,000-tick single-player run kept both harvesters busy throughout, waiting only while silos were full. Players with edited copies of these default classes will be offered the new versions (the default fingerprint changed).
+
+### Five larger maps
+- Added Great Plains (128×128, open), Sprawl (112×112, scattered), Long Valley (160×80, ridges), Bastion (128×96, a rock ring around the centre with four gates; new `citadel` layout) and Badlands (144×112, dense). `MapDefinition` gained `density` (scales the amount of rock) and `outposts` (extra resource fields, three patches each, strung along each corner's route to the centre). Existing maps are unchanged.
+- The lobby map picker is a fixed 5-column grid (two rows of five; two columns on narrow screens). Existing map tests cover the new maps (deterministic, clear starts); 95 pass.
+
+### Co-op mode: bot opponents (humans on one team vs bots)
+- New game mode `coop` (`GameMode`, `GAME_MODES`, `parseGameMode` in `game/map.ts`), chosen in the lobby's create form and carried in the URL and socket as `mode`. Rooms report their `mode`; the room list tags practice rooms.
+- Co-op rooms hold at most two humans, in corners 0 and 2; each human gets a bot in the next corner (1 and 3). One human is enough for the game to run. A human leaving (or their reconnect grace expiring) removes their bot too. Bots are scored and listed like players and can win or lose the match.
+- New `game/bot.ts`: a Bot Core (silos), three Assemblers (factories that produce non-stop) and two laser turrets, plus bot classes Grunt, Wasp, Lancer and Bulwark that unlock wave by wave. `BotPlayer` keeps assembler queues topped up (cap `BOT_MAX_UNITS`), holds the first wave until `BOT_FIRST_WAVE_TICKS`, then sends all staged fighters in attack-move at the human's nearest building to the bot's base. Later waves need more staged units; idle attackers keep pressing the next target.
+- Cheating: `Simulation.cheaters` and `cheatSystem` refill every energy store and silo of a bot owner each tick, so bots never mine or run flat. Tunables (`BOT_*`) are in `rules.ts`.
+- Teams: `Simulation.teams`/`allied()`. In co-op the humans are allied (no friendly targeting by scans or orders, shared vision) as are the bots. The match ends only when every bot (humans win together) or every human (bots win) is eliminated; `matchOver` now carries `winners`. The no-power rule is off in co-op (it ended a co-op match instantly because bots start with no mobile units). The standard mode is renamed Free for all in the lobby (id still `versus`).
+- Tests: `engine/test/bot.test.ts` (base, churn, waves) and co-op cases in `server/test/match.test.ts`; 94 pass. Not yet play-tested; wave timing and strength are first guesses.
+
 ### Lobby release notes
 - New `client/src/changelog.ts` holds short player-facing notes per update (newest first). The lobby shows them as a "What’s new" section under the room list: latest update open, older ones folded. Add a block there when a change matters to players.
 

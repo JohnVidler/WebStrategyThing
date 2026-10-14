@@ -5,6 +5,10 @@ import {
   CORNERS,
   createMatch,
   mapById,
+  parseGameMode,
+  setUpBot,
+  type BotPlayer,
+  type GameMode,
   encodeTick,
   Interest,
   MAX_CLASSES_PER_PLAYER,
@@ -29,13 +33,23 @@ const RECONNECT_GRACE_MS = 60_000;
 /** How often (ticks) power network totals are reported to their owners. */
 const NETWORK_REPORT_TICKS = 5;
 
-interface Player {
+/** Anything that owns forces and is scored: a connected player or a bot. */
+interface Side {
   readonly id: number;
   name: string;
+  /** Has owned at least one unit or building (so a side still being set up isn't eliminated). */
+  hadForces: boolean;
+}
+
+/** A co-op mode bot, paired with the human it trains. */
+interface BotSide extends Side {
+  readonly corner: number;
+  controller?: BotPlayer;
+}
+
+interface Player extends Side {
   /** Lets a dropped connection pick its player back up (see Match.join). */
   token?: string;
-  /** Has owned at least one unit or building (so a player still being set up isn't eliminated). */
-  hadForces: boolean;
   socket: WebSocket;
   lastCredits: string;
   /** What this client currently holds of the world (fog of war). */
@@ -48,6 +62,8 @@ export interface MatchOptions {
   readonly fog?: boolean;
   /** The selected room map; defaults to Crossroads. */
   readonly mapId?: string;
+  /** Default 'versus'. */
+  readonly mode?: GameMode;
 }
 
 /**
@@ -86,8 +102,12 @@ export class Match {
   private readonly fielded = new Set<number>();
   private timer: NodeJS.Timeout | undefined;
   private readonly fog: boolean;
+  readonly mode: GameMode;
+  /** Co-op mode: each human's bot, by human player id. */
+  private readonly bots = new Map<number, BotSide>();
 
   constructor(options: MatchOptions = {}) {
+    this.mode = parseGameMode(options.mode);
     this.map = mapById(options.mapId);
     this.sim = createMatch(0x5eed, this.map);
     this.fog = options.fog ?? true;
@@ -97,9 +117,20 @@ export class Match {
     return this.players.size;
   }
 
-  /** Most players a match holds (one per map corner). */
+  /** Most human players a match holds: one per map corner, or two in co-op mode (the other corners hold bots). */
   get capacity(): number {
-    return this.corners.length;
+    return this.mode === 'solo' ? 1 : this.mode === 'coop' ? 2 : this.corners.length;
+  }
+
+  /** Solo and co-op rooms give every human a bot of their own and a team with the other humans. */
+  private get botted(): boolean {
+    return this.mode !== 'versus';
+  }
+
+  /** Co-op: humans take every other corner, with their bot in the one after. */
+  private freeCorner(): number {
+    if (this.mode === 'versus') return this.corners.indexOf(0);
+    return (this.mode === 'solo' ? [0] : [0, 2]).find((c) => this.corners[c] === 0) ?? -1;
   }
 
   get isOver(): boolean {
@@ -135,7 +166,7 @@ export class Match {
       this.rejoin(socket, back.player);
       return;
     }
-    const corner = this.corners.indexOf(0);
+    const corner = this.freeCorner();
     if (corner < 0) {
       socket.close(1013, 'Match full');
       return;
@@ -153,6 +184,13 @@ export class Match {
     // A token already held by a connected player (a second tab) can't be used to reconnect.
     if (token && ![...this.players.values()].some((p) => p.token === token)) player.token = token;
     this.corners[corner] = player.id;
+    if (this.botted) {
+      const bot: BotSide = { id: this.nextPlayerId++, name: corner === 0 ? 'Bot 1' : 'Bot 2', hadForces: false, corner: corner + 1 };
+      this.corners[bot.corner] = bot.id;
+      this.bots.set(player.id, bot);
+      this.sim.teams.set(player.id, 1);
+      this.sim.teams.set(bot.id, 2);
+    }
     this.players.set(socket, player);
     this.sendWelcome(player);
     this.pending.push({ kind: 'join', player });
@@ -243,7 +281,10 @@ export class Match {
     const reasons = this.pauseReasons;
     const paused = reasons.length > 0;
     this.reportPause(reasons);
-    if (!paused) this.sim.step();
+    if (!paused) {
+      for (const bot of this.bots.values()) bot.controller?.step();
+      this.sim.step();
+    }
     // Without fog: one encode, broadcast to everyone. With fog: one per client, filtered to what it sees.
     const shared = this.fog ? undefined : encodeTick(this.sim.world, this.sim.tick, this.sim.events, false);
     const tasks = this.collectTaskUpdates();
@@ -263,6 +304,16 @@ export class Match {
         p.lastCredits = `${amount}/${capacity}`;
         this.send(p, { t: 'credits', amount, capacity });
       }
+      for (const pulse of this.sim.radarPulses) {
+        if (!this.sim.allied(p.id, pulse.owner)) continue;
+        this.send(p, {
+          t: 'radar',
+          x: pulse.x,
+          y: pulse.y,
+          range: pulse.range,
+          contacts: pulse.contacts.map((c) => [c.x, c.y, c.owner, c.structure ? 1 : 0, c.blueprint]),
+        });
+      }
       const updates = tasks.get(p.id);
       if (updates) this.send(p, { t: 'tasks', updates });
       if (this.sim.tick % NETWORK_REPORT_TICKS === 0) this.reportNetworks(p);
@@ -276,7 +327,8 @@ export class Match {
   /** Why the game is stopped, if it is: it needs two connected players and nobody missing. */
   get pauseReasons(): string[] {
     const reasons = [...this.away.values()].map(({ player }) => `${player.name} disconnected — waiting for them to come back`);
-    if (this.players.size < 2) reasons.push('Waiting for another player — a match needs at least two');
+    const needed = this.botted ? 1 : 2;
+    if (this.players.size < needed) reasons.push(needed === 1 ? 'Waiting for a player' : 'Waiting for another player — a match needs at least two');
     return reasons;
   }
 
@@ -300,7 +352,7 @@ export class Match {
   roster(): { name: string; score: number; connected: boolean; eliminated: boolean }[] {
     const owning = new Set<number>();
     for (const e of this.sim.unit.dense) if (!this.sim.isSite(e)) owning.add(this.sim.unit.f.owner[e]);
-    const entry = (p: Player, connected: boolean) => ({
+    const entry = (p: Side, connected: boolean) => ({
       name: p.name,
       score: this.sim.score(p.id),
       connected,
@@ -308,6 +360,7 @@ export class Match {
     });
     return [
       ...[...this.players.values()].map((p) => entry(p, true)),
+      ...[...this.bots.values()].map((b) => entry(b, true)),
       ...[...this.away.values()].map(({ player }) => entry(player, false)),
     ];
   }
@@ -335,20 +388,21 @@ export class Match {
       owning.add(owner);
       if (this.sim.motion.has(e) && this.sim.energy.f.amount[e] >= 1) powered.add(owner);
     }
-    const everyone = [...this.players.values(), ...[...this.away.values()].map((a) => a.player)];
+    const bots = [...this.bots.values()];
+    const everyone: Side[] = [...this.players.values(), ...[...this.away.values()].map((a) => a.player), ...bots];
     for (const p of everyone) {
       if (!owning.has(p.id)) continue;
       p.hadForces = true;
       this.fielded.add(p.id);
     }
-    const entry = (p: Player): ScoreEntry => ({
+    const entry = (p: Side): ScoreEntry => ({
       id: p.id,
       name: p.name,
       eliminated: p.hadForces && !owning.has(p.id),
       score: this.sim.score(p.id),
       ...this.sim.tally(p.id),
     });
-    const players = [...this.players.values()].map(entry);
+    const players = [...this.players.values(), ...bots].map(entry);
     const text = JSON.stringify({ t: 'scoreboard', players } satisfies ServerMessage);
     if (text !== this.lastScoreboard) {
       this.lastScoreboard = text;
@@ -358,8 +412,12 @@ export class Match {
   }
 
   /** A match needs two sides to have fielded forces and some game time to have passed before anyone can win. */
-  private checkVictory(sides: { p: Player; e: ScoreEntry }[], powered: ReadonlySet<number>): void {
+  private checkVictory(sides: { p: Side; e: ScoreEntry }[], powered: ReadonlySet<number>): void {
     if (this.over || this.fielded.size < 2 || this.sim.tick === 0) return;
+    if (this.botted) {
+      this.checkTeamVictory(sides);
+      return;
+    }
     const standing = sides.filter((s) => !s.e.eliminated);
     let winner: number | undefined;
     let reason: MatchEndReason = 'eliminated';
@@ -379,6 +437,25 @@ export class Match {
     this.over = true;
     const standings = sides.map((s) => s.e).sort((a, b) => Number(a.eliminated) - Number(b.eliminated) || b.score - a.score);
     this.broadcast({ t: 'matchOver', winner, reason, standings });
+  }
+
+  /**
+   * Co-op mode is humans against bots: the humans win together once every bot is
+   * destroyed, and the bots win once every human is. (Bots cheat on energy, so the
+   * no-power rule doesn't apply.)
+   */
+  private checkTeamVictory(sides: { p: Side; e: ScoreEntry }[]): void {
+    const botIds = new Set([...this.bots.values()].map((b) => b.id));
+    const bots = sides.filter((s) => botIds.has(s.p.id));
+    const humans = sides.filter((s) => !botIds.has(s.p.id));
+    if (!bots.length || !humans.length) return;
+    let winners: number[];
+    if (bots.every((s) => s.p.hadForces && s.e.eliminated)) winners = humans.map((s) => s.e.id);
+    else if (humans.every((s) => s.p.hadForces && s.e.eliminated)) winners = bots.map((s) => s.e.id);
+    else return;
+    this.over = true;
+    const standings = sides.map((s) => s.e).sort((a, b) => Number(a.eliminated) - Number(b.eliminated) || b.score - a.score);
+    this.broadcast({ t: 'matchOver', winner: winners[0], winners, reason: 'eliminated', standings });
   }
 
   /** Owner-only power network totals, sent when they change. */
@@ -402,7 +479,9 @@ export class Match {
   }
 
   private visibleTo(player: Player): Set<number> {
-    return visibleTo(this.sim.world, player.id, (e) => this.sim.stats(e));
+    // Co-op-mode humans are one team: they see what each other sees.
+    const team = this.botted ? new Set([...this.players.values(), ...[...this.away.values()].map((a) => a.player)].map((p) => p.id)) : undefined;
+    return visibleTo(this.sim.world, team?.has(player.id) ? team : player.id, (e) => this.sim.stats(e));
   }
 
   /** Full queues of units whose tasks changed, grouped by owner (only the owner sees them). */
@@ -428,14 +507,32 @@ export class Match {
         const corner = this.corners.indexOf(player.id);
         const classes = setUpPlayer(this.sim, player.id, CORNERS[corner], STARTING_CREDITS);
         this.announce(player, classes);
+        const bot = this.bots.get(player.id);
+        if (bot) {
+          const set = setUpBot(this.sim, bot.id, CORNERS[bot.corner], player.id);
+          bot.controller = set.bot;
+          // Everyone needs the bot's class shapes to draw its units; nobody sees its programs.
+          this.broadcast({ t: 'blueprints', list: set.classes.map(toInfo) });
+        }
         return;
       }
-      case 'leave':
+      case 'leave': {
+        const bot = this.bots.get(player.id);
         for (const e of this.sim.world.query(this.sim.unit.def)) {
-          if (this.sim.unit.f.owner[e] === player.id) this.sim.destroyEntity(e);
+          const owner = this.sim.unit.f.owner[e];
+          if (owner === player.id || owner === bot?.id) this.sim.destroyEntity(e);
         }
         this.corners[this.corners.indexOf(player.id)] = 0;
+        if (bot) {
+          this.corners[bot.corner] = 0;
+          this.bots.delete(player.id);
+          this.fielded.delete(bot.id);
+          this.sim.cheaters.delete(bot.id);
+          this.sim.teams.delete(bot.id);
+          this.sim.teams.delete(player.id);
+        }
         return;
+      }
       case 'msg':
         try {
           this.handle(player, cmd.msg);

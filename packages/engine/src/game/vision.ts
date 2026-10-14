@@ -20,13 +20,16 @@ export interface Viewer {
   readonly r: number;
 }
 
+/** `owner` is one player, or a team of players who share what they see. */
+const isOwner = (owner: number | ReadonlySet<number>, id: number): boolean => (typeof owner === 'number' ? owner === id : owner.has(id));
+
 /** Own entities' vision circles (sub-tile units). `stats` may be undefined while class info is in flight. */
-export function viewersOf(world: World, owner: number, stats: (e: number) => BlueprintStats | undefined): Viewer[] {
+export function viewersOf(world: World, owner: number | ReadonlySet<number>, stats: (e: number) => BlueprintStats | undefined): Viewer[] {
   const unit = world.store(Unit);
   const pos = world.store(Position);
   const out: Viewer[] = [];
   for (const e of unit.dense) {
-    if (unit.f.owner[e] !== owner || !pos.has(e)) continue;
+    if (!isOwner(owner, unit.f.owner[e]) || !pos.has(e)) continue;
     const s = stats(e);
     if (s) out.push({ x: pos.f.x[e], y: pos.f.y[e], r: visionRange(s) });
   }
@@ -34,14 +37,14 @@ export function viewersOf(world: World, owner: number, stats: (e: number) => Blu
 }
 
 /** Every entity `owner` can see this tick. */
-export function visibleTo(world: World, owner: number, stats: (e: number) => BlueprintStats | undefined): Set<number> {
+export function visibleTo(world: World, owner: number | ReadonlySet<number>, stats: (e: number) => BlueprintStats | undefined): Set<number> {
   const unit = world.store(Unit);
   const pos = world.store(Position);
   const viewers = viewersOf(world, owner, stats);
   const seen = new Set<number>(world.store(Resource).dense);
   for (const e of pos.dense) {
     if (seen.has(e)) continue;
-    if (unit.has(e) && unit.f.owner[e] === owner) {
+    if (unit.has(e) && isOwner(owner, unit.f.owner[e])) {
       seen.add(e);
       continue;
     }

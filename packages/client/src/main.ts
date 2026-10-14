@@ -1,15 +1,19 @@
 import './style.css';
-import { applyTick, DEFAULT_MAP_ID, Terrain, type ClientMessage, type ServerMessage } from '@wst/engine';
+import { applyTick, DEFAULT_MAP_ID, parseGameMode, Terrain, type ClientMessage, type ServerMessage } from '@wst/engine';
 import { Connection } from './connection';
 import { DesignStore } from './designs';
 import type { Designer } from './designer';
 import { Input } from './input';
 import { showLobby } from './lobby';
+import { MusicPlayer } from './music';
 import { getPlayerName, getSavedPlayerName } from './playerName';
 import { randomHex } from './random';
 import { Renderer } from './renderer';
 import { ClientState } from './state';
 import { Ui } from './ui';
+
+/** Combat music lingers this long (seconds) after the last damage seen. */
+const COMBAT_MUSIC_SECONDS = 15;
 
 async function main(): Promise<void> {
   const apiBase = `${location.origin}/api/v1`;
@@ -18,8 +22,12 @@ async function main(): Promise<void> {
   // ?room=name picks a match; without it the page shows the room list instead of joining.
   const room = new URLSearchParams(location.search).get('room');
   const mapId = new URLSearchParams(location.search).get('map') ?? DEFAULT_MAP_ID;
+  const mode = parseGameMode(new URLSearchParams(location.search).get('mode'));
+  // Background music follows the game: menu tracks in the lobby, idle or combat tracks in a match.
+  const music = new MusicPlayer(apiBase, !!room && !!getSavedPlayerName());
+  void music.load();
   if (!room || !getSavedPlayerName()) {
-    showLobby(apiBase, room || undefined, mapId);
+    showLobby(apiBase, room || undefined, mapId, mode);
     return;
   }
 
@@ -168,7 +176,10 @@ async function main(): Promise<void> {
         location.href = location.pathname;
         break;
       case 'matchOver':
-        ui.showStandings(msg.winner, msg.standings, msg.reason);
+        ui.showStandings(msg.winner, msg.standings, msg.reason, msg.winners);
+        break;
+      case 'radar':
+        state.addRadar(msg.x, msg.y, msg.range, msg.contacts);
         break;
       case 'networks':
         state.setNetworks(msg.list);
@@ -193,7 +204,7 @@ async function main(): Promise<void> {
   } catch {
     token = randomHex();
   }
-  const url = `${socketBase}${socketBase.includes('?') ? '&' : '?'}room=${encodeURIComponent(room)}&token=${token}&map=${encodeURIComponent(mapId)}`;
+  const url = `${socketBase}${socketBase.includes('?') ? '&' : '?'}room=${encodeURIComponent(room)}&token=${token}&map=${encodeURIComponent(mapId)}&mode=${mode}`;
   const conn = new Connection(url, {
     open: () => ui.setStatus('connected'),
     close: (retrying) => {
@@ -205,6 +216,7 @@ async function main(): Promise<void> {
       const info = applyTick(state.world, data);
       state.tick = info.tick;
       state.afterTick();
+      music.setContext(state.tick - state.lastCombatTick <= COMBAT_MUSIC_SECONDS * state.tickRate ? 'combat' : 'idle');
       if (state.fog) state.updateVision();
       renderer.sync(info);
       input.prune();

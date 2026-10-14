@@ -2,12 +2,13 @@
 import { getPlayerName, getSavedPlayerName, NAME_MAX, setPlayerName } from './playerName';
 import { CHANGELOG } from './changelog';
 import { randomHex } from './random';
-import { createMapTerrain, DEFAULT_MAP_ID, MAPS } from '@wst/engine';
+import { createMapTerrain, DEFAULT_MAP_ID, GAME_MODES, MAPS, parseGameMode, type GameMode } from '@wst/engine';
 
 interface RoomInfo {
   readonly name: string;
   readonly mapId: string;
   readonly mapName: string;
+  readonly mode: GameMode;
   readonly width: number;
   readonly height: number;
   readonly players: number;
@@ -29,6 +30,14 @@ const clock = (seconds: number): string => {
 const ROOM_NAME = /^[A-Za-z0-9_-]{1,24}$/;
 const REFRESH_MS = 3000;
 const randomRoomName = () => `room-${randomHex(6)}`;
+
+interface CreditTrack {
+  name: string;
+  composer: string;
+  url: string;
+  license: string;
+  licenseUrl: string;
+}
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
 
@@ -83,17 +92,65 @@ const preview = (id: string): string => {
   return image;
 };
 
-const join = (room: string, name: string, mapId = DEFAULT_MAP_ID) => {
+const join = (room: string, name: string, mapId = DEFAULT_MAP_ID, mode: GameMode = 'versus') => {
   setPlayerName(name);
-  location.href = `${location.pathname}?room=${encodeURIComponent(room)}&map=${encodeURIComponent(mapId)}`;
+  location.href = `${location.pathname}?room=${encodeURIComponent(room)}&map=${encodeURIComponent(mapId)}&mode=${mode}`;
+};
+
+type View = 'main' | 'multi' | 'solo' | 'credits';
+
+const modeName = (mode: GameMode): string => GAME_MODES.find((m) => m.id === mode)?.name ?? mode;
+
+/** What each room-based section is called and offers. */
+const SECTIONS: Record<Exclude<View, 'main' | 'credits'>, { title: string; blurb: string }> = {
+  multi: { title: 'Multiplayer', blurb: 'Join a game on the left, or create one on the right: a free-for-all, or co-op against bots.' },
+  solo: { title: 'Single-player', blurb: 'You against a bot that never needs to mine and sends waves of units at you. A private game; good for testing designs.' },
+};
+
+const mapCaption = (id: string): string => {
+  const map = MAPS.find((item) => item.id === id) ?? MAPS[0];
+  return `<b>${esc(map.name)}</b> · ${map.width} × ${map.height}<br>${esc(map.description)}`;
+};
+
+/** A list of maps with one preview, for the selected map only. */
+const mapPicker = (selectedId: string): string =>
+  `<fieldset class="map-picker">
+    <legend>Map</legend>
+    <div class="map-layout">
+      <select name="map" size="5" aria-label="Map">${MAPS.map((map) => `<option value="${map.id}"${map.id === selectedId ? ' selected' : ''}>${esc(map.name)} (${map.width}×${map.height})</option>`).join('')}</select>
+      <div class="map-preview"><img src="${preview(selectedId)}" alt="Terrain preview"><small>${mapCaption(selectedId)}</small></div>
+    </div>
+  </fieldset>`;
+
+let refreshTimer: ReturnType<typeof setInterval> | undefined;
+let rememberedMap = DEFAULT_MAP_ID;
+let rememberedMode: GameMode = 'versus';
+let designs: import('./localdesigns').LocalDesigns | undefined;
+let popHandler: ((ev: PopStateEvent) => void) | undefined;
+
+/**
+ * Browser history for the lobby: each sub-menu or overlay is one history entry,
+ * so the Back button steps up a level instead of leaving the page.
+ */
+interface LobbyState {
+  lobby: true;
+  view: View;
+  depth: number;
+  overlay?: 'docs' | 'designer';
+}
+const lobbyState = (): LobbyState | undefined => {
+  const st = history.state as Partial<LobbyState> | null;
+  return st?.lobby ? (st as LobbyState) : undefined;
 };
 
 /** `apiBase` is the same-origin API root, e.g. /api/v1. */
-export function showLobby(apiBase: string, joinRoom?: string, preferredMapId = DEFAULT_MAP_ID): void {
+export function showLobby(apiBase: string, joinRoom?: string, preferredMapId = DEFAULT_MAP_ID, preferredMode: GameMode = 'versus'): void {
   const root = document.getElementById('lobby')!;
   document.getElementById('panel')!.hidden = true;
   document.getElementById('stage')!.hidden = true;
   root.hidden = false;
+  rememberedMap = preferredMapId;
+  rememberedMode = preferredMode === 'coop' ? 'coop' : 'versus';
 
   if (!getSavedPlayerName()) {
     root.innerHTML = `
@@ -110,7 +167,7 @@ export function showLobby(apiBase: string, joinRoom?: string, preferredMapId = D
       const name = nameInput.value.trim();
       if (!name) return;
       setPlayerName(name);
-      if (joinRoom) join(joinRoom, name, preferredMapId);
+      if (joinRoom) join(joinRoom, name, preferredMapId, preferredMode);
       else showLobby(apiBase);
     };
     nameInput.focus();
@@ -119,70 +176,217 @@ export function showLobby(apiBase: string, joinRoom?: string, preferredMapId = D
 
   root.innerHTML = `
     <h1>Digital Chaos</h1>
-    <h2>Choose a match</h2>
     <label class="lobby-player">Your name <input id="lobby-player" maxlength="${NAME_MAX}" autocomplete="off" /></label>
-    <div id="lobby-rooms" class="muted">Looking for rooms…</div>
-    <form id="lobby-create">
-      <input id="lobby-name" maxlength="24" placeholder="New room name (optional)" autocomplete="off" />
-      <fieldset class="map-picker">
-        <legend>Map for new game</legend>
-        <div class="map-grid">${MAPS.map((map) => `<label class="map-choice${map.id === preferredMapId ? ' selected' : ''}"><input type="radio" name="map" value="${map.id}"${map.id === preferredMapId ? ' checked' : ''} required><img src="${preview(map.id)}" alt="${esc(map.name)} terrain preview"><span><b>${esc(map.name)}</b><small>${map.width} × ${map.height} · ${esc(map.description)}</small></span></label>`).join('')}</div>
-      </fieldset>
-      <button type="submit">Create room</button>
-    </form>
-    <div id="lobby-error" class="muted"></div>
-    ${changelogHtml()}`;
-  const list = root.querySelector<HTMLDivElement>('#lobby-rooms')!;
-  const input = root.querySelector<HTMLInputElement>('#lobby-name')!;
-  const error = root.querySelector<HTMLDivElement>('#lobby-error')!;
+    <div id="lobby-view" class="lobby-view"></div>
+    <div id="lobby-docs" hidden>
+      <div class="docs-bar">
+        <span>Script API reference</span>
+        <span>
+          <a class="button" href="docs.html" target="_blank" rel="noopener">Open in new tab ↗</a>
+          <button id="lobby-docs-close" title="Close (Esc)">✕</button>
+        </span>
+      </div>
+      <iframe id="lobby-docs-frame" title="Script API documentation"></iframe>
+    </div>`;
+  const view = root.querySelector<HTMLDivElement>('#lobby-view')!;
   const player = root.querySelector<HTMLInputElement>('#lobby-player')!;
   player.value = getSavedPlayerName() ?? getPlayerName();
   // An emptied box falls back to the saved name.
   const myName = () => player.value.trim() || getPlayerName();
-
-  root.querySelector<HTMLFormElement>('#lobby-create')!.onsubmit = (ev) => {
-    ev.preventDefault();
-    const name = input.value.trim() || randomRoomName();
-    const mapId = root.querySelector<HTMLInputElement>('input[name="map"]:checked')?.value ?? DEFAULT_MAP_ID;
-    if (ROOM_NAME.test(name)) join(name, myName(), mapId);
-    else error.textContent = 'Room names use letters, digits, - and _ (up to 24 characters).';
+  const docs = root.querySelector<HTMLDivElement>('#lobby-docs')!;
+  let current: View = 'main';
+  /** Moves one step up the history stack if this level was pushed, else runs `fallback`. */
+  const up = (fallback: () => void) => {
+    if ((lobbyState()?.depth ?? 0) > 0) history.back();
+    else fallback();
   };
-  root.querySelectorAll<HTMLInputElement>('input[name="map"]').forEach((radio) => {
-    radio.onchange = () => root.querySelectorAll('.map-choice').forEach((choice) => choice.classList.toggle('selected', choice.contains(root.querySelector('input[name="map"]:checked'))));
+  const push = (view: View, overlay?: LobbyState['overlay']) => {
+    history.pushState({ lobby: true, view, depth: (lobbyState()?.depth ?? 0) + 1, overlay } satisfies LobbyState, '');
+  };
+  const showDocs = (open: boolean) => {
+    const frame = root.querySelector<HTMLIFrameElement>('#lobby-docs-frame')!;
+    if (open && !frame.src.endsWith('docs.html')) frame.src = 'docs.html';
+    docs.hidden = !open;
+  };
+  const closeDocs = () => (lobbyState()?.overlay === 'docs' ? history.back() : showDocs(false));
+  const openDocs = () => {
+    push(current, 'docs');
+    showDocs(true);
+  };
+  root.querySelector<HTMLButtonElement>('#lobby-docs-close')!.onclick = closeDocs;
+  window.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape' && !docs.hidden) closeDocs();
   });
 
-  const render = (rooms: RoomInfo[]) => {
-    const active = rooms.filter((r) => r.players > 0);
-    list.className = active.length ? '' : 'muted';
-    if (!active.length) {
-      list.textContent = 'No active rooms. Create a room to invite others.';
-      return;
-    }
-    list.innerHTML = active
-      .map((r) => {
-        const full = r.players >= r.capacity;
-        const state = r.over ? 'finished' : full ? 'full' : 'open';
-        // A game that is already under way is easy to spot: its clock is running or has run.
-        const time = r.elapsed > 0 ? `${clock(r.elapsed)} in${r.paused ? ' (paused)' : ''}` : 'not started';
-        const scores = r.scores
-          .map((p) => `${esc(p.name)} ${p.score}${p.connected ? '' : ' (away)'}${p.eliminated ? ' (out)' : ''}`)
-          .join(' · ');
-        return `<div class="lobby-room"><span class="name">${esc(r.name)}<small>${esc(r.mapName)} · ${r.width} × ${r.height}<br>${scores || 'no players yet'}</small></span><span class="muted">${r.players}/${r.capacity} · ${state} · ${time}</span><button data-room="${esc(r.name)}" data-map="${esc(r.mapId)}"${full ? ' disabled' : ''}>Join</button></div>`;
-      })
-      .join('');
-    list.querySelectorAll<HTMLButtonElement>('button[data-room]').forEach((b) => (b.onclick = () => join(b.dataset.room!, myName(), b.dataset.map)));
+  const go = (to: View, pushEntry = true) => {
+    if (pushEntry && to !== current) push(to);
+    else if (!lobbyState()) history.replaceState({ lobby: true, view: to, depth: 0 } satisfies LobbyState, '');
+    current = to;
+    clearInterval(refreshTimer);
+    refreshTimer = undefined;
+    if (to === 'main') renderMain();
+    else if (to === 'credits') void renderCredits();
+    else renderSection(to);
   };
 
-  const refresh = async () => {
-    try {
-      const res = await fetch(`${apiBase}/rooms`);
-      render((await res.json()) as RoomInfo[]);
-      error.textContent = '';
-    } catch {
-      list.className = 'muted';
-      list.textContent = 'Can’t reach the server.';
-    }
+  const renderMain = () => {
+    view.innerHTML = `
+      <nav class="menu-buttons" aria-label="Main menu">
+        <button data-go="solo"><b>Single-player</b><small>You against a bot that sends waves of units</small></button>
+        <button data-go="multi"><b>Multiplayer</b><small>Free-for-all, or co-op against bots</small></button>
+        <button id="menu-designer"><b>Designer</b><small>Design units and buildings and write their programs</small></button>
+        <button data-go="credits"><b>Credits</b><small>The music and its licences</small></button>
+        <button id="menu-docs"><b>API reference</b><small>The scripting language and every function</small></button>
+      </nav>
+      ${changelogHtml()}`;
+    view.querySelectorAll<HTMLButtonElement>('button[data-go]').forEach((b) => (b.onclick = () => go(b.dataset.go as View)));
+    view.querySelector<HTMLButtonElement>('#menu-docs')!.onclick = () => openDocs();
+    const designer = view.querySelector<HTMLButtonElement>('#menu-designer')!;
+    designer.onclick = async () => {
+      designer.disabled = true;
+      try {
+        designs ??= new (await import('./localdesigns')).LocalDesigns();
+        push(current, 'designer');
+        designs.onClose = () => {
+          if (lobbyState()?.overlay === 'designer') history.back();
+        };
+        await designs.open();
+      } finally {
+        designer.disabled = false;
+      }
+    };
   };
-  void refresh();
-  setInterval(() => void refresh(), REFRESH_MS);
+
+  /** Every track in the server's music manifest, with its composer and licence. */
+  const renderCredits = async () => {
+    view.innerHTML = `
+      <div class="section-head"><button id="lobby-back">← Main menu</button><h2>Credits</h2></div>
+      <div id="credits" class="muted">Loading…</div>`;
+    view.querySelector<HTMLButtonElement>('#lobby-back')!.onclick = () => up(() => go('main', false));
+    const box = view.querySelector<HTMLDivElement>('#credits')!;
+    let tracks: CreditTrack[] = [];
+    try {
+      const res = await fetch(`${apiBase}/music`);
+      if (res.ok) tracks = (await res.json()) as CreditTrack[];
+    } catch {
+      // Handled below.
+    }
+    if (!tracks.length) {
+      box.textContent = 'No music credits available.';
+      return;
+    }
+    const link = (href: string, text: string) => (/^https?:\/\//i.test(href) ? `<a href="${esc(href)}" target="_blank" rel="noopener">${esc(text)}</a>` : esc(text));
+    box.className = '';
+    box.innerHTML =
+      '<h3>Music</h3>' +
+      tracks
+        .map(
+          (t) => `<div class="credit">
+            <b>${esc(t.name)}</b>${t.composer ? ` — ${esc(t.composer)}` : ''}
+            <small>${t.url ? link(t.url, t.url) : ''}${t.url && t.license ? '<br>' : ''}${t.license ? (t.licenseUrl ? link(t.licenseUrl, t.license) : esc(t.license)) : ''}</small>
+          </div>`,
+        )
+        .join('');
+  };
+
+  const renderSection = (which: Exclude<View, 'main' | 'credits'>) => {
+    const section = SECTIONS[which];
+    const modes = GAME_MODES.filter((m) => m.id !== 'solo');
+    const form = `
+      <form id="lobby-create">
+        <h3>${which === 'solo' ? 'Choose a map' : 'Create a room'}</h3>
+        ${
+          which === 'solo'
+            ? ''
+            : `<input id="lobby-name" maxlength="24" placeholder="Room name (optional)" autocomplete="off" />
+        <fieldset class="mode-picker"><legend>Game type</legend>${modes
+          .map((m) => `<label><input type="radio" name="mode" value="${m.id}"${m.id === rememberedMode ? ' checked' : ''}> <b>${esc(m.name)}</b> <small>${esc(m.description)}</small></label>`)
+          .join('')}</fieldset>`
+        }
+        ${mapPicker(rememberedMap)}
+        <button type="submit" class="primary">${which === 'solo' ? 'Start game' : 'Create room'}</button>
+      </form>
+      <div id="lobby-error" class="muted"></div>`;
+    view.innerHTML = `
+      <div class="section-head"><button id="lobby-back">← Main menu</button><h2>${esc(section.title)}</h2></div>
+      <p class="muted section-blurb">${esc(section.blurb)}</p>
+      ${
+        which === 'solo'
+          ? form
+          : `<div class="lobby-split"><section class="lobby-left"><h3>Games</h3><div id="lobby-rooms" class="muted">Looking for rooms…</div></section><aside class="lobby-right">${form}</aside></div>`
+      }`;
+    view.querySelector<HTMLButtonElement>('#lobby-back')!.onclick = () => up(() => go('main', false));
+    const error = view.querySelector<HTMLDivElement>('#lobby-error')!;
+    const input = view.querySelector<HTMLInputElement>('#lobby-name');
+    view.querySelector<HTMLFormElement>('#lobby-create')!.onsubmit = (ev) => {
+      ev.preventDefault();
+      const name = which === 'solo' ? `solo-${randomHex(6)}` : input!.value.trim() || randomRoomName();
+      const mapId = view.querySelector<HTMLSelectElement>('select[name="map"]')?.value ?? DEFAULT_MAP_ID;
+      const mode: GameMode = which === 'solo' ? 'solo' : parseGameMode(view.querySelector<HTMLInputElement>('input[name="mode"]:checked')?.value);
+      if (ROOM_NAME.test(name)) join(name, myName(), mapId, mode);
+      else error.textContent = 'Room names use letters, digits, - and _ (up to 24 characters).';
+    };
+    view.querySelectorAll<HTMLInputElement>('input[name="mode"]').forEach((radio) => {
+      radio.onchange = () => (rememberedMode = parseGameMode(radio.value));
+    });
+    const select = view.querySelector<HTMLSelectElement>('select[name="map"]')!;
+    select.onchange = () => {
+      rememberedMap = select.value;
+      view.querySelector<HTMLImageElement>('.map-preview img')!.src = preview(select.value);
+      view.querySelector('.map-preview small')!.innerHTML = mapCaption(select.value);
+    };
+    if (which === 'solo') return;
+
+    const list = view.querySelector<HTMLDivElement>('#lobby-rooms')!;
+    const render = (all: RoomInfo[]) => {
+      const active = all.filter((r) => r.players > 0 && r.mode !== 'solo');
+      list.className = active.length ? '' : 'muted';
+      if (!active.length) {
+        list.textContent = 'No active games. Create a room to invite others.';
+        return;
+      }
+      list.innerHTML = active
+        .map((r) => {
+          const full = r.players >= r.capacity;
+          const state = r.over ? 'finished' : full ? 'full' : 'open';
+          // A game that is already under way is easy to spot: its clock is running or has run.
+          const time = r.elapsed > 0 ? `${clock(r.elapsed)} in${r.paused ? ' (paused)' : ''}` : 'not started';
+          const scores = r.scores
+            .map((p) => `${esc(p.name)} ${p.score}${p.connected ? '' : ' (away)'}${p.eliminated ? ' (out)' : ''}`)
+            .join(' · ');
+          return `<div class="lobby-room"><span class="name">${esc(r.name)} <span class="mode-tag ${esc(r.mode)}">${esc(modeName(r.mode))}</span><small>${esc(r.mapName)} · ${r.width} × ${r.height}<br>${scores || 'no players yet'}</small></span><span class="muted">${r.players}/${r.capacity} · ${state} · ${time}</span><button data-room="${esc(r.name)}" data-map="${esc(r.mapId)}" data-mode="${esc(r.mode)}"${full ? ' disabled' : ''}>Join</button></div>`;
+        })
+        .join('');
+      list.querySelectorAll<HTMLButtonElement>('button[data-room]').forEach((b) => (b.onclick = () => join(b.dataset.room!, myName(), b.dataset.map, parseGameMode(b.dataset.mode))));
+    };
+    const refresh = async () => {
+      try {
+        const res = await fetch(`${apiBase}/rooms`);
+        render((await res.json()) as RoomInfo[]);
+        error.textContent = '';
+      } catch {
+        list.className = 'muted';
+        list.textContent = 'Can’t reach the server.';
+      }
+    };
+    void refresh();
+    refreshTimer = setInterval(() => void refresh(), REFRESH_MS);
+  };
+
+  // A name typed here is remembered straight away, so every section joins under it.
+  player.onchange = () => {
+    if (player.value.trim()) setPlayerName(player.value.trim());
+  };
+  if (popHandler) window.removeEventListener('popstate', popHandler);
+  popHandler = () => {
+    const st = lobbyState();
+    if (!st) return;
+    showDocs(st.overlay === 'docs');
+    if (st.overlay !== 'designer') designs?.close();
+    if (st.view !== current) go(st.view, false);
+  };
+  window.addEventListener('popstate', popHandler);
+  const startView: View = preferredMode === 'solo' ? 'solo' : 'multi';
+  history.replaceState({ lobby: true, view: 'main', depth: 0 } satisfies LobbyState, '');
+  go(joinRoom ? startView : 'main', false);
 }

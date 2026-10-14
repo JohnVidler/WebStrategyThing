@@ -20,6 +20,7 @@ export * from './game/actions';
 export * from './game/vision';
 export * from './game/content';
 export * from './game/map';
+export * from './game/bot';
 export * from './game/simulation';
 export * from './game/sandbox';
 export * from './game/designs';

@@ -275,8 +275,7 @@ if t == boost {
       ${code(`
 r = nextVisitor()
 if r != 0 && visitorCaps() & CAN_HARVEST {
-  res = visitorLastHarvest()
-  if resource(res) == 0 { res = scanResource() }
+  res = randomResource(4, 10)
   if res >= 0 { order(HARVEST, 0, 0, res) }
 }`)}
       <h2>Ranges</h2>

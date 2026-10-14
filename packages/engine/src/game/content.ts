@@ -53,8 +53,8 @@ const HANDLE_CHARGE = `if t == CHARGE {
   if energy() * 20 >= energyMax() * 19 || approach(h, 1) < 0 { taskDrop(0) }
 }`;
 
-const SEND_HARVESTER_BACK = `res = visitorLastHarvest()
-if resource(res) == 0 { res = scanResource() }
+const SEND_HARVESTER_BACK = `# One of the few nearest fields with matter left, picked at random so no field is farmed out.
+res = randomResource(4, 10)
 if res >= 0 { order(HARVEST, 0, 0, res) }`;
 
 // --- Buildings -----------------------------------------------------------------------
@@ -78,7 +78,7 @@ while taskCount() > 1 { taskDrop(0) }
 r = nextVisitor()
 if r != 0 {
   if (visitorCaps() & (CAN_HARVEST | CAN_BUILD)) == CAN_HARVEST {
-    # Send harvesters back to where they were working, or find a new field.
+    # Send harvesters to a random nearby field.
 ${SEND_HARVESTER_BACK}
   } else if r == PRODUCED && taskType(0) == MOVE {
     order(MOVE, taskX(0), taskY(0), -1)
@@ -136,7 +136,7 @@ sleep(4)
 export const SILO_CLASS: ClassTemplate = {
   name: 'Resource Silo',
   parts: ['frame.medium', 'cpu.basic', 'mem.small', ...Array<string>(6).fill('silo')],
-  program: `# Resource Silo: send visiting harvesters back to their last field.
+  program: `# Resource Silo: send visiting harvesters to a random nearby field.
 var res = -1
 
 if nextVisitor() != 0 {
@@ -178,6 +178,28 @@ if h >= 0 {
 `,
 };
 
+export const RADAR_TOWER_CLASS: ClassTemplate = {
+  name: 'Radar Tower',
+  parts: ['frame.small', 'cpu.basic', 'radar.pulse', 'battery.bank'],
+  program: `# Radar tower: pings the map as soon as its radar has rested, as long as the
+# radar module is switched on and the tower holds more than half its energy.
+# 500 energy buys a 20-tile pulse; change it to scan nearer or further.
+var i = 0
+var on = 0
+
+on = 0
+i = 0
+while i < moduleCount() {
+  if moduleKind(i) == M_RADAR && moduleOn(i) { on = 1 }
+  i = i + 1
+}
+if on && radarCooldown() == 0 && energy() * 2 > energyMax() {
+  radarPulse(500)
+}
+sleep(10)
+`,
+};
+
 export const PYLON_CLASS: ClassTemplate = {
   name: 'Power Pylon',
   parts: ['frame.small', 'antenna.large'],
@@ -191,6 +213,8 @@ export const HARVESTER_CLASS: ClassTemplate = {
   parts: ['chassis.light', 'cpu.basic', 'motor.small', 'cargo.bay', 'battery.cell'],
   program: `# Harvester: works HARVEST tasks until full, then docks at the nearest depot.
 # Docking hands control back to the depot's script, which issues the next job.
+# A field that runs low is swapped for another nearby one, and with nothing left
+# to do the harvester heads back to a storage building for new orders.
 var n = 0
 var t = 0
 var h = -1
@@ -202,13 +226,21 @@ ${HANDLE_CHARGE} ${HANDLE_SUPPLY} else if t == HARVEST {
   h = taskTarget(0)
   # A pass can span several ticks, so the field may run dry between checks:
   # anything carried is always delivered before the task is dropped.
-  if cargo() < cargoMax() && resource(h) > 0 {
+  if cargo() < cargoMax() && resource(h) > 4 {
     if approach(h, 1) == 1 { harvest(h) }
-  } else if cargo() == 0 {
+  } else if cargo() < cargoMax() {
+    # This field is (nearly) spent: pick another one close by.
+    h = randomResource(4, 10)
     taskDrop(0)
+    if h >= 0 {
+      taskPush(HARVEST, 0, 0, h)
+      taskFirst(taskCount() - 1)
+    }
   } else {
     h = nearestDepot()
-    if approach(h, 1) != 0 {
+    if h < 0 {
+      sleep(10)   # every silo is full: wait for room
+    } else if approach(h, 1) != 0 {
       dock(h)
       taskDrop(0)
     }
@@ -227,7 +259,15 @@ ${HANDLE_CHARGE} ${HANDLE_SUPPLY} else if t == HARVEST {
 } else if t != 0 {
   taskDrop(0)
 } else {
-  sleep(5)
+  # Nothing to do: return to the nearest storage building, which hands out new orders.
+  h = nearestStorage()
+  if h >= 0 && (cargo() > 0 || dist(h) > 2) {
+    taskPush(DOCK, 0, 0, h)
+  } else {
+    # Already there and nobody had work: look for a field ourselves.
+    h = randomResource(4, 10)
+    if h >= 0 { taskPush(HARVEST, 0, 0, h) } else { sleep(20) }
+  }
 }
 `,
 };
@@ -275,7 +315,7 @@ ${HANDLE_CHARGE} ${HANDLE_SUPPLY} else if t == BUILD {
 `,
 };
 
-const FIGHTER_PROGRAM = `# Follows MOVE / ATTACK / STOP / CHARGE orders; when idle, shoots anything in
+export const FIGHTER_PROGRAM = `# Follows MOVE / ATTACK / STOP / CHARGE orders; when idle, shoots anything in
 # sensor range without chasing it, and naps between scans to save energy.
 # ATTACK without a target (the Attack button on open ground) is an attack-move.
 button holdfire "Hold fire" key "F"
@@ -344,6 +384,7 @@ export const STARTER_CLASSES: readonly ClassTemplate[] = [
   SILO_CLASS,
   TOWER_CLASS,
   LASER_TURRET_CLASS,
+  RADAR_TOWER_CLASS,
   HARVESTER_CLASS,
   BUILDER_CLASS,
   SCOUT_CLASS,

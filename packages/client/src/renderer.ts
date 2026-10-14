@@ -13,6 +13,7 @@ import {
   TaskType,
   CUSTOM_TASK_BASE,
   chargeZoneRadius,
+  RADAR_FADE_TICKS,
   RESOURCE_PATCH_AMOUNT,
   TILE,
   Unit,
@@ -21,12 +22,10 @@ import {
 } from '@wst/engine';
 import { AlphaFilter, Application, Container, Graphics, Sprite, type Texture } from 'pixi.js';
 import { drawLook, lookOf } from './art';
+import { renderClassImage, TEX, TEX_RESOLUTION } from './artstudio';
 import type { ClientState } from './state';
 
 /** Textures are drawn at this many pixels per tile, then scaled to the current zoom. */
-const TEX = 32;
-/** Sprite textures are rasterised at this multiple of TEX, so zooming in stays sharp. */
-const TEX_RESOLUTION = 2;
 const OWNER_COLOURS = [0x8a8f98, 0x4ea1ff, 0xff6b5b, 0x5bd68a, 0xf5c542, 0xc77dff, 0x4fd1c5, 0xff9f43];
 const RESOURCE_COLOUR = 0x7ee0b5;
 const ENERGY_COLOUR = 0xf5c542;
@@ -122,6 +121,11 @@ export class Renderer {
   private readonly linkLayer = new Graphics();
   private readonly layer = new Container();
   private readonly fogLayer = new Graphics();
+  /** Radar blips and pulse rings, above the fog so contacts show in the dark. */
+  private readonly radarLayer = new Container();
+  private readonly radarGfx = new Graphics();
+  /** Faded copies of each contact's real art, reused from frame to frame. */
+  private readonly radarSprites: Sprite[] = [];
   private fogDrawnFor = '';
   private readonly overlay = new Graphics();
   private readonly ghost = new Sprite();
@@ -164,7 +168,7 @@ export class Renderer {
     this.ghost.alpha = 0.55;
     this.ghost.visible = false;
     this.zoneLayer.filters = [new AlphaFilter({ alpha: CHARGE_ZONE_ALPHA })];
-    app.stage.addChild(this.backdrop, this.zoneLayer, this.linkLayer, this.layer, this.fogLayer, this.overlay, this.ghost);
+    app.stage.addChild(this.backdrop, this.zoneLayer, this.linkLayer, this.layer, this.fogLayer, this.radarLayer, this.overlay, this.ghost);
     app.ticker.add(() => this.frame());
   }
 
@@ -408,8 +412,56 @@ export class Renderer {
     this.drawChargeZones();
     this.drawLinks();
     this.drawFog();
+    this.drawRadar();
     this.drawOverlay(now);
     this.drawGhost();
+  }
+
+  /** Radar contacts fade out over RADAR_FADE_TICKS; each pulse also sends out a quick ring. */
+  private drawRadar(): void {
+    if (this.radarLayer.children.length === 0) this.radarLayer.addChild(this.radarGfx);
+    const g = this.radarGfx.clear();
+    const s = this.state;
+    s.pruneRadar(RADAR_FADE_TICKS);
+    const now = s.tick + this.alpha;
+    for (const r of s.radarRings) {
+      const age = (now - r.born) / 12;
+      if (age < 0 || age > 1) continue;
+      g.circle(this.offX + (r.x / TILE) * this.scale, this.offY + (r.y / TILE) * this.scale, (r.range / TILE) * this.scale * age).stroke({
+        width: 2,
+        color: 0x7fffd4,
+        alpha: 0.6 * (1 - age),
+      });
+    }
+    let used = 0;
+    for (const b of s.radarBlips) {
+      const fade = 1 - (now - b.born) / RADAR_FADE_TICKS;
+      if (fade <= 0) continue;
+      const x = this.offX + (b.x / TILE) * this.scale;
+      const y = this.offY + (b.y / TILE) * this.scale;
+      const size = Math.max(4, this.scale * (b.structure ? 0.9 : 0.5));
+      const colour = ownerColour(b.owner);
+      // The contact's real art, faded, so it reads as the unit itself rather than a dot.
+      const bp = this.state.blueprints.get(b.blueprint);
+      if (bp) {
+        let sprite = this.radarSprites[used];
+        if (!sprite) {
+          sprite = new Sprite();
+          sprite.anchor.set(0.5);
+          this.radarSprites.push(sprite);
+          this.radarLayer.addChild(sprite);
+        }
+        used++;
+        sprite.visible = true;
+        sprite.texture = this.unitTexture(bp, b.owner);
+        sprite.position.set(x, y);
+        sprite.scale.set(this.scale / TEX);
+        sprite.alpha = fade * 0.8;
+      }
+      if (b.structure) g.rect(x - size / 2, y - size / 2, size, size).stroke({ width: 2, color: colour, alpha: fade });
+      else g.circle(x, y, size / 2).fill({ color: colour, alpha: fade * 0.9 }).stroke({ width: 1, color: 0xffffff, alpha: fade * 0.5 });
+    }
+    for (let i = used; i < this.radarSprites.length; i++) this.radarSprites[i].visible = false;
   }
 
   private drawGhost(): void {
@@ -832,18 +884,7 @@ export class Renderer {
    * `owner` picks the team colour (default: the local player).
    */
   async previewImage(parts: readonly string[], pxPerTile: number, owner = this.state.myId): Promise<string> {
-    const g = new Graphics();
-    this.drawClass(g, parts, owner);
-    const tex = this.app.renderer.generateTexture({ target: g, resolution: 4 });
-    g.destroy();
-    const sprite = new Sprite(tex);
-    sprite.scale.set(pxPerTile / TEX);
-    try {
-      return await this.app.renderer.extract.base64({ target: sprite, resolution: 2 });
-    } finally {
-      sprite.destroy();
-      tex.destroy(true);
-    }
+    return renderClassImage(this.app.renderer, parts, ownerColour(owner), () => pxPerTile / TEX);
   }
 
   /** Class art in texture space (TEX pixels per tile). */

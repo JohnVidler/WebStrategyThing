@@ -70,14 +70,19 @@ export type ServerMessage =
   | { t: 'tasks'; updates: number[][] }
   /** The player's own power networks (sent only to the owner, when they change). */
   | { t: 'networks'; list: NetworkInfo[] }
+  /**
+   * A radar pulse by the player or an ally: the non-allied units and buildings it
+   * found, as [x, y, owner, structure(0/1), blueprint] in sub-tile units. Shown as fading blips.
+   */
+  | { t: 'radar'; x: number; y: number; range: number; contacts: number[][] }
   /** Every present player's score and tallies (broadcast to all, when they change). */
   | { t: 'scoreboard'; players: ScoreEntry[] }
   /** The game is stopped for these reasons; away players include their reconnect deadline. */
   | { t: 'pause'; reasons: string[]; away: { name: string; remainingMs: number }[] }
   /** A resignation has been accepted and the player is being removed immediately. */
   | { t: 'resigned' }
-  /** Sent once when the match has a winner: `winner` is their player id. */
-  | { t: 'matchOver'; winner: number; reason: MatchEndReason; standings: ScoreEntry[] }
+  /** Sent once when the match has a winner: `winner` is their player id. In team matches `winners` lists every winning side (the humans, or the bots). */
+  | { t: 'matchOver'; winner: number; reason: MatchEndReason; standings: ScoreEntry[]; winners?: number[] }
   /** Result of a loadDesigns request. */
   | { t: 'designsLoaded'; reason: 'session' | 'upload' | 'reset'; defined: number; updated: number; retired: number; errors: string[] }
   | { t: 'error'; message: string };

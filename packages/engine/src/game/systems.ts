@@ -6,7 +6,7 @@ import { TILE } from './parts';
 import { daylight, share, StorageMode, wind } from './power';
 import { GENERATION_SCALE } from './parts';
 import { BUILDER_ENERGY_RESERVE, SEPARATION_RADIUS, DECAY_TICKS, MAX_TRANSMISSION_LOSS, RESOURCE_REGEN_INTERVAL_TICKS, SOLAR_GENERATION_MULTIPLIER, STORAGE_DISCHARGE_FRACTION, TESLA_SELF_STUN_FACTOR, TESLA_STUN_TICKS, TRANSMISSION_LOSS_PER_TILE, WIND_GENERATION_MULTIPLIER, buildEnergyCost } from './rules';
-import { CHARGE_RANGE } from './rules';
+import { CHARGE_PAD_RATE_MULTIPLIER, CHARGE_RANGE } from './rules';
 import type { Simulation } from './simulation';
 
 /** Generation, then distribution inside each power network (consumers first, then storage). */
@@ -92,6 +92,20 @@ export function powerSystem(sim: Simulation): void {
       if (!sim.world.isAlive(b) || sim.isSite(b)) continue;
       net.stored += store[b];
       net.capacity += sim.stats(b).energyCapacity;
+    }
+  }
+}
+
+/** Cheating owners (bots) never run short: every energy store and silo is refilled each tick. */
+export function cheatSystem(sim: Simulation): void {
+  if (sim.cheaters.size === 0) return;
+  for (const e of sim.unit.dense) {
+    if (!sim.cheaters.has(sim.unit.f.owner[e]) || sim.isSite(e)) continue;
+    const s = sim.stats(e);
+    if (sim.energy.has(e)) sim.energy.f.amount[e] = s.energyCapacity;
+    if (sim.stockpile.has(e) && sim.stockpile.f.amount[e] !== s.resourceCapacity) {
+      sim.stockpile.f.amount[e] = s.resourceCapacity;
+      sim.stockpile.markChanged(e);
     }
   }
 }
@@ -363,7 +377,9 @@ export function chargingSystem(sim: Simulation): void {
     sim.spatial.forEachInRadius(sim.pos.f.x[b], sim.pos.f.y[b], reach, (o) => {
       if (!sim.motion.has(o) || owner[o] !== owner[b]) return;
       const room = sim.stats(o).energyCapacity - sim.energy.f.amount[o];
-      if (room > 0) sim.transferEnergy(b, o, Math.min(s.chargeRate, room));
+      // Up to the boosted rate, but never more than the pad currently holds.
+      const amount = Math.min(s.chargeRate * CHARGE_PAD_RATE_MULTIPLIER, room, sim.energy.f.amount[b]);
+      if (amount > 0) sim.transferEnergy(b, o, amount);
     });
   }
 }

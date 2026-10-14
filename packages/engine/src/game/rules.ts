@@ -17,6 +17,11 @@ export const BUILDING_TRANSFER_RANGE = 3 * TILE;
 /** Charging pads use the building-scale transfer range. */
 export const CHARGE_RANGE = BUILDING_TRANSFER_RANGE;
 /**
+ * Charging pads deliver their listed charge rate times this per unit per tick,
+ * limited by the energy the pad's own store (topped up by its grid) actually holds.
+ */
+export const CHARGE_PAD_RATE_MULTIPLIER = 2;
+/**
  * Units whose centre is within this distance (sub-tile units) of a charging building's
  * centre are charged: the transfer range measured from the building's edge (see
  * Simulation.transferEnergy; units have no footprint).
@@ -31,15 +36,21 @@ export const DEMOLISH_REFUND = 0.5;
 /** Energy to construct a building: this much per tile of footprint area (so 1x1 = 50, 2x2 = 200, 3x3 = 450). */
 export const BUILD_ENERGY_PER_TILE = 50;
 export const buildEnergyCost = (footprint: number): number => footprint * footprint * BUILD_ENERGY_PER_TILE;
+/** Radar pulse: energy per tile of range (the script chooses how much to spend, up to the module's limit). */
+export const RADAR_ENERGY_PER_TILE = 25;
+/** Ticks a radar module must rest after a pulse (10 ticks = 1 second). */
+export const RADAR_COOLDOWN_TICKS = 100;
+/** Ticks until a radar contact has faded from the map entirely. */
+export const RADAR_FADE_TICKS = 300;
 /** Builders off the grid stop building at this share of their energy capacity, so they can still reach a charger. */
 export const BUILDER_ENERGY_RESERVE = 0.25;
 /** A unit with no energy for this many ticks falls apart into a matter block worth its cost. */
 export const DECAY_TICKS = 600;
 
 /** Multiplier applied to solar output after scaling by daylight (1 = unchanged). */
-export const SOLAR_GENERATION_MULTIPLIER = 2;
+export const SOLAR_GENERATION_MULTIPLIER = 75;
 /** Multiplier applied to wind output after scaling by wind intensity (1 = unchanged). */
-export const WIND_GENERATION_MULTIPLIER = 2;
+export const WIND_GENERATION_MULTIPLIER = 25;
 
 /** Matter a new natural patch holds (also the cap it regenerates up to). */
 export const RESOURCE_PATCH_AMOUNT = 1400;
@@ -107,6 +118,24 @@ export const BASE_FIELD_PATCHES = 6;
 export const CENTRE_FIELD_PATCHES = 6;
 export const NEUTRAL_UNITS = 4;
 
+// --- Co-op-mode bots ------------------------------------------------------------
+// Bots cheat: their buildings and units are kept at full energy and their silos full,
+// so they never need to mine. They build each wave's units on demand and send them in growing waves.
+
+/** Ticks between bot decisions (production top-ups and wave checks). */
+export const BOT_THINK_TICKS = 10;
+/** Units each assembler keeps queued, and the most mobile units a bot fields at once. */
+export const BOT_QUEUE_DEPTH = 2;
+export const BOT_MAX_UNITS = 24;
+/** First wave leaves after this many ticks; later waves every BOT_WAVE_INTERVAL_TICKS (10 ticks = 1 second). */
+export const BOT_FIRST_WAVE_TICKS = 1800;
+export const BOT_WAVE_INTERVAL_TICKS = 2400;
+/** Each wave is BOT_WAVE_BASE_SIZE + BOT_WAVE_GROWTH per earlier wave; bots build only that many, then wait. */
+export const BOT_WAVE_BASE_SIZE = 2;
+export const BOT_WAVE_GROWTH = 1;
+/** Idle fighters further than this many tiles from their base press on to the next target instead of waiting. */
+export const BOT_STAGING_RADIUS = 8;
+
 // --- Generators --------------------------------------------------------------------
 
 /** Peak output of one solar panel and one wind turbine, in energy per tick (before the multipliers above). */
@@ -142,6 +171,8 @@ export interface PartTuning {
   readonly storage?: number;
   readonly buildRate?: number;
   readonly use?: number;
+  /** Radar: the most energy one pulse may spend. */
+  readonly radarMaxEnergy?: number;
 }
 
 export const PART_TUNING: Readonly<Record<string, PartTuning>> = {
@@ -185,6 +216,7 @@ export const PART_TUNING: Readonly<Record<string, PartTuning>> = {
   silo: { mass: 3, storage: 1000 },
   'build.arm': { mass: 2, buildRate: 4, use: 2 },
   'build.crane': { mass: 4, buildRate: 6, use: 3 },
+  'radar.pulse': { mass: 4, radarMaxEnergy: 800 },
   'charger.pad': { mass: 3, chargeRate: 10 },
   'solar.panel': { mass: 2, output: SOLAR_PANEL_OUTPUT },
   'wind.turbine': { mass: 4, output: WIND_TURBINE_OUTPUT },

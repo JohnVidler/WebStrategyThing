@@ -56,6 +56,7 @@ export const SCRIPT_CONSTANT_DOCS: readonly (readonly [string, number, string])[
   ['CAN_HARVEST', Caps.Harvest, 'Capability: has a working cargo bay'],
   ['CAN_FLY', Caps.Fly, 'Capability: flies'],
   ['CAN_BUILD', Caps.Build, 'Capability: has a working build arm'],
+  ['HAS_RADAR', Caps.Radar, 'Capability: has a working radar module'],
   ['IS_STRUCTURE', Caps.Structure, 'Capability: is a building'],
   ['IS_FACTORY', Caps.Factory, 'Capability: can produce units'],
   ['IS_DEPOT', Caps.Depot, 'Capability: has resource silos (units can fill or take)'],
@@ -107,7 +108,7 @@ function scanUnits(c: UnitContext, enemy: boolean): number {
     sim.pos.f.x[e],
     sim.pos.f.y[e],
     c.stats.sensorRange,
-    (o) => o !== e && unit.has(o) && (unit.f.owner[o] !== mine) === enemy,
+    (o) => o !== e && unit.has(o) && (enemy ? !sim.allied(unit.f.owner[o], mine) : unit.f.owner[o] === mine),
   );
   return t < 0 ? -1 : sim.world.handle(t);
 }
@@ -182,6 +183,11 @@ export const UNIT_API: HostApi<UnitContext> = [
     const { sim, e } = c;
     return handleOf(c, sim.spatial.nearest(sim.pos.f.x[e], sim.pos.f.y[e], c.stats.sensorRange, (o) => sim.resource.has(o) && sim.resource.f.amount[o] > 0));
   }),
+  api('Sensing', 'radarPulse(energy)', 10,
+    'One-off radar scan: spends `energy` (at most the module allows; 25 per tile of range) and reveals every non-allied unit and building in that radius to you as fading blips on the map. Returns the number of contacts, or -1 with no radar, while it rests, or if the energy is not there.',
+    (c, a) => c.sim.radarPulse(c.e, a[0])),
+  api('Sensing', 'radarCooldown()', 0, 'Ticks until the radar can pulse again; 0 when ready (or if there is no radar).',
+    (c) => c.sim.radarCooldown(c.e)),
   api('Sensing', 'nearestDepot()', 4, 'Nearest own finished building with silo space to spare, or -1.',
     (c) => handleOf(c, c.sim.nearestOwn(c.e, Caps.Depot, (b) => c.sim.stockpile.f.amount[b] < c.sim.stats(b).resourceCapacity))),
   api('Sensing', 'nearestStock()', 4, 'Nearest own finished building with resources in its silos, or -1.',
@@ -194,6 +200,23 @@ export const UNIT_API: HostApi<UnitContext> = [
     (c, a) => { const t = locate(c, a[0]); return t < 0 ? -1 : tileOf(c.sim.pos.f.y[t]); }),
   api('Sensing', 'dist(h)', 2, "Tiles to a known unit (to a building's edge), or -1.",
     (c, a) => { const t = locate(c, a[0]); return t < 0 ? -1 : Math.floor(c.sim.edgeDistance(c.e, t) / TILE); }),
+  api('Sensing', 'nearestStorage()', 4, 'Nearest own finished building with silos, even if they are full, or -1.',
+    (c) => handleOf(c, c.sim.nearestOwn(c.e, Caps.Depot))),
+  api('Sensing', 'randomResource(k, min)', 6,
+    'One of the k nearest resources that hold at least min matter, picked at random so workers spread out instead of farming one field, or -1. Resources are known everywhere; no sensor needed.',
+    (c, a) => {
+      const { sim, e } = c;
+      const x = sim.pos.f.x[e];
+      const y = sim.pos.f.y[e];
+      const near: { d: number; r: number }[] = [];
+      for (const r of sim.resource.dense) {
+        if (sim.resource.f.amount[r] < a[1]) continue;
+        near.push({ d: (sim.pos.f.x[r] - x) ** 2 + (sim.pos.f.y[r] - y) ** 2, r });
+      }
+      near.sort((p, q) => p.d - q.d || p.r - q.r);
+      const pool = near.slice(0, Math.max(1, Math.min(16, a[0])));
+      return pool.length ? handleOf(c, pool[sim.rng.int(pool.length)].r) : -1;
+    }),
   api('Sensing', 'resource(h)', 1, 'Amount left in a resource; 0 if gone.', (c, a) => {
     const t = c.sim.world.resolve(a[0]);
     return t >= 0 && c.sim.resource.has(t) ? c.sim.resource.f.amount[t] : 0;

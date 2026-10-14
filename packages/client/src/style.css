@@ -142,6 +142,32 @@ body {
 .lobby-room .name { font-weight: 600; }
 .lobby-room .name small { display: block; font-weight: 400; color: var(--muted); }
 #lobby-create { width: min(900px, 100%); display: flex; flex-direction: column; gap: 8px; }
+.mode-picker { display: flex; flex-direction: column; gap: 4px; border: 1px solid var(--line); border-radius: 4px; }
+.mode-picker small { color: var(--muted); }
+.lobby-view { width: min(1100px, 100%); display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.menu-buttons { width: min(420px, 100%); display: flex; flex-direction: column; gap: 8px; }
+.menu-buttons button { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 10px 14px; text-align: left; font-size: 15px; }
+.menu-buttons button small { color: var(--muted); font-size: 12px; font-weight: 400; }
+.section-head { width: 100%; display: flex; align-items: center; gap: 12px; }
+#credits { width: min(700px, 100%); display: flex; flex-direction: column; gap: 6px; }
+#credits h3 { margin: 0 0 4px; }
+.credit { padding: 6px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 4px; }
+.credit small { display: block; color: var(--muted); }
+.section-blurb { margin: 0; text-align: center; max-width: 620px; }
+.lobby-split { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+.lobby-split h3 { margin: 0 0 8px; }
+.lobby-left #lobby-rooms { width: 100%; }
+.lobby-right { border-left: 1px solid var(--line); padding-left: 20px; }
+.lobby-right #lobby-name { width: 100%; }
+@media (max-width: 760px) { .lobby-split { grid-template-columns: 1fr; } .lobby-right { border-left: none; padding-left: 0; } }
+.mode-tag { display: inline-block; margin-left: 4px; padding: 0 6px; font-size: 11px; font-weight: 500; border-radius: 8px; background: #26303c; color: var(--muted); vertical-align: middle; }
+.mode-tag.coop { background: #1d2b22; color: var(--good); }
+.lobby-view #lobby-create { width: 100%; }
+#lobby-docs { position: fixed; inset: 0; z-index: 30; display: flex; flex-direction: column; background: var(--panel); }
+#lobby-docs iframe { flex: 1; border: none; background: #fff; }
+/* The host covers the page only so the designer can fill it; it must not catch clicks once the designer is closed. */
+#lobby-designer { position: fixed; inset: 0; z-index: 25; display: flex; flex-direction: column; pointer-events: none; }
+#lobby-designer > * { pointer-events: auto; }
 .lobby-changes { width: min(900px, 100%); display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
 .lobby-changes details { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 4px 10px; }
 .lobby-changes summary { cursor: pointer; color: var(--muted); }
@@ -149,7 +175,14 @@ body {
 #lobby-name { width: min(320px, 100%); }
 .map-picker { min-width: 0; margin: 0; padding: 8px; border: 1px solid var(--line); }
 .map-picker legend { padding: 0 5px; color: var(--muted); font-size: 12px; }
-.map-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 8px; }
+.map-layout { display: flex; gap: 10px; align-items: stretch; }
+/* The list grows to the height of the preview beside it. */
+.map-layout select { flex: 1; min-width: 0; height: auto; align-self: stretch; }
+.map-preview { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.map-preview img { display: block; width: 100%; aspect-ratio: 8 / 5; object-fit: cover; border: 1px solid var(--line); }
+.map-preview small { color: var(--muted); }
+.map-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+@media (max-width: 760px) { .map-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .map-choice { min-width: 0; display: flex; flex-direction: column; gap: 5px; padding: 6px; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; cursor: pointer; }
 .map-choice.selected { border-color: var(--good); background: #1d2b22; }
 .map-choice input { width: 16px; height: 16px; margin: 0; padding: 0; accent-color: var(--good); }
@@ -217,6 +250,8 @@ button.danger { border-color: var(--bad); background: #3a1d1d; }
   min-width: 0;
   overflow: hidden;
 }
+.action-grid .action img { width: 55%; height: 45%; object-fit: contain; }
+#production-buttons.action-grid { grid-template-columns: repeat(4, 1fr); }
 .action-grid .action .icon { font-size: 20px; line-height: 1; }
 .action-grid .action .label { font-size: 10px; line-height: 1.1; text-align: center; overflow-wrap: anywhere; }
 .action-grid .action kbd {
@@ -496,3 +531,35 @@ button.primary { border-color: var(--accent); background: #1b2a40; }
 .diff-body .dctx { color: var(--muted); }
 .diff-body .dgap { color: #4b5563; }
 .diff-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* Background music: now-playing line and volume, bottom-right over everything. */
+.music {
+  position: fixed;
+  right: 8px;
+  bottom: 8px;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 60vw;
+  padding: 3px 8px;
+  background: color-mix(in srgb, var(--panel) 85%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  opacity: 0.55;
+  transition: opacity 0.2s;
+}
+.music:hover { opacity: 1; }
+.music-toggle { background: none; border: 0; padding: 0; cursor: pointer; font-size: 14px; }
+.music input[type='range'] { width: 70px; }
+.music-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.music-label a { color: inherit; }
+/* The browser blocked autoplay: nudge the player to click anywhere. */
+.music.blocked { opacity: 1; border-color: var(--accent); }
+.music.blocked .music-label::after { content: ' — click anywhere to start the music'; color: var(--accent); }
+/* In a match it sits at the bottom of the side panel, just above the designs bar. */
+.music.docked { position: static; max-width: none; margin-top: auto; opacity: 1; background: none; }
+.music.docked + #designs-bar { margin-top: 0; }
+.music.docked .music-label { flex: 1; min-width: 0; }

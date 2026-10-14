@@ -28,7 +28,7 @@ const RESTORE_DELAY_MS = 300;
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
 
-function readStorage(): string | null {
+export function readStorage(): string | null {
   try {
     return localStorage.getItem(STORAGE_KEY);
   } catch {
@@ -36,7 +36,7 @@ function readStorage(): string | null {
   }
 }
 
-function writeStorage(text: string): boolean {
+export function writeStorage(text: string): boolean {
   try {
     localStorage.setItem(STORAGE_KEY, text);
     return true;
@@ -115,6 +115,18 @@ function chosenMine(form: HTMLElement, items: readonly ClassifiedDesign[]): Set<
   return mine;
 }
 
+/** The player's current classes as a design file (superseded copies left out). */
+export function snapshotDesigns(state: ClientState): DesignFile {
+  const mine = state.blueprints.ownedBy(state.myId);
+  const activeNames = new Set(mine.filter((b) => !b.retired).map((b) => b.name));
+  return makeDesignFile(
+    mine
+      // A retired class whose name lives on in an active class was replaced (new parts): drop it.
+      .filter((b) => !(b.retired && activeNames.has(b.name)))
+      .map((b) => ({ name: b.name, parts: b.parts, program: state.programs.get(b.id) ?? '', retired: b.retired })),
+  );
+}
+
 export interface DesignHost {
   send(msg: ClientMessage): void;
   notify(text: string, ok: boolean): void;
@@ -134,14 +146,7 @@ export class DesignStore {
 
   /** The player's current classes as a design file (superseded copies left out). */
   snapshot(): DesignFile {
-    const mine = this.state.blueprints.ownedBy(this.state.myId);
-    const activeNames = new Set(mine.filter((b) => !b.retired).map((b) => b.name));
-    return makeDesignFile(
-      mine
-        // A retired class whose name lives on in an active class was replaced (new parts): drop it.
-        .filter((b) => !(b.retired && activeNames.has(b.name)))
-        .map((b) => ({ name: b.name, parts: b.parts, program: this.state.programs.get(b.id) ?? '', retired: b.retired })),
-    );
+    return snapshotDesigns(this.state);
   }
 
   /** Call whenever class info or programs arrive. */

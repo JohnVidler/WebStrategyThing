@@ -3,6 +3,11 @@
 Outstanding actions. Tick items off (or delete them) as they are done, and log the change in PROGRESS.md.
 
 ## For you (the user)
+- [ ] Try the radar in a browser: design a class with `radar.pulse`, call `radarPulse(400)` from its script (e.g. when `radarCooldown() == 0`), and check the ring, blip colours and fade. The default Radar Tower now exists; check its ping rate and energy use feel right, and whether blips need an art/icon for the part.
+- [ ] Feel-check charging: pads now deliver 2x (`CHARGE_PAD_RATE_MULTIPLIER` in `rules.ts`); confirm units recharge at a good pace and a pad on a small grid drains sensibly.
+- [ ] Check the Back button in a browser: from Single-player, Multiplayer, Credits, the API reference and the Designer it should return to the main menu (Forward should reopen), and the on-screen Back/close buttons should behave the same.
+- [ ] Read through the new `docs/*.md` pages: the README split was mechanical, so check links and wording (e.g. `docs/server.md` intro repeats a bullet).
+- [ ] Keep docs in step: engine/design notes go in `docs/game.md`, UI/controls in `docs/client.md`, server/network in `docs/server.md`, run/Docker/music in `docs/deployment.md`.
 - [ ] Fix the global npm shadowing: `npm install -g npm@11` (or delete `%AppData%\npm\node_modules\npm`). Node's `npm` currently runs an old 9.8.1.
 - [ ] If PowerShell blocks `npm`: `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned`, or use `npm.cmd`.
 - [x] Play-test in a browser (the model cannot see the rendered game): action grid (common buttons, aiming, hotkeys, class buttons such as the fighters' Hold fire), info bar for one and several selected units, fog of war shading, green charging zones, selection sparklines in the side panel, power-flow dot speeds (do busy links read as busier?), band-select priority and control groups (check Ctrl+1..9 is not taken by the browser's tab switching), design download/upload/reset (and rejoining after editing a class to check it is restored), dashed power-link preview while placing, demolish/cancel (press X twice), construction towers, grid totals and highlighted networks, health bars and decluttered routes for big groups, designer (module drag-reorder, retire/restore, history and upload diff, sandbox test run), zoom/pan, build bar, power links, reviving flat units, terrain/flying, docs overlay.
@@ -13,6 +18,12 @@ Outstanding actions. Tick items off (or delete them) as they are done, and log t
 - [ ] Decide whether to put the project under git (`git init`); nothing is committed yet.
 
 - [ ] Eyeball the new module-driven unit/building art and designer preview in a browser; tune glyph sizes and colours for readability at low zoom.
+
+- [ ] Play-test Co-op vs bots: wave timing and size (`BOT_*` in `rules.ts`; recently slowed so waves start at 2 units, +1 each, 4 min apart — check the difficulty feels right), the bot roster and base layout in `game/bot.ts`, and the lobby mode picker.
+
+- [ ] Check the new main menu in a browser: section navigation, room lists per mode, Single-player start, API overlay, and the offline Designer (create/edit/retire a class, then start a match and confirm it is restored).
+
+- [ ] Try the background music in a browser: menu tracks, switch to combat when units are hit and back after ~15 s, track-end shuffle, mute/volume widget placement (bottom-right, may overlap the build bar), and the mounted music folder under Docker.
 
 ## For the model
 - [ ] Visual polish after the play-test (sidebar header/resources and CPU status width updated; link widths and route decluttering remain untested guesses).

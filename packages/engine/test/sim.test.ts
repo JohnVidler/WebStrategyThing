@@ -519,24 +519,50 @@ describe('construction and resources', () => {
     expect(sim.tasks[made[0]]!.type(0)).not.toBe(TaskType.Harvest);
   });
 
-  it('the Resource Silo sends docked harvesters back to their last field', () => {
+  it('the Resource Silo sends docked harvesters to one of the nearest fields, chosen at random', () => {
     const { sim, own, cls } = makeMatch();
     const [scout] = own(1, 'Scout');
     const [tx, ty] = tileOf(sim, scout);
     const silo = sim.spawnStructure(cls(1, 'Resource Silo'), tx + 5, ty);
     const passiveHarvester = sim.blueprints.define(1, 'Passive Harvester', ['chassis.light', 'motor.small', 'cargo.bay']);
-    const harvester = sim.spawnUnit(passiveHarvester, sim.pos.f.x[silo], sim.pos.f.y[silo]);
-    const field = sim.resource.dense.find((e) => sim.resource.f.amount[e] > 0)!;
-    const target = sim.world.handle(field);
-    sim.harvester.f.target[harvester] = target;
-    run(sim, 3);
+    const nearest = sim.resource.dense
+      .filter((e) => sim.resource.f.amount[e] >= 10)
+      .sort((p, q) => Math.hypot(sim.pos.f.x[p] - sim.pos.f.x[silo], sim.pos.f.y[p] - sim.pos.f.y[silo]) - Math.hypot(sim.pos.f.x[q] - sim.pos.f.x[silo], sim.pos.f.y[q] - sim.pos.f.y[silo]))
+      .slice(0, 4);
+    const picked = new Set<number>();
+    for (let i = 0; i < 12; i++) {
+      const harvester = sim.spawnUnit(passiveHarvester, sim.pos.f.x[silo], sim.pos.f.y[silo]);
+      run(sim, 3);
+      expect(sim.dock(harvester, silo)).toBe(true);
+      run(sim, 8);
+      const queue = sim.tasks[harvester]!;
+      expect(queue.type(queue.count - 1)).toBe(TaskType.Harvest);
+      const target = sim.world.resolve(queue.target(queue.count - 1));
+      expect(nearest).toContain(target);
+      picked.add(target);
+    }
+    expect(picked.size).toBeGreaterThan(1); // not always the same field
+  });
 
-    expect(sim.dock(harvester, silo)).toBe(true);
-    run(sim, 3);
+  it('a harvester with nothing to do goes back to a storage building, and swaps a spent field for another', () => {
+    const { sim, own } = makeMatch();
+    const [harvester] = own(1, 'Harvester');
+    sim.tasks[harvester]!.clear();
+    const hq = own(1, 'HQ')[0];
+    run(sim, 600);
+    // It found work again (or is at the HQ getting it): never left stalled and idle.
+    const busy = sim.tasks[harvester]!.count > 0 || sim.cargo.f.amount[harvester] > 0 || sim.motion.f.moving[harvester] === 1;
+    expect(busy || sim.edgeDistance(harvester, hq) <= 3 * TILE).toBe(true);
 
-    const queue = sim.tasks[harvester]!;
-    expect(queue.type(queue.count - 1)).toBe(TaskType.Harvest);
-    expect(queue.target(queue.count - 1)).toBe(sim.world.resolve(target));
+    const spent = sim.resource.dense.find((e) => sim.resource.f.amount[e] > 0)!;
+    const hv = own(1, 'Harvester')[1] ?? harvester;
+    sim.tasks[hv]!.clear();
+    sim.resource.f.amount[spent] = 2;
+    sim.tasks[hv]!.push(TaskType.Harvest, 0, 0, sim.world.handle(spent), 0);
+    run(sim, 10);
+    const q = sim.tasks[hv]!;
+    expect(q.count).toBeGreaterThan(0);
+    expect(sim.world.resolve(q.target(0))).not.toBe(spent);
   });
 });
 

@@ -1,0 +1,35 @@
+# Deployment
+
+[← Back to the README](../README.md)
+
+## Running locally
+
+Requires Node 24+ (see `.nvmrc`) and npm 11.
+
+```sh
+npm install
+npm run dev        # client on http://localhost:5173; /api/v1/* proxies to the server on port 8080
+npm test           # engine + client tests (VM, pathing, energy, construction, orders, buttons, fog, sandbox,
+                   # design files, docs, diff, sparklines, turrets)
+npm run typecheck
+```
+
+## Docker
+
+Requires Docker with Compose.
+
+```sh
+docker compose up
+```
+
+By default, Compose pulls the latest client and server images from GHCR. Use `docker compose up --build` to build both targets from the current checkout instead. Set `IMAGE_TAG` to pull another published tag. Open `http://localhost:8081`. Compose publishes only the client port; its Nginx forwards `/api/v1/*` to the private game server, including WebSocket upgrades at `/api/v1/ws`. The room-list endpoint is `/api/v1/rooms`. For `nginx-proxy`, route the host to the client container on port 80. Set `CLIENT_PORT` to change the local published port. The client derives HTTP and WebSocket endpoints from the current origin, using `wss` on HTTPS. Set `VITE_SERVER_URL` only when the WebSocket endpoint is hosted elsewhere; it must include `/api/v1/ws`. Set `FOG=off` to disable fog of war. 
+
+### Background music
+
+Music is not part of the repository: put the audio files and their `music_manifest.json` in a folder (default `./music`, or set `MUSIC_PATH`), which Compose mounts read-only into the server at `/app/music`. Outside Docker the server reads `./music` in the project root, or `MUSIC_DIR`. Each manifest entry's `tags` pick when it plays: `menu` (main menu), `idle` (in a match) and `combat` (while anything in view is losing health, plus 15 s). When a track ends another is chosen at random from the current tag. The server lists tracks at `/api/v1/music` and streams them from `/api/v1/music/<file>`; with no folder there is simply no music.
+
+```sh
+docker compose down
+```
+
+The `Publish Docker images` GitHub Action runs tests and typechecking on pull requests, then publishes the Dockerfile's two targets to GHCR on pushes to `main` and `v*` tags. The images are `ghcr.io/johnvidler/webstrategything-client` and `ghcr.io/johnvidler/webstrategything-server`; each gets branch/tag and short-SHA tags, and `latest` is updated from the default branch. The client and server images must run on the same Docker network so the client Nginx proxy can reach the server at `server:8080`.

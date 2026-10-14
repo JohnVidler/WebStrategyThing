@@ -31,7 +31,7 @@ const CATEGORIES: { title: string; match: (p: PartDef) => boolean }[] = [
   { title: 'Building frames', match: (p) => p.slot === 'chassis' && p.structure === true },
   { title: 'Compute', match: (p) => p.slot === 'cpu' || p.slot === 'memory' },
   { title: 'Movement', match: (p) => p.slot === 'motor' },
-  { title: 'Sensors & weapons', match: (p) => (['sensor', 'weapon', 'armor'] as PartSlot[]).includes(p.slot) },
+  { title: 'Sensors & weapons', match: (p) => (['sensor', 'radar', 'weapon', 'armor'] as PartSlot[]).includes(p.slot) },
   { title: 'Industry', match: (p) => (['cargo', 'builder', 'factory', 'depot'] as PartSlot[]).includes(p.slot) },
   { title: 'Power', match: (p) => (['battery', 'charger', 'generator', 'antenna'] as PartSlot[]).includes(p.slot) },
 ];
@@ -252,8 +252,13 @@ export class Designer {
     return !this.root.hidden;
   }
 
+  /** Called when the overlay goes from open to closed, by whatever means. */
+  onClose?: () => void;
+
   toggle(open: boolean): void {
+    const wasOpen = !this.root.hidden;
     this.root.hidden = !open;
+    if (wasOpen && !open) this.onClose?.();
     if (open) {
       this.renderClassList();
       this.renderDesign();
