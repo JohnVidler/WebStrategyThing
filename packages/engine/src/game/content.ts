@@ -166,6 +166,7 @@ export const LASER_TURRET_CLASS: ClassTemplate = {
   parts: ['frame.small', 'cpu.basic', 'sensor.long', 'laser.beam', 'battery.bank'],
   program: `# Laser turret: shoots the nearest enemy in sensor range. Each shot costs a lot of
 # energy, so it must be linked to a power network (or it runs on its battery bank).
+# laserPower(n) sets the energy per shot (up to the laser's max); damage scales with it.
 var h = -1
 
 h = scan()

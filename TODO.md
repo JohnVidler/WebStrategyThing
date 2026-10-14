@@ -25,6 +25,8 @@ Outstanding actions. Tick items off (or delete them) as they are done, and log t
 
 - [ ] Try the background music in a browser: menu tracks, switch to combat when units are hit and back after ~15 s, track-end shuffle, mute/volume widget placement (bottom-right, may overlap the build bar), and the mounted music folder under Docker.
 
+- [ ] Check the new tree-style build bar in a browser: category buttons, pop-up menu placement, single-building folding into Other, and whether the category choice feels right for your custom buildings.
+
 ## For the model
 - [ ] Visual polish after the play-test (sidebar header/resources and CPU status width updated; link widths and route decluttering remain untested guesses).
 - [ ] Fog follow-ups: remembered ("ghost") enemy buildings in explored areas; per-tick visibility cost if unit counts grow (use the spatial grid).

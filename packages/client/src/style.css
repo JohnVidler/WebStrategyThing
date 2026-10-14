@@ -274,7 +274,7 @@ button.danger { border-color: var(--bad); background: #3a1d1d; }
 .group-bar .group { display: flex; align-items: baseline; gap: 4px; padding: 2px 7px; font-size: 12px; }
 .group-bar .group small { color: var(--muted); }
 
-/* Build bar: one button per building class, under the map. */
+/* Build bar: category buttons, then (once one is opened) its buildings, under the map. */
 #buildbar {
   position: relative;
   z-index: 10;
@@ -294,6 +294,26 @@ button.danger { border-color: var(--bad); background: #3a1d1d; }
   padding: 4px 8px 4px 4px;
   font-size: 12px;
 }
+#buildbar button.category.open { border-color: var(--accent, #6aa8ff); }
+#buildmenu {
+  position: fixed;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px #0008;
+}
+#buildmenu[hidden] { display: none; }
+#buildmenu h3 { margin: 0 0 2px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+#buildmenu button { display: flex; align-items: center; gap: 6px; padding: 4px 8px 4px 4px; font-size: 12px; }
+#buildmenu button.active { border-color: var(--good); background: #1d2b22; }
+#buildmenu img { width: 36px; height: 36px; object-fit: contain; }
+#buildmenu span { display: flex; flex-direction: column; align-items: flex-start; line-height: 1.2; }
+#buildmenu small { color: #7ee0b5; }
 #buildbar button.active { border-color: var(--good); background: #1d2b22; }
 #buildbar img { width: 36px; height: 36px; object-fit: contain; }
 #buildbar span { display: flex; flex-direction: column; align-items: flex-start; line-height: 1.2; }

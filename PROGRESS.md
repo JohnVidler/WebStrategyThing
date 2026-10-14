@@ -2,6 +2,17 @@
 
 Changes to the codebase, grouped by day (newest first).
 
+## 2026-10-15
+
+### Laser damage scales with power; `laserPower(energy)`
+- Laser base damage cut 14 -> 8 (`rules.ts`, at its full 20 energy per shot). Damage is now `damage × energy spent / max energy`, so half power is half damage (minimum 1).
+- New script builtin `laserPower(energy)` (`api.ts`) sets the energy per shot (1..max; 0 restores max) and returns the energy in use, or 0 without a laser. Stored as `Weapon.power` (`components.ts`), applied in `combatSystem` (`systems.ts`). The laser turret script mentions it; the default behaviour is unchanged (full power).
+- Test added to `engine/test/turret.test.ts`; full suite passes.
+
+### Tree-style build bar
+- The build bar no longer lists every building in one scrolling row. The top level now shows **categories** derived from each building's modules (Production: factory; Construction: build crane; Defence: weapon/radar; Power: generator, battery, antenna; Logistics: silo, charging pad; Other), in `Ui.buildCategory`/`renderBuildBar` (`client/src/ui.ts`). Categories with a single building are folded into "Other", and if only one category exists its buildings are shown directly.
+- Clicking a category pops a menu of its buildings up over the map (`#buildmenu`, fixed above the bar, closes on outside click or re-click); the category buttons stay in place. Custom building classes are categorised by the same rules. Typecheck passes; not yet seen in a browser.
+
 ## 2026-10-14
 
 ### Radar contacts drawn as the real unit art

@@ -58,7 +58,7 @@ How the simulation works: classes, scripts, energy, construction and combat. Ser
 - **Decay:** a unit with no energy for 60 seconds (`DECAY_TICKS`) breaks down into a matter block worth its cost. Charging or supplying it first resets the countdown.
 
 ## Weapons
-- Each weapon kind pays differently (`game/parts.ts`): the **light gun** is free, the **cannon** uses matter (from the cargo bay on a vehicle, from the silos on a building), and the **laser** uses a lot of energy per shot. The **tesla coil** stuns the CPU of every unit and building around it, friend or foe, then recharges slowly; on a vehicle it stuns the vehicle too, for half as long. Tesla range, stun length and cooldown are constants in `game/rules.ts`.
+- Each weapon kind pays differently (`game/parts.ts`): the **light gun** is free, the **cannon** uses matter (from the cargo bay on a vehicle, from the silos on a building), and the **laser** uses a lot of energy per shot (its damage scales with the energy spent, which a script can set with `laserPower(energy)`; 8 damage at the full 20). The **tesla coil** stuns the CPU of every unit and building around it, friend or foe, then recharges slowly; on a vehicle it stuns the vehicle too, for half as long. Tesla range, stun length and cooldown are constants in `game/rules.ts`.
 - Buildings can carry weapons (the starter **Laser Turret**); a building's weapon is activated when construction finishes.
 
 ## Saved designs

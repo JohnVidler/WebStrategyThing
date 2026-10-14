@@ -18,3 +18,23 @@ describe('laser turret', () => {
     expect(!sim.world.isAlive(enemy) || sim.health.f.hp[enemy] < hp).toBe(true);
   });
 });
+
+describe('laser power', () => {
+  it('scales damage with the energy per shot and defaults to full power', () => {
+    const run = (power: number): number => {
+      const sim = new Simulation({ width: 30, height: 30, seed: 1 });
+      const bp = sim.blueprints.define(1, 'L', ['chassis.medium', 'cpu.basic', 'laser.beam', 'battery.cell']);
+      const a = sim.spawnUnit(bp, 10 * TILE, 10 * TILE);
+      const b = sim.spawnUnit(bp, 11 * TILE, 10 * TILE);
+      sim.energy.f.amount[a] = bp.stats.energyCapacity;
+      sim.weapon.f.power[a] = power;
+      sim.weapon.f.target[a] = sim.world.handle(b);
+      const before = sim.health.f.hp[b];
+      sim.step();
+      return before - sim.health.f.hp[b];
+    };
+    const full = run(0);
+    expect(full).toBeGreaterThan(0);
+    expect(run(10)).toBeLessThan(full);
+  });
+});

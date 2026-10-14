@@ -202,7 +202,7 @@ export const PART_TUNING: Readonly<Record<string, PartTuning>> = {
   // The tesla coil's range and cooldown come from TESLA_RANGE / TESLA_COOLDOWN above; its `use` is per discharge.
   'gun.light': { mass: 1, weapon: { range: 4, damage: 5, cooldown: 5 }, use: 0 },
   'gun.cannon': { mass: 4, weapon: { range: 7, damage: 25, cooldown: 20, matter: 3 }, use: 0 },
-  'laser.beam': { mass: 3, weapon: { range: 8, damage: 14, cooldown: 8 }, use: 20 },
+  'laser.beam': { mass: 3, weapon: { range: 8, damage: 8, cooldown: 8 }, use: 20 },
   'tesla.coil': { mass: 5, weapon: { range: 0, damage: 0, cooldown: 0 }, use: 40 },
 
   'armor.plate': { mass: 4, hp: 60 },

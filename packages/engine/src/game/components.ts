@@ -28,7 +28,7 @@ export const Construction = defineComponent('Construction', { progress: 'u8' }, 
 // Server-only.
 /** `arrived`: 1 = reached the end of the path to (tx, ty); 2 = stopped short by a crowd. */
 export const Motion = defineComponent('Motion', { tx: 'i32', ty: 'i32', moving: 'u8', arrived: 'u8' });
-export const Weapon = defineComponent('Weapon', { target: 'i32', cooldown: 'u16' });
+export const Weapon = defineComponent('Weapon', { target: 'i32', cooldown: 'u16', power: 'u16' });
 /** `target` is the resource handle last given to harvest() — kept as "where I was working". */
 export const Harvester = defineComponent('Harvester', { target: 'i32' });
 export const Energy = defineComponent('Energy', { amount: 'i32' });

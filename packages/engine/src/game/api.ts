@@ -283,6 +283,16 @@ export const UNIT_API: HostApi<UnitContext> = [
       sim.weapon.f.target[e] = sim.world.handle(t);
       return sim.edgeDistance(e, t) <= w.range ? 1 : 0;
     }),
+  api('Actions', 'laserPower(energy)', 1,
+    "Set the energy a laser spends per shot (1 to the laser's maximum); damage scales in proportion, so half the energy is half the damage. 0 restores the maximum. Returns the energy now in use, or 0 without a laser.",
+    (c, a) => {
+      const { sim, e } = c;
+      const w = c.stats.weapon;
+      if (!w || w.kind !== 'laser' || !sim.weapon.has(e)) return 0;
+      const p = a[0] <= 0 ? 0 : Math.min(Math.max(1, Math.floor(a[0])), c.stats.weapon!.use);
+      sim.weapon.f.power[e] = p;
+      return p > 0 ? p : w.use;
+    }),
   api('Actions', 'cargo()', 0, 'Resources carried.', (c) => (c.sim.cargo.has(c.e) ? c.sim.cargo.f.amount[c.e] : 0)),
   api('Actions', 'cargoMax()', 0, 'Cargo capacity (0 if the cargo bay is off).', (c) => c.stats.cargo),
   api('Actions', 'harvest(h)', 1, 'Gather from an adjacent resource each tick until full; 1 if gathering. Energy: cargo bay use per tick.',

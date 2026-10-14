@@ -340,7 +340,9 @@ export function combatSystem(sim: Simulation): void {
     }
     if (sim.edgeDistance(e, t) > stats.range) continue;
     if (!sim.canSpendMatter(e, stats.matter)) continue;
-    if (!sim.spend(e, stats.use)) continue;
+    // A laser's script may choose the energy per shot (laserPower); damage scales with it.
+    const shotEnergy = stats.kind === 'laser' && w.power[e] > 0 ? Math.min(w.power[e], stats.use) : stats.use;
+    if (!sim.spend(e, shotEnergy)) continue;
     sim.spendMatter(e, stats.matter);
     w.cooldown[e] = stats.cooldown;
     sim.emit(SimEvent.Shot, e, t);
@@ -348,7 +350,8 @@ export function combatSystem(sim: Simulation): void {
       teslaDischarge(sim, e, stats.range);
       continue;
     }
-    hp[t] -= stats.damage;
+    const damage = stats.kind === 'laser' && stats.use > 0 ? Math.max(1, Math.round((stats.damage * shotEnergy) / stats.use)) : stats.damage;
+    hp[t] -= damage;
     sim.lastHitBy[t] = sim.unit.f.owner[e];
     sim.health.markChanged(t);
   }

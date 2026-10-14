@@ -2,6 +2,7 @@ import {
   Cargo,
   Construction,
   CpuStatus,
+  type Blueprint,
   EnergyView,
   FAULT_NAMES,
   Health,
@@ -51,6 +52,10 @@ export class Ui {
   private readonly docsOverlay = el<HTMLDivElement>('docs-overlay');
   private readonly docsFrame = el<HTMLIFrameElement>('docs-frame');
   private readonly buildBar = el<HTMLDivElement>('buildbar');
+  /** Build-bar category currently expanded, or null at the top level. */
+  private openCategory: string | null = null;
+  private buildGroups = new Map<string, Blueprint[]>();
+  private buildMenu: HTMLDivElement | null = null;
   private readonly hoverBar = el<HTMLDivElement>('hoverbar');
   private readonly scoreboard = el<HTMLTableElement>('scoreboard');
   private readonly standings = el<HTMLDivElement>('standings');
@@ -346,30 +351,144 @@ export class Ui {
   /** Highlights the build-bar button of the blueprint being placed (or none). */
   setPlacing(blueprint: number): void {
     this.placing = blueprint;
-    for (const b of this.buildBar.querySelectorAll<HTMLButtonElement>('button')) {
+    const buttons = [...this.buildBar.querySelectorAll<HTMLButtonElement>('button')];
+    if (this.buildMenu) buttons.push(...this.buildMenu.querySelectorAll<HTMLButtonElement>('button'));
+    for (const b of buttons) {
       b.classList.toggle('active', Number(b.dataset.blueprint) === blueprint);
     }
   }
 
-  /** One button per own building class: icon, name and cost. */
+  /** Build-bar category for a building class, from the modules it carries (first match wins). */
+  private buildCategory(bp: Blueprint): string {
+    const slots = new Set(bp.parts.map((id) => PARTS[id]?.slot));
+    const has = (...s: string[]) => s.some((x) => slots.has(x as never));
+    if (has('factory')) return 'Production';
+    if (has('builder')) return 'Construction';
+    if (has('weapon', 'radar')) return 'Defence';
+    if (has('generator')) return 'Power';
+    if (has('depot', 'charger')) return 'Logistics';
+    if (has('battery', 'antenna')) return 'Power';
+    return 'Other';
+  }
+
+  /**
+   * Tree-style build bar: the top level lists categories (derived from each
+   * building's modules, with lone buildings folded into "Other"); picking one
+   * pops a menu of that category's buildings up over the map.
+   */
   private renderBuildBar(): void {
     const classes = this.state.blueprints.ownedBy(this.state.myId).filter((bp) => bp.stats.structure && !bp.retired);
-    const key = classes.map((bp) => bp.id).join(',');
-    if (this.buildBar.dataset.key === key) return;
-    this.buildBar.dataset.key = key;
-    this.buildBar.innerHTML = '';
+    const groups = new Map<string, Blueprint[]>();
     for (const bp of classes) {
-      const btn = document.createElement('button');
-      btn.dataset.blueprint = String(bp.id);
-      btn.title = `${bp.name}: ${bp.stats.footprint}×${bp.stats.footprint}, costs ◆${bp.stats.cost} (paid as it is built). Select builders first to assign them.`;
-      const img = document.createElement('img');
-      img.alt = '';
-      this.actions.iconFor(bp.id).then((src) => (img.src = src)).catch(() => img.remove());
-      const label = document.createElement('span');
-      label.innerHTML = `${bp.name}<small>◆${bp.stats.cost}</small>`;
-      btn.append(img, label);
-      btn.onclick = () => this.actions.place(bp.id);
-      this.buildBar.appendChild(btn);
+      const cat = this.buildCategory(bp);
+      const list = groups.get(cat) ?? [];
+      list.push(bp);
+      groups.set(cat, list);
+    }
+    // Avoid single-building categories by merging them into "Other".
+    const other = groups.get('Other') ?? [];
+    for (const [cat, list] of [...groups]) {
+      if (cat !== 'Other' && list.length < 2) {
+        other.push(...list);
+        groups.delete(cat);
+      }
+    }
+    if (other.length) groups.set('Other', other);
+    else groups.delete('Other');
+    for (const list of groups.values()) list.sort((a, b) => a.id - b.id);
+    const cats = [...groups.keys()].sort((a, b) => (a === 'Other' ? 1 : b === 'Other' ? -1 : a.localeCompare(b)));
+    if (this.openCategory && !groups.has(this.openCategory)) this.openCategory = null;
+    this.buildGroups = groups;
+    // Nothing to nest: show the buildings directly.
+    const flat = cats.length === 1 ? cats[0] : null;
+
+    const key = `${flat ?? ''}|${cats.map((c) => `${c}:${groups.get(c)!.map((bp) => bp.id).join('.')}`).join(',')}`;
+    if (this.buildBar.dataset.key !== key) {
+      this.buildBar.dataset.key = key;
+      this.buildBar.innerHTML = '';
+      if (flat) {
+        for (const bp of groups.get(flat)!) this.buildBar.appendChild(this.buildingButton(bp));
+      } else {
+        for (const cat of cats) {
+          const list = groups.get(cat)!;
+          const btn = document.createElement('button');
+          btn.className = 'category';
+          btn.dataset.category = cat;
+          btn.title = `${cat}: ${list.map((bp) => bp.name).join(', ')}`;
+          const img = document.createElement('img');
+          img.alt = '';
+          this.actions.iconFor(list[0].id).then((src) => (img.src = src)).catch(() => img.remove());
+          const label = document.createElement('span');
+          label.innerHTML = `${cat}<small>${list.length} buildings ▴</small>`;
+          btn.append(img, label);
+          btn.onclick = () => {
+            this.openCategory = this.openCategory === cat ? null : cat;
+            this.renderBuildMenu();
+          };
+          this.buildBar.appendChild(btn);
+        }
+      }
+    }
+    this.renderBuildMenu();
+    this.setPlacing(this.placing);
+  }
+
+  private buildingButton(bp: Blueprint): HTMLButtonElement {
+    const btn = document.createElement('button');
+    btn.dataset.blueprint = String(bp.id);
+    btn.title = `${bp.name}: ${bp.stats.footprint}×${bp.stats.footprint}, costs ◆${bp.stats.cost} (paid as it is built). Select builders first to assign them.`;
+    const img = document.createElement('img');
+    img.alt = '';
+    this.actions.iconFor(bp.id).then((src) => (img.src = src)).catch(() => img.remove());
+    const label = document.createElement('span');
+    label.innerHTML = `${bp.name}<small>◆${bp.stats.cost}</small>`;
+    btn.append(img, label);
+    btn.onclick = () => this.actions.place(bp.id);
+    return btn;
+  }
+
+  /** Pop-up listing the open category's buildings, floating over the map above its button. */
+  private renderBuildMenu(): void {
+    const cat = this.openCategory;
+    const list = cat ? this.buildGroups.get(cat) : undefined;
+    if (!this.buildMenu) {
+      const menu = document.createElement('div');
+      menu.id = 'buildmenu';
+      menu.hidden = true;
+      document.body.appendChild(menu);
+      this.buildMenu = menu;
+      document.addEventListener('pointerdown', (e) => {
+        const t = e.target as Node;
+        if (this.openCategory && !menu.contains(t) && !this.buildBar.contains(t)) {
+          this.openCategory = null;
+          this.renderBuildMenu();
+        }
+      });
+    }
+    const menu = this.buildMenu;
+    for (const b of this.buildBar.querySelectorAll<HTMLButtonElement>('button.category')) {
+      b.classList.toggle('open', b.dataset.category === cat);
+    }
+    if (!cat || !list) {
+      menu.hidden = true;
+      menu.innerHTML = '';
+      delete menu.dataset.key;
+      return;
+    }
+    const menuKey = `${cat}:${list.map((bp) => bp.id).join('.')}`;
+    if (menu.dataset.key === menuKey && !menu.hidden) return;
+    menu.dataset.key = menuKey;
+    menu.innerHTML = '';
+    const title = document.createElement('h3');
+    title.textContent = cat;
+    menu.appendChild(title);
+    for (const bp of list) menu.appendChild(this.buildingButton(bp));
+    menu.hidden = false;
+    const anchor = this.buildBar.querySelector<HTMLElement>(`button[data-category="${CSS.escape(cat)}"]`);
+    if (anchor) {
+      const r = anchor.getBoundingClientRect();
+      menu.style.left = `${Math.max(4, Math.min(r.left, window.innerWidth - menu.offsetWidth - 4))}px`;
+      menu.style.bottom = `${window.innerHeight - this.buildBar.getBoundingClientRect().top + 4}px`;
     }
     this.setPlacing(this.placing);
   }
