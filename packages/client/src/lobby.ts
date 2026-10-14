@@ -1,5 +1,6 @@
 /** Room list shown when the page is opened without ?room=: pick a match or create one. */
 import { getPlayerName, getSavedPlayerName, NAME_MAX, setPlayerName } from './playerName';
+import { randomHex } from './random';
 import { createMapTerrain, DEFAULT_MAP_ID, MAPS } from '@wst/engine';
 
 interface RoomInfo {
@@ -26,7 +27,7 @@ const clock = (seconds: number): string => {
 
 const ROOM_NAME = /^[A-Za-z0-9_-]{1,24}$/;
 const REFRESH_MS = 3000;
-const randomRoomName = () => `room-${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
+const randomRoomName = () => `room-${randomHex(6)}`;
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
 

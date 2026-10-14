@@ -6,6 +6,7 @@ import type { Designer } from './designer';
 import { Input } from './input';
 import { showLobby } from './lobby';
 import { getPlayerName, getSavedPlayerName } from './playerName';
+import { randomHex } from './random';
 import { Renderer } from './renderer';
 import { ClientState } from './state';
 import { Ui } from './ui';
@@ -188,9 +189,9 @@ async function main(): Promise<void> {
   let token = '';
   try {
     token = sessionStorage.getItem('wst-token') ?? '';
-    if (!token) sessionStorage.setItem('wst-token', (token = crypto.randomUUID().replaceAll('-', '')));
+    if (!token) sessionStorage.setItem('wst-token', (token = randomHex()));
   } catch {
-    token = crypto.randomUUID().replaceAll('-', '');
+    token = randomHex();
   }
   const url = `${socketBase}${socketBase.includes('?') ? '&' : '?'}room=${encodeURIComponent(room)}&token=${token}&map=${encodeURIComponent(mapId)}`;
   const conn = new Connection(url, {

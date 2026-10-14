@@ -4,6 +4,10 @@ Changes to the codebase, grouped by day (newest first).
 
 ## 2026-10-14
 
+### HTTP random-ID compatibility
+- Replaced `crypto.randomUUID()` in reconnect-token and room-name generation with a shared helper that uses `crypto.getRandomValues()` when available and falls back when Web Crypto is missing.
+- Tests: 84 pass. Browser-checked room creation and joining with `crypto.randomUUID` disabled.
+
 ### Docker deployment
 - Added multi-stage images for the static Nginx client and the Node server with production-only dependencies; Compose publishes only the client port and health-checks the internal server.
 - `/api/v1/rooms` and `/api/v1/ws` are reverse-proxied to the server, including WebSocket upgrades; Vite mirrors the same-origin proxy during development. Promoted `tsx` to a server runtime dependency and added `.dockerignore`.
