@@ -10,6 +10,8 @@ export const TaskType = {
   Build: 7,
   /** Give energy to the target (e.g. a unit that ran flat). */
   Supply: 8,
+  /** Mend the target own unit or building with the repair module. */
+  Repair: 9,
 } as const;
 
 /** Who issued a task, plus the player's intent. Bit flags. */

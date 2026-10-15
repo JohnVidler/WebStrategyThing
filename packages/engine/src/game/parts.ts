@@ -1,4 +1,4 @@
-import { BUILDING_BUILD_RANGE, BUILDING_TRANSFER_RANGE, CHARGE_PAD_RATE_MULTIPLIER, PART_TUNING, RADAR_COOLDOWN_TICKS, RADAR_ENERGY_PER_TILE, RADAR_FADE_TICKS, TESLA_COOLDOWN, TESLA_RANGE, TESLA_SELF_STUN_FACTOR, TESLA_STUN_TICKS, TILE } from './rules';
+import { BUILD_RANGE, BUILDING_BUILD_RANGE, BUILDING_TRANSFER_RANGE, CHARGE_PAD_RATE_MULTIPLIER, PART_TUNING, RADAR_COOLDOWN_TICKS, RADAR_ENERGY_PER_TILE, RADAR_FADE_TICKS, TESLA_COOLDOWN, TESLA_RANGE, TESLA_SELF_STUN_FACTOR, TESLA_STUN_TICKS, TILE } from './rules';
 
 export { TILE };
 
@@ -20,7 +20,8 @@ export type PartSlot =
   | 'generator'
   | 'antenna'
   | 'builder'
-  | 'radar';
+  | 'radar'
+  | 'repair';
 
 /** Numeric slot codes, exposed to scripts via moduleKind() as M_CPU, M_MOTOR, ... */
 export const SLOT_CODES: Readonly<Record<PartSlot, number>> = {
@@ -40,11 +41,12 @@ export const SLOT_CODES: Readonly<Record<PartSlot, number>> = {
   antenna: 14,
   builder: 15,
   radar: 16,
+  repair: 17,
 };
 
 /** Modules that use or make energy can be switched off; passive ones (frame, memory, armour, batteries) cannot. */
 export const SWITCHABLE: ReadonlySet<PartSlot> = new Set<PartSlot>([
-  'cpu', 'motor', 'sensor', 'weapon', 'cargo', 'factory', 'charger', 'generator', 'antenna', 'builder', 'radar',
+  'cpu', 'motor', 'sensor', 'weapon', 'cargo', 'factory', 'charger', 'generator', 'antenna', 'builder', 'radar', 'repair',
 ]);
 
 /**
@@ -97,10 +99,12 @@ export interface PartDef {
   readonly storage?: number;
   /** Resources per tick a build arm puts into a construction site. */
   readonly buildRate?: number;
+  /** Repair module: hit points per tick restored to an own unit or building in reach. */
+  readonly repairRate?: number;
   /**
    * Energy per use. CPU: per 100 cycles executed (yield and sleep are free). Motor: per tick moving.
    * Sensor: per scan. Weapon: per shot. Cargo: per tick harvesting. Factory: per tick producing.
-   * Build arm: per tick constructing.
+   * Build arm: per tick constructing. Repair beam: per tick repairing.
    */
   readonly use?: number;
   /** Radar: the most energy one pulse may spend. */
@@ -159,6 +163,7 @@ const CATALOGUE: PartDef[] = [
   { id: 'silo', slot: 'depot', name: 'Resource silo', ...T('silo'), structureOnly: true, description: `Stores ${T('silo').storage} resources; units dock here to fill it or take from it.` },
   { id: 'build.arm', slot: 'builder', name: 'Build arm', ...T('build.arm'), mobileOnly: true, description: `Constructs buildings, investing ${T('build.arm').buildRate} resources per tick.` },
   { id: 'build.crane', slot: 'builder', name: 'Build crane', ...T('build.crane'), structureOnly: true, description: `Constructs buildings up to ${BUILDING_BUILD_RANGE / TILE} tiles from this building's edge, investing ${T('build.crane').buildRate} resources per tick.` },
+  { id: 'repair.beam', slot: 'repair', name: 'Repair beam', ...T('repair.beam'), description: `Restores ${T('repair.beam').repairRate} hit points per tick to an own unit or building in reach (${BUILD_RANGE / TILE} tiles from a unit, ${BUILDING_BUILD_RANGE / TILE} from a building), costing ${T('repair.beam').use} energy per tick. Aim it with repair(h).` },
   { id: 'radar.pulse', slot: 'radar', name: 'Radar', ...T('radar.pulse'), description: `Pulse scan: radarPulse(energy) spends that energy (up to ${T('radar.pulse').radarMaxEnergy}) and reveals every unit and building within ${RADAR_ENERGY_PER_TILE} energy per tile of range, up to ${Math.floor(T('radar.pulse').radarMaxEnergy! / RADAR_ENERGY_PER_TILE)} tiles. Contacts show as blips that fade over ${RADAR_FADE_TICKS / 10}s; the module rests ${RADAR_COOLDOWN_TICKS / 10}s between pulses.` },
   { id: 'charger.pad', slot: 'charger', name: 'Charging pad', ...T('charger.pad'), structureOnly: true, description: `Transfers ${T('charger.pad').chargeRate! * CHARGE_PAD_RATE_MULTIPLIER} energy/tick (as much as the pad's store holds) from the building to each own unit within ${BUILDING_TRANSFER_RANGE / TILE} tiles.` },
   { id: 'solar.panel', slot: 'generator', name: 'Solar panel', ...T('solar.panel'), output: T('solar.panel').output! * GENERATION_SCALE, generator: 'solar', structureOnly: true, description: `Up to ${T('solar.panel').output}/tick, following daylight.` },

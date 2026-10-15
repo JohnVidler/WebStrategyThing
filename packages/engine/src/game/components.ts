@@ -37,6 +37,9 @@ export const Storage = defineComponent('Storage', { mode: 'u8' });
 /** Construction site handle last given to build(). */
 export const Builder = defineComponent('Builder', { target: 'i32' });
 
+/** Own unit or building handle last given to repair(). */
+export const Repairer = defineComponent('Repairer', { target: 'i32' });
+
 /** CpuStatus.state values. */
 export const CpuState = {
   Running: 0,
@@ -70,4 +73,5 @@ export const GAME_COMPONENTS = [
   Construction,
   Builder,
   ResourcePatch,
+  Repairer,
 ] as const;

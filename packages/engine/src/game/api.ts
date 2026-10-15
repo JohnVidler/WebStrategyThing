@@ -46,6 +46,7 @@ export const SCRIPT_CONSTANT_DOCS: readonly (readonly [string, number, string])[
   ['CHARGE', TaskType.Charge, 'Task: recharge at the target charging pad'],
   ['BUILD', TaskType.Build, 'Task: construct the target building site'],
   ['SUPPLY', TaskType.Supply, 'Task: give energy to the target (e.g. a unit that ran flat)'],
+  ['REPAIR', TaskType.Repair, 'Task: mend the target own unit or building'],
   ['FROM_PLAYER', TaskFlag.Player, 'Task flag: issued by the player'],
   ['FROM_BUILDING', TaskFlag.Building, 'Task flag: issued by a building script'],
   ['URGENT', TaskFlag.Urgent, 'Task flag: the player did not hold the queue modifier'],
@@ -57,6 +58,7 @@ export const SCRIPT_CONSTANT_DOCS: readonly (readonly [string, number, string])[
   ['CAN_FLY', Caps.Fly, 'Capability: flies'],
   ['CAN_BUILD', Caps.Build, 'Capability: has a working build arm'],
   ['HAS_RADAR', Caps.Radar, 'Capability: has a working radar module'],
+  ['CAN_REPAIR', Caps.Repair, 'Capability: has a working repair module'],
   ['IS_STRUCTURE', Caps.Structure, 'Capability: is a building'],
   ['IS_FACTORY', Caps.Factory, 'Capability: can produce units'],
   ['IS_DEPOT', Caps.Depot, 'Capability: has resource silos (units can fill or take)'],
@@ -392,7 +394,7 @@ export const UNIT_API: HostApi<UnitContext> = [
   api('Buildings', 'order(type, x, y, target)', 2, 'Queue a task on the current visitor (flagged FROM_BUILDING). Returns 1 if accepted.',
     (c, a) => {
       const v = currentVisitor(c);
-      if (v < 0 || a[0] <= TaskType.None || a[0] > TaskType.Supply) return 0;
+      if (v < 0 || a[0] <= TaskType.None || a[0] > TaskType.Repair) return 0;
       return c.sim.tasks[v]!.push(a[0], a[1], a[2], a[3], TaskFlag.Building) ? 1 : 0;
     }),
   api('Buildings', 'unitClassCount()', 0, 'Number of your own unit classes (not retired, not buildings) a factory can produce, in the order they were defined.',
@@ -403,6 +405,25 @@ export const UNIT_API: HostApi<UnitContext> = [
       return bp && c.sim.tryEnqueueProduction(c.e, bp.id) ? 1 : 0;
     }),
   api('Buildings', 'queueLength()', 0, "Units waiting in this factory's production queue.", (c) => c.sim.productionQueue[c.e]?.length ?? 0),
+
+  // --- Repair ---------------------------------------------------------------------
+  api('Actions', 'repair(h)', 1,
+    "Mend an own damaged unit or building every tick until it is whole; 1 if it is in reach (1.5 tiles from a unit, 4 from a building's edge) and needs repair. Units can mend buildings and buildings units. Energy: repair module use per tick, plus matter per hit point mended (more for armour): from the cargo bay on a unit, from the silos on a building; nothing happens without it.",
+    (c, a) => {
+      const { sim, e } = c;
+      if (!sim.repairer.has(e) || c.stats.repairRate <= 0) return 0;
+      const t = sim.world.resolve(a[0]);
+      if (t < 0 || t === e || !sim.health.has(t) || sim.isSite(t) || sim.unit.f.owner[t] !== sim.unit.f.owner[e]) return 0;
+      sim.repairer.f.target[e] = a[0];
+      return sim.edgeDistance(e, t) <= sim.buildRange(e) && sim.health.f.hp[t] < sim.stats(t).hp ? 1 : 0;
+    }),
+  api('Sensing', 'nearestDamaged()', 6, 'Nearest other own unit or building that is missing hit points (finished buildings only), or -1.',
+    (c) => handleOf(c, c.sim.nearestOwn(c.e, 0, (b) => c.sim.health.has(b) && c.sim.health.f.hp[b] < c.sim.stats(b).hp))),
+  api('Sensing', 'hpOf(h)', 0, 'Health percentage of an own unit or building, or -1.', (c, a) => {
+    const t = c.sim.world.resolve(a[0]);
+    if (t < 0 || !c.sim.health.has(t) || c.sim.unit.f.owner[t] !== c.sim.unit.f.owner[c.e]) return -1;
+    return Math.floor((100 * c.sim.health.f.hp[t]) / Math.max(1, c.sim.stats(t).hp));
+  }),
 ];
 
 /** The owner's producible classes, in definition order. */

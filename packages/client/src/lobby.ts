@@ -2,6 +2,7 @@
 import { getPlayerName, getSavedPlayerName, NAME_MAX, setPlayerName } from './playerName';
 import { CHANGELOG } from './changelog';
 import { randomHex } from './random';
+import { startMenuBackground } from './menuBackground';
 import { createMapTerrain, DEFAULT_MAP_ID, GAME_MODES, MAPS, parseGameMode, type GameMode } from '@wst/engine';
 
 interface RoomInfo {
@@ -92,6 +93,17 @@ const preview = (id: string): string => {
   return image;
 };
 
+let presence: WebSocket | undefined;
+/** Holds an idle socket open while this tab is on the menu, so it counts as "online". Joining reloads the page, which drops it. */
+const announceMenuPresence = (apiBase: string) => {
+  if (presence && presence.readyState <= WebSocket.OPEN) return;
+  try {
+    presence = new WebSocket(`${apiBase.replace(/^http/, 'ws')}/ws?menu=1`);
+  } catch {
+    presence = undefined;
+  }
+};
+
 const join = (room: string, name: string, mapId = DEFAULT_MAP_ID, mode: GameMode = 'versus') => {
   setPlayerName(name);
   location.href = `${location.pathname}?room=${encodeURIComponent(room)}&map=${encodeURIComponent(mapId)}&mode=${mode}`;
@@ -149,6 +161,8 @@ export function showLobby(apiBase: string, joinRoom?: string, preferredMapId = D
   document.getElementById('panel')!.hidden = true;
   document.getElementById('stage')!.hidden = true;
   root.hidden = false;
+  startMenuBackground(root);
+  announceMenuPresence(apiBase);
   rememberedMap = preferredMapId;
   rememberedMode = preferredMode === 'coop' ? 'coop' : 'versus';
 
@@ -313,7 +327,7 @@ export function showLobby(apiBase: string, joinRoom?: string, preferredMapId = D
       ${
         which === 'solo'
           ? form
-          : `<div class="lobby-split"><section class="lobby-left"><h3>Games</h3><div id="lobby-rooms" class="muted">Looking for rooms…</div></section><aside class="lobby-right">${form}</aside></div>`
+          : `<div class="lobby-split"><section class="lobby-left"><h3>Games</h3><p id="lobby-online" class="lobby-online muted">Counting players…</p><div id="lobby-rooms" class="muted">Looking for rooms…</div></section><aside class="lobby-right">${form}</aside></div>`
       }`;
     view.querySelector<HTMLButtonElement>('#lobby-back')!.onclick = () => up(() => go('main', false));
     const error = view.querySelector<HTMLDivElement>('#lobby-error')!;
@@ -338,7 +352,28 @@ export function showLobby(apiBase: string, joinRoom?: string, preferredMapId = D
     if (which === 'solo') return;
 
     const list = view.querySelector<HTMLDivElement>('#lobby-rooms')!;
-    const render = (all: RoomInfo[]) => {
+    const online = view.querySelector<HTMLElement>('#lobby-online')!;
+    /** "N players online" with a per-mode breakdown of matches and players, solo included. */
+    const renderOnline = (all: RoomInfo[], inMenu: number) => {
+      const live = all.filter((r) => r.players > 0);
+      const inMatches = live.reduce((n, r) => n + r.players, 0);
+      const total = inMatches + inMenu;
+      if (!total) {
+        online.textContent = 'No players online right now.';
+        return;
+      }
+      const parts = GAME_MODES.map((m) => {
+        const rooms = live.filter((r) => r.mode === m.id);
+        if (!rooms.length) return '';
+        const people = rooms.reduce((n, r) => n + r.players, 0);
+        const matches = `${rooms.length} ${rooms.length === 1 ? 'match' : 'matches'}`;
+        return `${esc(m.name)}: ${people} ${people === 1 ? 'player' : 'players'} in ${matches}`;
+      }).filter(Boolean);
+      if (inMenu) parts.push(`In the menu: ${inMenu}`);
+      online.innerHTML = `<strong>${total} ${total === 1 ? 'player' : 'players'} online</strong><br>${parts.join(' · ')}`;
+    };
+    const render = (all: RoomInfo[], inMenu: number) => {
+      renderOnline(all, inMenu);
       const active = all.filter((r) => r.players > 0 && r.mode !== 'solo');
       list.className = active.length ? '' : 'muted';
       if (!active.length) {
@@ -361,12 +396,14 @@ export function showLobby(apiBase: string, joinRoom?: string, preferredMapId = D
     };
     const refresh = async () => {
       try {
-        const res = await fetch(`${apiBase}/rooms`);
-        render((await res.json()) as RoomInfo[]);
+        const [res, menu] = await Promise.all([fetch(`${apiBase}/rooms`), fetch(`${apiBase}/menu`).catch(() => undefined)]);
+        const inMenu = menu?.ok ? ((await menu.json()) as { players: number }).players : 0;
+        render((await res.json()) as RoomInfo[], inMenu);
         error.textContent = '';
       } catch {
         list.className = 'muted';
         list.textContent = 'Can’t reach the server.';
+        online.textContent = '';
       }
     };
     void refresh();

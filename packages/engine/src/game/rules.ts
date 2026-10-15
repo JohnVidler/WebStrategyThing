@@ -34,7 +34,7 @@ export const BUILDING_BUILD_RANGE = 4 * TILE;
 export const DEMOLISH_REFUND = 0.5;
 
 /** Energy to construct a building: this much per tile of footprint area (so 1x1 = 50, 2x2 = 200, 3x3 = 450). */
-export const BUILD_ENERGY_PER_TILE = 50;
+export const BUILD_ENERGY_PER_TILE = 250;
 export const buildEnergyCost = (footprint: number): number => footprint * footprint * BUILD_ENERGY_PER_TILE;
 /** Radar pulse: energy per tile of range (the script chooses how much to spend, up to the module's limit). */
 export const RADAR_ENERGY_PER_TILE = 25;
@@ -48,9 +48,9 @@ export const BUILDER_ENERGY_RESERVE = 0.25;
 export const DECAY_TICKS = 600;
 
 /** Multiplier applied to solar output after scaling by daylight (1 = unchanged). */
-export const SOLAR_GENERATION_MULTIPLIER = 75;
+export const SOLAR_GENERATION_MULTIPLIER = 5;
 /** Multiplier applied to wind output after scaling by wind intensity (1 = unchanged). */
-export const WIND_GENERATION_MULTIPLIER = 25;
+export const WIND_GENERATION_MULTIPLIER = 3;
 
 /** Matter a new natural patch holds (also the cap it regenerates up to). */
 export const RESOURCE_PATCH_AMOUNT = 1400;
@@ -63,6 +63,8 @@ export const MAX_TRANSMISSION_LOSS = 0.7;
 
 /** A discharging storage building gives at most this share of its capacity to the network per tick. */
 export const STORAGE_DISCHARGE_FRACTION = 0.02;
+/** A storage never discharges below this share of its capacity, and below it refills as a normal consumer whatever its mode. */
+export const STORAGE_RESERVE_FRACTION = 0.02;
 
 /** Tesla coil: stun radius (sub-tile units), stun length and recharge time (ticks, 10 per second). */
 export const TESLA_RANGE = 3 * TILE;
@@ -99,6 +101,32 @@ export const CYCLE_COST = 1;
 /** Production time of a class (ticks) = BUILD_TIME_BASE + BUILD_TIME_PER_MASS × mass. */
 export const BUILD_TIME_BASE = 10;
 export const BUILD_TIME_PER_MASS = 4;
+/**
+ * Energy a factory spends producing one unit, spread over its build time: this much per
+ * module (any type, the chassis excluded) plus a per-type amount from the table (by slot).
+ */
+export const PRODUCTION_ENERGY_PER_MODULE = 5;
+/** Matter per hit point repaired, and how many times more armour plating costs to mend than the rest. */
+export const REPAIR_MATTER_PER_HP = 0.1;
+export const REPAIR_ARMOR_MULTIPLIER = 4;
+export const PRODUCTION_ENERGY_BY_SLOT: Readonly<Record<string, number>> = {
+  cpu: 30,
+  memory: 10,
+  motor: 40,
+  sensor: 20,
+  weapon: 60,
+  armor: 15,
+  cargo: 20,
+  battery: 10,
+  factory: 50,
+  depot: 10,
+  charger: 20,
+  generator: 30,
+  antenna: 15,
+  builder: 40,
+  radar: 40,
+  repair: 40,
+};
 
 // --- Construction, production & limits ---------------------------------------------
 
@@ -170,6 +198,8 @@ export interface PartTuning {
   readonly antennaRange?: number;
   readonly storage?: number;
   readonly buildRate?: number;
+  /** Repair module: hit points restored per tick (while powered and in range). */
+  readonly repairRate?: number;
   readonly use?: number;
   /** Radar: the most energy one pulse may spend. */
   readonly radarMaxEnergy?: number;
@@ -202,21 +232,22 @@ export const PART_TUNING: Readonly<Record<string, PartTuning>> = {
   // The tesla coil's range and cooldown come from TESLA_RANGE / TESLA_COOLDOWN above; its `use` is per discharge.
   'gun.light': { mass: 1, weapon: { range: 4, damage: 5, cooldown: 5 }, use: 0 },
   'gun.cannon': { mass: 4, weapon: { range: 7, damage: 25, cooldown: 20, matter: 3 }, use: 0 },
-  'laser.beam': { mass: 3, weapon: { range: 8, damage: 8, cooldown: 8 }, use: 20 },
+  'laser.beam': { mass: 3, weapon: { range: 8, damage: 8, cooldown: 8 }, use: 100 },
   'tesla.coil': { mass: 5, weapon: { range: 0, damage: 0, cooldown: 0 }, use: 40 },
 
   'armor.plate': { mass: 4, hp: 60 },
 
   'cargo.bay': { mass: 1, cargo: 40, harvestRate: 4, use: 1 },
 
-  'battery.cell': { mass: 2, energy: 1000 },
-  'battery.bank': { mass: 6, energy: 5000 },
+  'battery.cell': { mass: 2, energy: 500 },
+  'battery.bank': { mass: 6, energy: 2500 },
 
   'factory.basic': { mass: 5, use: 4 },
   silo: { mass: 3, storage: 1000 },
   'build.arm': { mass: 2, buildRate: 4, use: 2 },
   'build.crane': { mass: 4, buildRate: 6, use: 3 },
   'radar.pulse': { mass: 4, radarMaxEnergy: 800 },
+  'repair.beam': { mass: 3, repairRate: 4, use: 8 },
   'charger.pad': { mass: 3, chargeRate: 10 },
   'solar.panel': { mass: 2, output: SOLAR_PANEL_OUTPUT },
   'wind.turbine': { mass: 4, output: WIND_TURBINE_OUTPUT },

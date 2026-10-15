@@ -13,6 +13,7 @@ import {
 } from '@wst/engine';
 import { diffLines, withContext } from './diff';
 import { createScriptEditor, type ScriptEditor } from './editor';
+import { placeMusic } from './music';
 import type { ClientState } from './state';
 
 export interface DesignerActions {
@@ -32,7 +33,7 @@ const CATEGORIES: { title: string; match: (p: PartDef) => boolean }[] = [
   { title: 'Compute', match: (p) => p.slot === 'cpu' || p.slot === 'memory' },
   { title: 'Movement', match: (p) => p.slot === 'motor' },
   { title: 'Sensors & weapons', match: (p) => (['sensor', 'radar', 'weapon', 'armor'] as PartSlot[]).includes(p.slot) },
-  { title: 'Industry', match: (p) => (['cargo', 'builder', 'factory', 'depot'] as PartSlot[]).includes(p.slot) },
+  { title: 'Industry', match: (p) => (['cargo', 'builder', 'repair', 'factory', 'depot'] as PartSlot[]).includes(p.slot) },
   { title: 'Power', match: (p) => (['battery', 'charger', 'generator', 'antenna'] as PartSlot[]).includes(p.slot) },
 ];
 
@@ -112,6 +113,7 @@ export class Designer {
       <div class="designer-bar">
         <strong>Class designer</strong>
         <span class="muted">Design units and buildings, and write their programs. The game keeps running underneath.</span>
+        <span class="designer-music"></span>
         <button data-role="close" title="Close (Esc / F2)">✕</button>
       </div>
       <div class="designer-body">
@@ -258,6 +260,8 @@ export class Designer {
   toggle(open: boolean): void {
     const wasOpen = !this.root.hidden;
     this.root.hidden = !open;
+    // The music widget lives in the top bar while the designer covers the page.
+    placeMusic(open ? this.root.querySelector<HTMLElement>('.designer-music') : null);
     if (wasOpen && !open) this.onClose?.();
     if (open) {
       this.renderClassList();
@@ -495,7 +499,7 @@ export class Designer {
       return;
     }
     const rows: [string, string][] = [
-      ['Cost', `◆${s.cost} · ${(s.buildTime / 10).toFixed(1)}s`],
+      ['Cost', `◆${s.cost} · ϟ${s.buildEnergy} · ${(s.buildTime / 10).toFixed(1)}s`],
       ['Hit points', String(s.hp)],
       ['Energy', `${s.energyCapacity}`],
       ['CPU', s.cyclesPerTick ? `${s.cyclesPerTick} cycles/tick · ${s.cpuUse} per 100 cycles` : 'none'],
@@ -513,6 +517,7 @@ export class Designer {
       if (s.weapon) rows.push(['Weapon', `${s.weapon.damage} dmg · range ${s.weapon.range / TILE} · ${s.weapon.use}/shot`]);
       if (s.cargo) rows.push(['Cargo', `${s.cargo} · ${s.harvestRate}/t harvesting`]);
       if (s.buildRate) rows.push(['Build arm', `${s.buildRate}/t · ${s.builderUse} energy/t`]);
+      if (s.repairRate) rows.push(['Repair', `${s.repairRate} hp/t · ${s.repairUse} energy/t · ◆${s.repairMatterPerHp.toFixed(2)}/hp to mend this class`]);
     }
     this.statsView.innerHTML = rows.map(([k, v]) => `<span>${k}</span><span>${esc(v)}</span>`).join('');
   }

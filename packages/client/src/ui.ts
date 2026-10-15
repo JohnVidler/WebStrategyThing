@@ -1,4 +1,5 @@
 import {
+  buildEnergyCost,
   Cargo,
   Construction,
   CpuStatus,
@@ -210,7 +211,8 @@ export class Ui {
   }
 
   private stat(label: string, text: string, fraction?: number, colour?: string): string {
-    const className = label === 'CPU' ? 'stat cpu-stat' : 'stat';
+    const kind = label.toLowerCase().replace(/\W+/g, '-');
+    const className = label === 'CPU' ? 'stat cpu-stat' : `stat stat-${kind}`;
     return `<span class="${className}"><span class="label">${label}</span>${
       fraction === undefined
         ? ''
@@ -234,7 +236,7 @@ export class Ui {
     const energy = world.store(EnergyView);
     if (energy.has(e)) {
       const pct = energy.f.pct[e];
-      items.push(stat('Energy', `${pct}% of ${s.energyCapacity}`, pct / 100, '#f5c542'));
+      items.push(stat('Energy', `${pct}%`, pct / 100, '#f5c542'));
     }
     const cargo = world.store(Cargo);
     if (cargo.has(e)) items.push(stat('Cargo', `${cargo.f.amount[e]}/${s.cargo}`, cargo.f.amount[e] / Math.max(1, s.cargo), '#7ee0b5'));
@@ -363,7 +365,7 @@ export class Ui {
     const slots = new Set(bp.parts.map((id) => PARTS[id]?.slot));
     const has = (...s: string[]) => s.some((x) => slots.has(x as never));
     if (has('factory')) return 'Production';
-    if (has('builder')) return 'Construction';
+    if (has('builder', 'repair')) return 'Construction';
     if (has('weapon', 'radar')) return 'Defence';
     if (has('generator')) return 'Power';
     if (has('depot', 'charger')) return 'Logistics';
@@ -436,12 +438,12 @@ export class Ui {
   private buildingButton(bp: Blueprint): HTMLButtonElement {
     const btn = document.createElement('button');
     btn.dataset.blueprint = String(bp.id);
-    btn.title = `${bp.name}: ${bp.stats.footprint}×${bp.stats.footprint}, costs ◆${bp.stats.cost} (paid as it is built). Select builders first to assign them.`;
+    btn.title = `${bp.name}: ${bp.stats.footprint}×${bp.stats.footprint}, costs ◆${bp.stats.cost} and ϟ${buildEnergyCost(bp.stats.footprint)} (paid as it is built). Select builders first to assign them.`;
     const img = document.createElement('img');
     img.alt = '';
     this.actions.iconFor(bp.id).then((src) => (img.src = src)).catch(() => img.remove());
     const label = document.createElement('span');
-    label.innerHTML = `${bp.name}<small>◆${bp.stats.cost}</small>`;
+    label.innerHTML = `${bp.name}<small>◆${bp.stats.cost} ϟ${buildEnergyCost(bp.stats.footprint)}</small>`;
     btn.append(img, label);
     btn.onclick = () => this.actions.place(bp.id);
     return btn;
@@ -540,7 +542,15 @@ export class Ui {
     const supply = nets.reduce((t, n) => t + n.supply, 0);
     const demand = nets.reduce((t, n) => t + n.demand, 0);
     const balance = supply - demand;
-    this.envView.textContent = `☀ ${this.state.daylight}%  ≋ ${this.state.wind}%  ϟ ${balance >= 0 ? '+' : ''}${balance}/t`;
+    const tile = (cls: string, icon: string, label: string, pct: number, text: string): string =>
+      `<div class="env-tile ${cls}" title="${label}"><span class="env-icon">${icon}</span>` +
+      `<span class="env-value">${text}</span><span class="env-label">${label}</span>` +
+      `<span class="env-bar"><i style="width:${Math.max(0, Math.min(100, pct))}%"></i></span></div>`;
+    const cover = demand > 0 ? (supply / demand) * 100 : 100;
+    this.envView.innerHTML =
+      tile('env-sun', '☀', 'Daylight', this.state.daylight, `${this.state.daylight}%`) +
+      tile('env-wind', '≋', 'Wind', this.state.wind, `${this.state.wind}%`) +
+      tile(balance >= 0 ? 'env-power' : 'env-power env-deficit', 'ϟ', 'Power', cover, `${balance >= 0 ? '+' : ''}${balance}/t`);
     this.envView.title = `Daylight and wind; your power grids: generated ${supply}/tick, wanted ${demand}/tick across ${nets.length} network(s)`;
     const unit = world.store(Unit);
     const ids = [...selection];
@@ -612,13 +622,13 @@ export class Ui {
       for (const bp of buildable) {
         const btn = document.createElement('button');
         btn.className = 'action';
-        btn.title = `${bp.name}: ◆${bp.stats.cost}, ${(bp.stats.buildTime / 10).toFixed(1)}s. Click to queue one.`;
+        btn.title = `${bp.name}: ◆${bp.stats.cost} + ϟ${bp.stats.buildEnergy}, ${(bp.stats.buildTime / 10).toFixed(1)}s. Click to queue one.`;
         const img = document.createElement('img');
         img.alt = '';
         this.actions.iconFor(bp.id).then((src) => (img.src = src)).catch(() => img.remove());
         const label = document.createElement('span');
         label.className = 'label';
-        label.innerHTML = `${esc(bp.name)}<br>◆${bp.stats.cost}`;
+        label.innerHTML = `${esc(bp.name)}<br>◆${bp.stats.cost} ϟ${bp.stats.buildEnergy}`;
         btn.append(img, label);
         btn.onclick = () => this.actions.produce(b, bp.id);
         this.productionButtons.appendChild(btn);

@@ -60,6 +60,11 @@ export const COMMON_ACTIONS: readonly CommonAction[] = [
     can: (s) => has(s, Caps.Harvest | Caps.Move),
   },
   {
+    id: 'repair', label: 'Repair', key: 'R', icon: '✚', task: TaskType.Repair, aim: true,
+    doc: 'Mend an own unit or building (the damaged one nearest the point if none is picked). Costs energy and matter. Needs a repair module and a motor.',
+    can: (s) => has(s, Caps.Repair | Caps.Move),
+  },
+  {
     id: 'charge', label: 'Recharge', key: 'C', icon: 'ϟ', task: TaskType.Charge, aim: false,
     doc: 'Recharge at the nearest charging pad. Needs a motor.',
     can: (s) => has(s, Caps.Move),

@@ -29,12 +29,15 @@ import type { ClientState } from './state';
 const OWNER_COLOURS = [0x8a8f98, 0x4ea1ff, 0xff6b5b, 0x5bd68a, 0xf5c542, 0xc77dff, 0x4fd1c5, 0xff9f43];
 const RESOURCE_COLOUR = 0x7ee0b5;
 const ENERGY_COLOUR = 0xf5c542;
+/** Repair beams, crosses and repair orders. */
+const REPAIR_COLOUR = 0x66ffb8;
 export const TASK_COLOURS: Record<number, number> = {
   [TaskType.Move]: 0x5bd68a,
   [TaskType.Attack]: 0xff6b5b,
   [TaskType.Harvest]: RESOURCE_COLOUR,
   [TaskType.Dock]: 0x4fd1c5,
   [TaskType.Charge]: ENERGY_COLOUR,
+  [TaskType.Repair]: REPAIR_COLOUR,
 };
 /** Charging zones: drawn opaque, then the whole layer is faded so overlaps don't stack. */
 const CHARGE_ZONE_COLOUR = 0x5bd68a;
@@ -50,6 +53,8 @@ const healthColour = (f: number) => (f > 0.6 ? 0x5bd68a : f > 0.3 ? 0xf5c542 : 0
 const CUSTOM_TASK_COLOUR = 0xc792ea;
 const SHOT_MS = 180;
 const PULSE_MS = 450;
+/** A repair effect lingers this long after the last repair event (events come every other tick). */
+const REPAIR_MS = 350;
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 8;
 /** Power-flow dots: spacing in tiles, and speed in tiles per second. */
@@ -72,6 +77,13 @@ interface Pulse {
   e: number;
   born: number;
   colour: number;
+}
+
+interface Repair {
+  a: number;
+  b: number;
+  /** Time of the latest repair event for this pair. */
+  last: number;
 }
 
 interface Shot {
@@ -141,6 +153,7 @@ export class Renderer {
   private curY = new Float32Array(1024);
   private shots: Shot[] = [];
   private pulses: Pulse[] = [];
+  private repairs = new Map<string, Repair>();
   private lastTickAt = 0;
   private alpha = 1;
   private tickMs = 100;
@@ -372,6 +385,12 @@ export class Renderer {
       if (info.events[i] === SimEvent.Pulse) {
         const a = info.events[i + 1];
         this.pulses.push({ e: a, born: now, colour: ownerColour(unit.f.owner[a]) });
+        continue;
+      }
+      if (info.events[i] === SimEvent.Repair) {
+        const a = info.events[i + 1];
+        const b = info.events[i + 2];
+        this.repairs.set(`${a}:${b}`, { a, b, last: now });
         continue;
       }
       if (info.events[i] !== SimEvent.Shot) continue;
@@ -724,6 +743,8 @@ export class Renderer {
       g.moveTo(a.x, a.y).lineTo(b.x, b.y).stroke({ width: 2, color: s.colour, alpha: 1 - (now - s.born) / SHOT_MS });
     }
 
+    this.drawRepairs(g, now);
+
     const pings = this.view.pings;
     for (let i = pings.length - 1; i >= 0; i--) {
       const age = (now - pings[i].born) / PING_MS;
@@ -771,6 +792,41 @@ export class Renderer {
         g.circle(px(pts[n - 2]), py(pts[n - 1]), 3).fill({ color: colour, alpha: 0.9 });
       }
     });
+  }
+
+  /**
+   * Repair beams look unlike weapon fire: a soft green ribbon with bright dots running
+   * from the repairer to the target, a breathing ring on the target, and little crosses
+   * rising from it (the classic "healing" glyph).
+   */
+  private drawRepairs(g: Graphics, now: number): void {
+    for (const [key, r] of this.repairs) {
+      if (now - r.last > REPAIR_MS || !this.sprites.has(r.a) || !this.sprites.has(r.b)) {
+        this.repairs.delete(key);
+        continue;
+      }
+      const a = this.screenOf(r.a);
+      const b = this.screenOf(r.b);
+      const fade = 1 - (now - r.last) / REPAIR_MS;
+      const unit = this.scale; // pixels per tile
+      g.moveTo(a.x, a.y).lineTo(b.x, b.y).stroke({ width: Math.max(2, unit * 0.12), color: REPAIR_COLOUR, alpha: 0.18 * fade });
+      const dots = 5;
+      for (let k = 0; k < dots; k++) {
+        const f = (((now / 600) + k / dots) % 1);
+        g.circle(a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f, Math.max(1.5, unit * 0.07)).fill({ color: 0xffffff, alpha: 0.85 * fade });
+      }
+      const breathe = 0.5 + 0.5 * Math.sin(now / 90);
+      g.circle(b.x, b.y, unit * (0.45 + 0.1 * breathe)).stroke({ width: 1.5, color: REPAIR_COLOUR, alpha: (0.5 + 0.3 * breathe) * fade });
+      const arm = Math.max(2, unit * 0.1);
+      for (let k = 0; k < 3; k++) {
+        const f = ((now / 700) + k / 3) % 1;
+        const x = b.x + Math.sin(k * 2.4 + r.b) * unit * 0.3;
+        const y = b.y - unit * 0.2 - f * unit * 0.8;
+        const alpha = Math.sin(f * Math.PI) * fade;
+        g.moveTo(x - arm, y).lineTo(x + arm, y).stroke({ width: Math.max(1.5, unit * 0.06), color: REPAIR_COLOUR, alpha });
+        g.moveTo(x, y - arm).lineTo(x, y + arm).stroke({ width: Math.max(1.5, unit * 0.06), color: REPAIR_COLOUR, alpha });
+      }
+    }
   }
 
   private isAimedTask(e: number, type: number): boolean {
@@ -858,6 +914,21 @@ export class Renderer {
       g.moveTo(this.offX, this.offY + y * this.scale).lineTo(this.offX + t.width * this.scale, this.offY + y * this.scale);
     }
     g.stroke({ width: 1, color: 0x222a35, alpha: 0.6 });
+
+    // Only the sides of solid tiles that face open ground are outlined, so walls read as shapes, not a grid.
+    const s = this.scale;
+    for (let y = 0; y < t.height; y++) {
+      for (let x = 0; x < t.width; x++) {
+        if (t.isPassable(x, y)) continue;
+        const l = this.offX + x * s;
+        const top = this.offY + y * s;
+        if (t.isPassable(x, y - 1)) g.moveTo(l, top).lineTo(l + s, top);
+        if (t.isPassable(x, y + 1)) g.moveTo(l, top + s).lineTo(l + s, top + s);
+        if (t.isPassable(x - 1, y)) g.moveTo(l, top).lineTo(l, top + s);
+        if (t.isPassable(x + 1, y)) g.moveTo(l + s, top).lineTo(l + s, top + s);
+      }
+    }
+    g.stroke({ width: Math.max(1.5, s * 0.12), color: 0x8a9bb5, alpha: 0.9, cap: 'square' });
   }
 
   private ensureSprite(e: number, tex: Texture): Sprite {

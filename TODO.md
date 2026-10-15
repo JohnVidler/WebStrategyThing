@@ -23,9 +23,14 @@ Outstanding actions. Tick items off (or delete them) as they are done, and log t
 
 - [ ] Check the new main menu in a browser: section navigation, room lists per mode, Single-player start, API overlay, and the offline Designer (create/edit/retire a class, then start a match and confirm it is restored).
 
-- [ ] Try the background music in a browser: menu tracks, switch to combat when units are hit and back after ~15 s, track-end shuffle, mute/volume widget placement (bottom-right, may overlap the build bar), and the mounted music folder under Docker.
+- [ ] Try the background music in a browser: menu tracks, switch to combat when units are hit and back after ~15 s, track-end shuffle, mute/volume widget placement (top-left on the menus, docked in the side panel in a match), and the mounted music folder under Docker.
 
 - [ ] Check the new tree-style build bar in a browser: category buttons, pop-up menu placement, single-building folding into Other, and whether the category choice feels right for your custom buildings.
+
+- [ ] Eyeball the new scrolling menu background in a browser: speed, grid/fill opacity (`menuBackground.ts` constants), and that menu text stays readable over it.
+
+- [ ] Play-test the 2026-10-15 changes in a browser: the Daylight/Wind/Power tiles (long numbers must not break the box), the top-of-map stats strip widths, the Repair beam/drone/Repair button (R) and its green effect, repair matter cost (`REPAIR_*` in `rules.ts`), unit production energy (`PRODUCTION_ENERGY_*`, check factories on a small grid still produce), laser drain (`laser.beam` use 100) and halved batteries with the new Small Energy Storage start, and that a flat storage now recharges.
+- [ ] Decide whether players need a way to switch the repair effect off, and whether a repair order should also exist for buildings (currently towers repair automatically).
 
 ## For the model
 - [ ] Visual polish after the play-test (sidebar header/resources and CPU status width updated; link widths and route decluttering remain untested guesses).
@@ -36,3 +41,5 @@ Outstanding actions. Tick items off (or delete them) as they are done, and log t
 
 ## Later / ideas
 - [ ] Language: `break`/`continue`, functions, unit-to-unit messaging.
+- [ ] Check the online count in a browser: open the menu in two tabs and confirm both count ("In the menu: N"), and that joining a room moves a tab from the menu count to its match.
+- [ ] Check the terrain edge highlight in a browser: colour/width (`layout()` in `renderer.ts`) at several zoom levels, and that it doesn't compete with units and links.

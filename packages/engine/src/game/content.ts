@@ -107,10 +107,7 @@ export const WIND_CLASS: ClassTemplate = {
   program: '',
 };
 
-export const STORAGE_CLASS: ClassTemplate = {
-  name: 'Energy Storage',
-  parts: ['frame.medium', 'cpu.basic', ...Array<string>(8).fill('battery.bank')],
-  program: `# Energy storage: a pile of battery banks and a small CPU deciding which way
+const STORAGE_PROGRAM = `# Energy storage: a pile of battery banks and a small CPU deciding which way
 # the energy flows. Soak up surplus; give it back when generation falls short.
 # Its buttons let the player hold the charge back for later.
 button reserve "Hold charge" key "K"
@@ -130,7 +127,19 @@ if held {
   storageMode(DISCHARGE)
 }
 sleep(4)
-`,
+`;
+
+export const STORAGE_CLASS: ClassTemplate = {
+  name: 'Energy Storage',
+  parts: ['frame.medium', 'cpu.basic', ...Array<string>(8).fill('battery.bank')],
+  program: STORAGE_PROGRAM,
+};
+
+/** The starting base's store: a quarter of the full Energy Storage. */
+export const SMALL_STORAGE_CLASS: ClassTemplate = {
+  name: 'Small Energy Storage',
+  parts: ['frame.small', 'cpu.basic', 'battery.bank', 'battery.bank'],
+  program: STORAGE_PROGRAM,
 };
 
 export const SILO_CLASS: ClassTemplate = {
@@ -151,13 +160,18 @@ ${SEND_HARVESTER_BACK}
 
 export const TOWER_CLASS: ClassTemplate = {
   name: 'Construction Tower',
-  parts: ['frame.small', 'cpu.basic', 'build.crane', 'battery.cell'],
+  parts: ['frame.small', 'cpu.basic', 'build.crane', 'repair.beam', 'battery.cell'],
   program: `# Construction tower: builds any own site within 4 tiles of its edge, paid from
-# the common pool, so it must be linked by the power grid to a silo.
+# the common pool, so it must be linked by the power grid to a silo. With nothing to
+# build it mends the nearest damaged own unit or building within 4 tiles of its edge
+# (energy plus matter from the common pool; armour costs more).
 var h = -1
 
 h = nearestSite()
-if h < 0 || build(h) == 0 { sleep(10) }
+if h < 0 || build(h) == 0 {
+  h = nearestDamaged()
+  if h < 0 || repair(h) == 0 { sleep(10) }
+}
 `,
 };
 
@@ -316,6 +330,50 @@ ${HANDLE_CHARGE} ${HANDLE_SUPPLY} else if t == BUILD {
 `,
 };
 
+export const REPAIR_CLASS: ClassTemplate = {
+  name: 'Repair Drone',
+  parts: ['chassis.medium', 'cpu.basic', 'motor.small', 'cargo.bay', 'repair.beam', 'battery.cell'],
+  program: `# Repair drone: mends own units and buildings. Repairs cost energy and matter (more for
+# armour); the matter is carried in the cargo bay and fetched from the nearest stocked silo.
+# REPAIR orders (the Repair button / right-click on a damaged own unit) are worked first;
+# when idle it picks the nearest damaged own unit or building itself.
+var n = 0
+var t = 0
+var h = -1
+var s = -1
+
+${OBEY_URGENT}
+${RECHARGE_WHEN_LOW}
+t = taskType(0)
+${HANDLE_CHARGE} ${HANDLE_SUPPLY} else if t == REPAIR {
+  h = taskTarget(0)
+  if hpOf(h) < 0 || hpOf(h) >= 100 {
+    taskDrop(0)
+  } else if cargo() == 0 {
+    s = nearestStock()
+    if s < 0 {
+      taskDrop(0)
+      sleep(20)
+    } else if approach(s, 1) == 1 {
+      take(s, cargoMax())
+    }
+  } else if approach(h, 1) == 1 {
+    repair(h)
+  }
+} else if t == MOVE {
+  if goTo(taskX(0), taskY(0)) { taskDrop(0) }
+} else if t == STOP {
+  stop()
+  taskDrop(0)
+} else if t != 0 {
+  taskDrop(0)
+} else {
+  h = nearestDamaged()
+  if h >= 0 { taskPush(REPAIR, 0, 0, h) } else { sleep(10) }
+}
+`,
+};
+
 export const FIGHTER_PROGRAM = `# Follows MOVE / ATTACK / STOP / CHARGE orders; when idle, shoots anything in
 # sensor range without chasing it, and naps between scans to save energy.
 # ATTACK without a target (the Attack button on open ground) is an attack-move.
@@ -380,6 +438,7 @@ export const STARTER_CLASSES: readonly ClassTemplate[] = [
   CHARGING_PAD_CLASS,
   SOLAR_CLASS,
   WIND_CLASS,
+  SMALL_STORAGE_CLASS,
   STORAGE_CLASS,
   PYLON_CLASS,
   SILO_CLASS,
@@ -388,6 +447,7 @@ export const STARTER_CLASSES: readonly ClassTemplate[] = [
   RADAR_TOWER_CLASS,
   HARVESTER_CLASS,
   BUILDER_CLASS,
+  REPAIR_CLASS,
   SCOUT_CLASS,
   HAWK_CLASS,
 ];
@@ -435,7 +495,7 @@ export const BASE_LAYOUT: readonly LayoutEntry[] = [
   { cls: CHARGING_PAD_CLASS, x: 9, y: 8 },
   { cls: SOLAR_CLASS, x: 6, y: 10 },
   { cls: WIND_CLASS, x: 4, y: 6 },
-  { cls: STORAGE_CLASS, x: 3, y: 8, energy: 0.5 },
+  { cls: SMALL_STORAGE_CLASS, x: 3, y: 8, energy: 0.5 },
   { cls: PYLON_CLASS, x: 12, y: 12 },
   { cls: CHARGING_PAD_CLASS, x: 17, y: 17 },
 ];

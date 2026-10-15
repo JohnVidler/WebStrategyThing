@@ -8,7 +8,7 @@
   --accent: #4ea1ff;
   --bad: #ff6b5b;
   --good: #5bd68a;
-  font: 13px/1.4 system-ui, sans-serif;
+  font: 13px/1.4 "Electrolize", system-ui, sans-serif;
 }
 
 * { box-sizing: border-box; }
@@ -51,8 +51,8 @@ body {
   z-index: 5;
   display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 5px 12px;
+  gap: 10px;
+  padding: 5px 8px;
   background: rgb(22 27 34 / 0.92);
   border-bottom: 1px solid var(--line);
   pointer-events: none;
@@ -61,12 +61,23 @@ body {
   white-space: nowrap;
   overflow: hidden;
 }
-#hoverbar .stat { display: flex; align-items: center; gap: 6px; }
-#hoverbar .cpu-stat { flex: 0 0 160px; }
+#hoverbar .stat { display: flex; align-items: center; gap: 4px; }
+#hoverbar .cpu-stat { flex: 0 0 130px; }
 #hoverbar .cpu-stat .label { flex: none; }
 #hoverbar .cpu-stat > span:last-child { min-width: 0; overflow: hidden; white-space: nowrap; }
+/* Fixed-width value cells, so the strip doesn't jiggle as numbers change. */
+#hoverbar .stat > span:last-child { display: inline-block; min-width: var(--w, 0); text-align: left; }
+#hoverbar .stat-health { --w: 9ch; }
+#hoverbar .stat-energy { --w: 5ch; }
+#hoverbar .stat-cargo { --w: 7ch; }
+#hoverbar .stat-silos { --w: 9ch; }
+#hoverbar .stat-built { --w: 4ch; }
+#hoverbar .stat-making { --w: 14ch; overflow: hidden; text-overflow: ellipsis; }
+#hoverbar .stat-tasks { --w: 2ch; }
+#hoverbar .stat-grid { --w: 11ch; }
+#hoverbar .stat-grid-store { --w: 11ch; }
 #hoverbar .label { color: var(--muted); }
-#hoverbar .bar { width: 60px; height: 6px; background: #222a35; border-radius: 3px; overflow: hidden; }
+#hoverbar .bar { width: 36px; height: 6px; background: #222a35; border-radius: 3px; overflow: hidden; }
 #hoverbar .bar > i { display: block; height: 100%; }
 #hoverbar .name { margin-left: auto; font-weight: 600; }
 
@@ -135,8 +146,24 @@ body {
 .pause-invite button { flex: none; }
 
 /* Room list, shown instead of the game when no room is chosen. */
-#lobby { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 10vh 16px; }
+#menu-bg { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 0; pointer-events: none; }
+#lobby { position: relative; z-index: 1; flex: 1; display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 10vh 16px; }
+#lobby { font-size: 1.5em; }
+/* Menu areas sit on translucent panels so the animated backdrop shows through but text stays legible. */
+#lobby section, #lobby aside, #lobby fieldset, #lobby .lobby-name-screen {
+  background: rgba(22, 27, 34, 0.62);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 12px 14px;
+  backdrop-filter: blur(3px);
+}
+#lobby .lobby-right { border-left: 1px solid var(--line); }
+#lobby .lobby-changes details, #lobby .lobby-room { background: rgba(22, 27, 34, 0.55); }
+#lobby-docs { font-size: 13px; }
+#lobby h2 { font-size: 0.92em; }
+#lobby button.link { font-size: 0.92em; }
 #lobby h1, #lobby h2 { margin: 0; }
+#lobby h1 { font-size: clamp(32px, 6vw, 56px); line-height: 1.1; letter-spacing: 0.04em; text-align: center; text-shadow: 0 0 18px rgba(78, 161, 255, 0.45); }
 #lobby-rooms { width: min(420px, 100%); display: flex; flex-direction: column; gap: 6px; }
 .lobby-room { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 12px; padding: 6px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 4px; }
 .lobby-room .name { font-weight: 600; }
@@ -146,8 +173,8 @@ body {
 .mode-picker small { color: var(--muted); }
 .lobby-view { width: min(1100px, 100%); display: flex; flex-direction: column; align-items: center; gap: 12px; }
 .menu-buttons { width: min(420px, 100%); display: flex; flex-direction: column; gap: 8px; }
-.menu-buttons button { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 10px 14px; text-align: left; font-size: 15px; }
-.menu-buttons button small { color: var(--muted); font-size: 12px; font-weight: 400; }
+.menu-buttons button { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 10px 14px; text-align: left; font-size: 1.15em; }
+.menu-buttons button small { color: var(--muted); font-size: 0.8em; font-weight: 400; }
 .section-head { width: 100%; display: flex; align-items: center; gap: 12px; }
 #credits { width: min(700px, 100%); display: flex; flex-direction: column; gap: 6px; }
 #credits h3 { margin: 0 0 4px; }
@@ -156,11 +183,13 @@ body {
 .section-blurb { margin: 0; text-align: center; max-width: 620px; }
 .lobby-split { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; align-items: start; }
 .lobby-split h3 { margin: 0 0 8px; }
+.lobby-online { margin: 0 0 10px; font-size: 0.9em; }
+.lobby-online strong { color: var(--text); }
 .lobby-left #lobby-rooms { width: 100%; }
-.lobby-right { border-left: 1px solid var(--line); padding-left: 20px; }
+.lobby-right { border-left: 1px solid var(--line); }
 .lobby-right #lobby-name { width: 100%; }
-@media (max-width: 760px) { .lobby-split { grid-template-columns: 1fr; } .lobby-right { border-left: none; padding-left: 0; } }
-.mode-tag { display: inline-block; margin-left: 4px; padding: 0 6px; font-size: 11px; font-weight: 500; border-radius: 8px; background: #26303c; color: var(--muted); vertical-align: middle; }
+@media (max-width: 760px) { .lobby-split { grid-template-columns: 1fr; } .lobby-right { border-left: 1px solid var(--line); } }
+.mode-tag { display: inline-block; margin-left: 4px; padding: 0 6px; font-size: 0.85em; font-weight: 500; border-radius: 8px; background: #26303c; color: var(--muted); vertical-align: middle; }
 .mode-tag.coop { background: #1d2b22; color: var(--good); }
 .lobby-view #lobby-create { width: 100%; }
 #lobby-docs { position: fixed; inset: 0; z-index: 30; display: flex; flex-direction: column; background: var(--panel); }
@@ -168,13 +197,13 @@ body {
 /* The host covers the page only so the designer can fill it; it must not catch clicks once the designer is closed. */
 #lobby-designer { position: fixed; inset: 0; z-index: 25; display: flex; flex-direction: column; pointer-events: none; }
 #lobby-designer > * { pointer-events: auto; }
-.lobby-changes { width: min(900px, 100%); display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.lobby-changes { width: min(900px, 100%); display: flex; flex-direction: column; gap: 6px; font-size: 1em; }
 .lobby-changes details { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 4px 10px; }
 .lobby-changes summary { cursor: pointer; color: var(--muted); }
 .lobby-changes ul { margin: 6px 0 4px; padding-left: 18px; display: flex; flex-direction: column; gap: 3px; }
 #lobby-name { width: min(320px, 100%); }
 .map-picker { min-width: 0; margin: 0; padding: 8px; border: 1px solid var(--line); }
-.map-picker legend { padding: 0 5px; color: var(--muted); font-size: 12px; }
+.map-picker legend { padding: 0 5px; color: var(--muted); font-size: 0.92em; }
 .map-layout { display: flex; gap: 10px; align-items: stretch; }
 /* The list grows to the height of the preview beside it. */
 .map-layout select { flex: 1; min-width: 0; height: auto; align-self: stretch; }
@@ -366,12 +395,12 @@ pre {
 
 /* Global resource bars at the top of the side panel. */
 #resource-bars { display: flex; flex-direction: column; gap: 6px; }
-#resource-bars .res { display: grid; grid-template-columns: 72px minmax(32px, 1fr) auto; align-items: center; gap: 8px; font-size: 12px; }
+#resource-bars .res { display: grid; grid-template-columns: 72px minmax(32px, 1fr) 14ch; align-items: center; gap: 8px; font-size: 12px; }
 #resource-bars .res .label { display: flex; align-items: center; gap: 5px; color: var(--muted); }
 #resource-bars .res .icon { width: 12px; color: var(--text); text-align: center; }
 #resource-bars .res .track { height: 8px; background: #222a35; border-radius: 4px; overflow: hidden; }
 #resource-bars .res .track > i { display: block; height: 100%; }
-#resource-bars .res .amount { font-variant-numeric: tabular-nums; }
+#resource-bars .res .amount { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
 #stage canvas { display: block; cursor: crosshair; }
 #production { display: flex; flex-direction: column; gap: 6px; }
 button:disabled { opacity: 0.45; cursor: not-allowed; }
@@ -392,6 +421,33 @@ a.button {
 a.button:hover { border-color: var(--accent); }
 header { display: flex; flex-direction: column; gap: 8px; }
 #environment { font-variant-numeric: tabular-nums; }
+.env-tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin-top: 4px; }
+.env-tile {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  column-gap: 6px;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  --c: var(--accent);
+}
+.env-power { grid-column: 1 / -1; grid-template-columns: auto auto 1fr; }
+.env-power .env-icon { grid-row: 1; }
+.env-power .env-label { grid-column: 2; grid-row: 1; text-align: left; }
+.env-power .env-value { grid-column: 3; grid-row: 1; }
+.env-power .env-bar { grid-column: 1 / -1; grid-row: 2; }
+.env-sun { --c: #ffd54a; }
+.env-wind { --c: #6fd3ff; }
+.env-power { --c: var(--good); }
+.env-power.env-deficit { --c: var(--bad); }
+.env-icon { grid-row: 1 / 3; font-size: 24px; line-height: 1; color: var(--c); }
+.env-value { font-size: 16px; font-weight: bold; color: var(--c); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.env-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); text-align: right; }
+.env-bar { grid-column: 1 / 3; height: 4px; margin-top: 5px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.env-bar i { display: block; height: 100%; background: var(--c); }
 
 #modules { display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
 #modules .module { display: flex; align-items: center; gap: 4px; cursor: pointer; }
@@ -552,11 +608,11 @@ button.primary { border-color: var(--accent); background: #1b2a40; }
 .diff-body .dgap { color: #4b5563; }
 .diff-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
-/* Background music: now-playing line and volume, bottom-right over everything. */
+/* Background music: now-playing line and volume, top-left over the menus. */
 .music {
   position: fixed;
-  right: 8px;
-  bottom: 8px;
+  left: 8px;
+  top: 8px;
   z-index: 40;
   display: flex;
   align-items: center;
@@ -582,4 +638,7 @@ button.primary { border-color: var(--accent); background: #1b2a40; }
 /* In a match it sits at the bottom of the side panel, just above the designs bar. */
 .music.docked { position: static; max-width: none; margin-top: auto; opacity: 1; background: none; }
 .music.docked + #designs-bar { margin-top: 0; }
+/* In the designer's top bar. */
+.music.inbar { position: static; max-width: 40vw; opacity: 1; background: none; }
+.designer-music { display: flex; }
 .music.docked .music-label { flex: 1; min-width: 0; }

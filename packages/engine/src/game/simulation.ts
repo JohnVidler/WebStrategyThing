@@ -9,6 +9,7 @@ import { DEFAULT_DESIGNS, type DesignEntry } from './designs';
 import { BlueprintError, BlueprintRegistry, Caps, statsFor, type Blueprint, type BlueprintStats } from './blueprint';
 import {
   Builder,
+  Repairer,
   Cargo,
   Construction,
   CpuStatus,
@@ -35,6 +36,7 @@ import { BUILD_RANGE, BUILDING_BUILD_RANGE, BUILDING_TRANSFER_RANGE, DEMOLISH_RE
 import { SpatialGrid } from './spatial';
 import {
   buildSystem,
+  repairSystem,
   chargingSystem,
   combatSystem,
   deathSystem,
@@ -157,6 +159,8 @@ export class Simulation {
   readonly lastHitBy: number[] = [];
   /** Building -> generation left over from last tick (in 1/100 of 1/GENERATION_SCALE energy). */
   readonly genCarry: number[] = [];
+  /** Matter each repair module has paid for but not yet used (matter is bought in whole units). */
+  readonly repairCarry: number[] = [];
   /** Team per owner (co-op mode: the humans share one, the bots another). Owners without a team are only allied to themselves. */
   readonly teams = new Map<number, number>();
   /** Owners kept at full energy with full silos (co-op mode bots). */
@@ -189,6 +193,7 @@ export class Simulation {
   readonly stockpile = this.world.store(Stockpile);
   readonly construction = this.world.store(Construction);
   readonly builder = this.world.store(Builder);
+  readonly repairer = this.world.store(Repairer);
 
   constructor(
     readonly config: SimConfig,
@@ -235,6 +240,7 @@ export class Simulation {
       this.harvester.add(e, { target: -1 });
     }
     if (bp.stats.buildRate > 0) this.builder.add(e, { target: -1 });
+    if (bp.stats.repairRate > 0) this.repairer.add(e, { target: -1 });
     this.tally(bp.owner).createdUnits++;
     return e;
   }
@@ -311,6 +317,7 @@ export class Simulation {
     }
     if (s.resourceCapacity > 0) this.stockpile.add(e);
     if (s.buildRate > 0) this.builder.add(e, { target: -1 });
+    if (s.repairRate > 0) this.repairer.add(e, { target: -1 });
     if (s.weapon) this.weapon.add(e, { target: -1 });
     this.tally(this.unit.f.owner[e]).createdBuildings++;
     this.powerDirty = true;
@@ -771,6 +778,7 @@ export class Simulation {
         if (theirs && s.caps & Caps.Fight) type = TaskType.Attack;
         else if (theirs) type = TaskType.Move;
         else if (this.isSite(target)) type = s.caps & Caps.Build ? TaskType.Build : TaskType.Move;
+        else if (s.caps & Caps.Repair && this.health.has(target) && this.health.f.hp[target] < this.stats(target).hp) type = TaskType.Repair;
         else if (targetCaps & Caps.Depot && s.caps & Caps.Harvest) type = TaskType.Dock;
         else if (targetCaps & Caps.Charger) type = TaskType.Charge;
         else if (!this.stats(target).structure && this.energyFraction(target) < 0.25) type = TaskType.Supply;
@@ -792,7 +800,7 @@ export class Simulation {
   }
 
   /**
-   * A common action button (move, attack, stop, harvest, unload, recharge).
+   * A common action button (move, attack, stop, harvest, unload, repair, recharge).
    * Unlike a right-click, the task type is fixed; units without the modules for
    * it refuse. Targets are filled in where the button needs one (nearest field,
    * depot or charging pad).
@@ -812,6 +820,10 @@ export class Simulation {
     } else if (task === TaskType.Harvest) {
       goal = valid && this.resource.has(target) ? target : this.nearestResource(x, y);
       if (goal < 0) throw new CommandError('No resources left');
+    } else if (task === TaskType.Repair) {
+      const ok = (b: number) => b !== e && this.health.has(b) && !this.isSite(b) && this.unit.f.owner[b] === owner;
+      goal = valid && this.unit.has(target) && ok(target) ? target : this.nearestDamagedOwn(e, x, y);
+      if (goal < 0) throw new CommandError('Nothing of yours needs repair');
     } else if (task === TaskType.Dock) {
       goal = this.nearestOwn(e, Caps.Depot);
       if (goal < 0) throw new CommandError('No depot to unload at');
@@ -1019,6 +1031,25 @@ export class Simulation {
     return t;
   }
 
+  /** The own unit or building missing hit points that is nearest the point (tile x, y), or -1. */
+  nearestDamagedOwn(e: number, tx: number, ty: number): number {
+    const owner = this.unit.f.owner[e];
+    const px = tx * TILE + TILE / 2;
+    const py = ty * TILE + TILE / 2;
+    let best = -1;
+    let bestD = Infinity;
+    for (const b of this.unit.dense) {
+      if (b === e || this.unit.f.owner[b] !== owner || this.isSite(b) || !this.health.has(b)) continue;
+      if (this.health.f.hp[b] >= this.stats(b).hp) continue;
+      const d = (this.pos.f.x[b] - px) ** 2 + (this.pos.f.y[b] - py) ** 2;
+      if (d < bestD) {
+        best = b;
+        bestD = d;
+      }
+    }
+    return best;
+  }
+
   /** Nearest own finished building with all of `caps` (and passing `accept`), or -1. */
   nearestOwn(e: number, caps: number, accept?: (b: number) => boolean): number {
     const owner = this.unit.f.owner[e];
@@ -1113,6 +1144,7 @@ export class Simulation {
     resourceRegenerationSystem(this);
     combatSystem(this);
     buildSystem(this);
+    repairSystem(this);
     chargingSystem(this);
     productionSystem(this);
     decaySystem(this);

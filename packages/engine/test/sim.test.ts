@@ -302,7 +302,7 @@ describe('orders, buildings and the economy', () => {
     const [s] = own(1, 'Scout');
     const [h] = own(1, 'Harvester');
     const [enemy] = own(2, 'Scout');
-    const [storage] = own(1, 'Energy Storage');
+    const [storage] = own(1, 'Small Energy Storage');
     // Attack: scouts have guns, harvesters refuse.
     expect(sim.issueCommand(1, s, TaskType.Attack, 0, 0, enemy, true)).toBe(true);
     expect(sim.tasks[s]!.target(sim.tasks[s]!.count - 1)).toBe(sim.world.handle(enemy));
@@ -381,6 +381,24 @@ t = "hi"`)).toThrow(/button declarations/);
     expect(made).toHaveLength(1);
     const [x, y] = tileOf(sim, made[0]);
     expect(Math.abs(x - 14) + Math.abs(y - 3)).toBeLessThanOrEqual(2);
+  });
+
+  it('producing a unit costs energy from its module count and types, spread over the build time', () => {
+    const sim = new Simulation({ width: 32, height: 32, seed: 1 });
+    const factory = defineClass(sim, 1, { name: 'F', parts: ['frame.medium', 'factory.basic', 'battery.bank', 'silo'], program: '' });
+    const plain = sim.blueprints.define(1, 'Plain', ['chassis.light', 'motor.small']);
+    const armed = sim.blueprints.define(1, 'Armed', ['chassis.light', 'motor.small', 'gun.light', 'armor.plate']);
+    expect(plain.stats.buildEnergy).toBeGreaterThan(0);
+    expect(armed.stats.buildEnergy).toBeGreaterThan(plain.stats.buildEnergy);
+    const f = sim.spawnStructure(factory, 10, 10);
+    sim.addStock(f, 1000);
+    sim.energy.f.amount[f] = sim.stats(f).energyCapacity;
+    const start = sim.energy.f.amount[f];
+    sim.enqueueProduction(1, f, plain.id);
+    run(sim, plain.stats.buildTime);
+    const spent = start - sim.energy.f.amount[f];
+    expect(spent).toBeGreaterThanOrEqual(plain.stats.buildEnergy);
+    expect(sim.unit.dense.some((e) => sim.unit.f.blueprint[e] === plain.id)).toBe(true);
   });
 
   it('a building can only instruct a produced unit during that one visit', () => {

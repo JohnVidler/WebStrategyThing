@@ -4,6 +4,76 @@ Changes to the codebase, grouped by day (newest first).
 
 ## 2026-10-15
 
+### Terrain edge highlight
+- `renderer.ts` `layout()`: after the solid fill, only the tile sides of solid terrain that border passable terrain are stroked (light blue-grey, width scales with zoom); interior wall faces and the map border get no line. Not yet seen in a browser.
+
+### Menu players count as online
+- Players sitting on the menu now count in the multiplayer "N players online" line. The lobby holds an idle presence WebSocket (`/api/v1/ws?menu=1`, `announceMenuPresence` in `lobby.ts`); the server tracks them in `menuSockets` and reports `GET /api/v1/menu` -> `{players}` (`server/src/index.ts`). The lobby adds that to the in-match total and shows "In the menu: N". Room list and `/rooms` shape unchanged. Not yet tried in a browser.
+
+### Wrap-up: dev-server stale module, changelog, TODO
+- Diagnosed a broken map (all sprites at the origin) as Vite serving a stale transform of `renderer.ts` (the `drawRepairs` call without the method), which threw every frame and stopped Pixi's ticker. Touching the file fixed it; a headless-Edge probe of `/?room=...&mode=solo` showed no exceptions afterwards. No code change. If it recurs: hard-reload, save the file again or restart `npm run dev`.
+- Main-menu "What's new" (`changelog.ts`): new 2026-10-15 block covering the larger environment tiles, smaller batteries and starting storage, laser drain, unit production energy, storage recharge fix, repair module/drone/action/effect, and the menu background/font/layout changes.
+- TODO.md: added play-test items for this day's changes.
+
+### Repairs cost matter; Repair action; repair effect
+- Repairs now cost energy **and matter**: `REPAIR_MATTER_PER_HP` 0.1 per hp mended, `REPAIR_ARMOR_MULTIPLIER` 4x for armour plating (`rules.ts`); per-class stat `repairMatterPerHp` (`blueprint.ts`). Matter comes from the cargo bay on a unit, the owner's silos on a building (`canSpendMatter`/`spendMatter`); bought in whole units with leftover credit in `sim.repairCarry`; no matter = no repair. `repair()` docs and the Designer's Repair row say so.
+- Repair Drone gained a cargo bay: it fetches matter from the nearest stocked silo (`take`) and works REPAIR tasks, picking the nearest damaged own thing itself when idle (`content.ts`).
+- New task type `TaskType.Repair` (script constant `REPAIR`) and a common **Repair** action (key R, aimed, `actions.ts`; needs a repair module and a motor). Click a damaged own unit/building, or a point (nearest damaged); right-clicking a damaged own unit/building with a repair-capable unit issues it too (`simulation.ts` `issueCommand`/`issueOrder`, new `nearestDamagedOwn`). `order()` accepts it for buildings. Class scripts decide how to carry it out, like every other task.
+- New `SimEvent.Repair` (every other tick while repairing); `renderer.ts` `drawRepairs`: soft green ribbon with white dots running repairer -> target, a breathing ring on the target, and rising "+" crosses; repair routes are drawn in the same green. Tests updated/added in `rules.test.ts` (113 pass); not yet seen in a browser.
+
+### Repair module, Repair Drone, tower repairs
+- New module `repair.beam` (slot `repair`, code 17 / `M_REPAIR`, `Caps.Repair` / `CAN_REPAIR`; mass 3, 4 hp/tick, 8 energy/tick; fits units and buildings; switchable; production energy 40). Stats `repairRate`/`repairUse` in `blueprint.ts`, tuning in `rules.ts`, catalogue in `parts.ts`.
+- Reach follows the build range: 1.5 tiles from a unit, 4 from a building's edge. Works both ways (units mend buildings, buildings mend units), own units and finished buildings only, never beyond max hp.
+- New `Repairer` component and `repairSystem` (`systems.ts`, runs after `buildSystem`). New script builtins appended to `UNIT_API` (`api.ts`): `repair(h)`, `nearestDamaged()`, `hpOf(h)`.
+- New starter class **Repair Drone** (medium chassis, CPU, small motor, repair beam, cell; `content.ts`): follows MOVE/STOP/CHARGE/SUPPLY, idles by repairing the nearest damaged own unit/building. It is in `STARTER_CLASSES`, so it is buildable from factories, but not in the starting base.
+- Construction Tower gained a repair beam; with nothing to build its script mends the nearest damaged own thing in reach.
+- Client: Designer lists the module under Industry and shows a Repair stats row; buildings with a repair module are categorised Construction. Two tests in `rules.test.ts`; suite passes (112).
+
+### Fix: energy storage refusing to charge
+- Cause: a storage left in DISCHARGE or HOLD that drained to 0 energy had no power for its CPU (`NoPower`), so its script could never switch it back; DISCHARGE/HOLD stores take no charge, so it stayed dead even with surplus on the grid.
+- Fix (`powerSystem`, `systems.ts`; `STORAGE_RESERVE_FRACTION` = 2% in `rules.ts`): a store below 2% of capacity is treated as a normal consumer whatever its mode, and discharging never takes it below that floor. Regression tests in `rules.test.ts`.
+
+### Energy cost on build buttons
+- Building buttons show `◆matter ϟenergy` (energy = `buildEnergyCost(footprint)`) and unit production buttons show `◆matter ϟbuildEnergy` (`ui.ts`); tooltips include both. Typecheck only.
+
+### Energy cost to produce units
+- New stat `buildEnergy` (`blueprint.ts`): `PRODUCTION_ENERGY_PER_MODULE` (5) per non-chassis module plus `PRODUCTION_ENERGY_BY_SLOT[slot]` (cpu 30, memory 10, motor 40, sensor 20, weapon 60, armor 15, cargo 20, battery 10, factory 50, depot 10, charger 20, generator 30, antenna 15, builder 40, radar 40), in `rules.ts`.
+- `productionSystem` (`systems.ts`) spends it on top of `factoryUse`, spread evenly over the build time with exact whole-number steps; a factory short of energy stalls like before. Shown in the build-bar tooltip and the Designer's Cost row (`ϟ`). New test in `sim.test.ts`.
+
+### Lasers drain the grid
+- `laser.beam` energy per shot 20 -> 100 (`rules.ts`); damage per shot is unchanged at full power (it scales with energy spent / max), so a firing laser now draws 12.5/tick (was 2.5), about five solar panels at peak sun. Suite passes (107).
+
+### Environment tiles re-laid out
+- `.env-tiles` (`style.css`) is now two columns (Daylight, Wind) with the Power tile as a full-width strip beneath (icon, label, value on one row, bar under). Tiles have `min-width: 0` and values are non-wrapping with an ellipsis, so long numbers can't stretch the panel. Typecheck n/a (CSS only).
+
+### Top strip made compact
+- The map's top strip (`#hoverbar`) overflowed the screen: bars 60 -> 36px, gaps 16 -> 10px, CPU cell 160 -> 130px and each stat's value cell cut to its minimum width (`style.css`). The single-unit Energy stat now shows just the percentage (capacity is in the Designer and `energyMax()`). Typecheck only.
+
+### Fixed-width stats in the map's top strip
+- `#hoverbar` stats (`ui.ts` `stat()` adds a `stat-<label>` class; `style.css`) get a fixed-width value cell per stat (health, energy, cargo, silos, built, making, tasks, grid, grid store), so neighbouring stats no longer shift as values change digits. Typecheck only.
+
+### Fixed-width resource amounts
+- The side-panel resource bars' amount column (`#resource-bars .res`, `style.css`) is a fixed `14ch`, right-aligned and non-wrapping, instead of `auto`, so the bars no longer change width as matter/energy values change digits.
+
+### Smaller batteries; small starting storage
+- `battery.cell` 1000 -> 500 and `battery.bank` 5000 -> 2500 energy (`rules.ts`). Frames' own energy is unchanged.
+- New `SMALL_STORAGE_CLASS` ('Small Energy Storage': small frame, CPU, 2 banks = 5000 energy, was 40000 for the starter store) in `content.ts`, sharing the storage program with `STORAGE_CLASS`. The starting base now uses it (`BASE_LAYOUT`); the full Energy Storage remains a buildable starter class. `sim.test.ts` updated; full suite passes (107).
+
+### Bigger daylight / wind / power indicators
+- The side-panel `#environment` line is now three tiles (`.env-tiles`, `style.css`; built in `Ui.renderSelection`, `ui.ts`): Daylight (yellow), Wind (blue) and Power balance (green, red when in deficit), each with a 24px icon, 16px bold value and a fill bar (power bar = supply / demand). Typecheck/browser check pending.
+
+### Animated menu background
+- New `client/src/menuBackground.ts`: a fixed canvas (`#menu-bg`) behind the lobby draws a slowly, diagonally scrolling grid (48px cells, ~9px/s) with some cells filled from deterministic value noise of their world coordinates, so it reads like map terrain and scrolls endlessly with no wrap seam. Started from `showLobby`; pauses itself when the lobby is hidden; static under `prefers-reduced-motion`. `#lobby` now sits above it (`style.css`). Typecheck only; not yet seen in a browser.
+- Follow-up: the backdrop is now a perspective ground plane (`menuBackground.ts`): the grid recedes to a horizon at 30% screen height, drifts diagonally towards the viewer, and fades into near-black with distance (gradient overlay). Cells and noise are unchanged; constants (`TILE`, `DRIFT_*`, `V_FAR`, `HORIZON`) tune the look. Typecheck only.
+- Grid lines now glow: two wider, faint blue strokes under a brighter 1px core, drawn before the distance fade so the glow fades too.
+- Lobby title (`#lobby h1`, `style.css`) enlarged from 16px to `clamp(32px, 6vw, 56px)` with a soft blue glow; the in-game `h1` is unchanged.
+- UI font is now Electrolize (Google Fonts links in `index.html`; first in the `:root` font stack in `style.css`, falling back to system-ui). Code/monospace areas keep their monospace stacks. Needs network access to fonts.googleapis.com; offline it falls back to system-ui.
+- Menu text bumped by 0.5em: `#lobby` font-size is `1.5em` (13px -> 19.5px) and the lobby's px font sizes (menu buttons and their sub-text, mode tags, changelog, map-picker legend, h2s, link buttons) became em values so they scale with it. The docs overlay stays at 13px; the Designer and in-game UI are unaffected.
+- Menu sections, asides, fieldsets and the name screen (`#lobby section/aside/fieldset/.lobby-name-screen`, `style.css`) now share a translucent panel (62% panel colour, border, rounded, 3px backdrop blur); rooms and changelog entries are translucent too. The split layout's right aside lost its left-border/padding special case since it is a full panel now.
+- Music widget (`.music`, `style.css`) moved from bottom-right to top-left on the main menu and sub-menus. In a match it is still docked in the side panel.
+- Multiplayer screen: an "N players online" line above the room list (`#lobby-online`, `lobby.ts`) with a per-mode breakdown (players in matches for Free for all, Co-op and Single-player). It is built from the same `/rooms` poll, counting every room with a connected player, solo rooms included (which the list itself still hides). Typecheck only.
+- Designer: the music widget moves into the designer's top bar (before the close button) while the designer is open and returns to its old place on close (`placeMusic` in `music.ts`, slot `.designer-music` in `designer.ts`, `.music.inbar` in `style.css`). Typecheck only.
+
 ### Laser damage scales with power; `laserPower(energy)`
 - Laser base damage cut 14 -> 8 (`rules.ts`, at its full 20 energy per shot). Damage is now `damage × energy spent / max energy`, so half power is half damage (minimum 1).
 - New script builtin `laserPower(energy)` (`api.ts`) sets the energy per shot (1..max; 0 restores max) and returns the energy in use, or 0 without a laser. Stored as `Weapon.power` (`components.ts`), applied in `combatSystem` (`systems.ts`). The laser turret script mentions it; the default behaviour is unchanged (full power).

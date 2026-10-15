@@ -5,9 +5,12 @@ import { SimEvent } from './events';
 import { TILE } from './parts';
 import { daylight, share, StorageMode, wind } from './power';
 import { GENERATION_SCALE } from './parts';
-import { BUILDER_ENERGY_RESERVE, SEPARATION_RADIUS, DECAY_TICKS, MAX_TRANSMISSION_LOSS, RESOURCE_REGEN_INTERVAL_TICKS, SOLAR_GENERATION_MULTIPLIER, STORAGE_DISCHARGE_FRACTION, TESLA_SELF_STUN_FACTOR, TESLA_STUN_TICKS, TRANSMISSION_LOSS_PER_TILE, WIND_GENERATION_MULTIPLIER, buildEnergyCost } from './rules';
+import { BUILDER_ENERGY_RESERVE, SEPARATION_RADIUS, DECAY_TICKS, MAX_TRANSMISSION_LOSS, RESOURCE_REGEN_INTERVAL_TICKS, SOLAR_GENERATION_MULTIPLIER, STORAGE_DISCHARGE_FRACTION, STORAGE_RESERVE_FRACTION, TESLA_SELF_STUN_FACTOR, TESLA_STUN_TICKS, TRANSMISSION_LOSS_PER_TILE, WIND_GENERATION_MULTIPLIER, buildEnergyCost } from './rules';
 import { CHARGE_PAD_RATE_MULTIPLIER, CHARGE_RANGE } from './rules';
 import type { Simulation } from './simulation';
+
+/** Energy a storage building keeps back from discharging (and refills first), so its script can always run. */
+const reserveOf = (capacity: number): number => Math.max(1, Math.ceil(capacity * STORAGE_RESERVE_FRACTION));
 
 /** Generation, then distribution inside each power network (consumers first, then storage). */
 export function powerSystem(sim: Simulation): void {
@@ -41,7 +44,10 @@ export function powerSystem(sim: Simulation): void {
       gen[i] = Math.floor(gen[i] * efficiency);
       generated += gen[i];
       const room = s.energyCapacity - store[b];
-      switch (sim.storage.f.mode[b]) {
+      // Below a small floor a store takes part as a normal consumer whatever its mode: a store
+      // left in DISCHARGE or HOLD that ran dry could never power its CPU to switch back.
+      const mode = store[b] < reserveOf(s.energyCapacity) ? StorageMode.Normal : sim.storage.f.mode[b];
+      switch (mode) {
         case StorageMode.Charge:
           charging.push(i);
           chargingRoom.push(room);
@@ -62,7 +68,9 @@ export function powerSystem(sim: Simulation): void {
     let discharged = 0;
     for (const i of discharging) {
       if (pool >= demand) break;
-      const take = Math.min(demand - pool, store[m[i]], Math.ceil(sim.stats(m[i]).energyCapacity * STORAGE_DISCHARGE_FRACTION));
+      const cap = sim.stats(m[i]).energyCapacity;
+      const give = Math.max(0, store[m[i]] - reserveOf(cap)); // keep enough to run the CPU
+      const take = Math.min(demand - pool, give, Math.ceil(cap * STORAGE_DISCHARGE_FRACTION));
       store[m[i]] -= take;
       flow[i] -= take;
       pool += take;
@@ -397,7 +405,12 @@ export function productionSystem(sim: Simulation): void {
     let progress = view.f.progress[b];
     const bp = queue.length ? sim.blueprints.get(queue[0]) : undefined;
     const s = sim.stats(b);
-    if (bp && s.factory && sim.spend(b, s.factoryUse)) {
+    // The unit's own energy cost is spread evenly over its build time (exact total, whole numbers per tick).
+    const next = sim.productionTicks[b] + 1;
+    const total = bp?.stats.buildEnergy ?? 0;
+    const time = bp?.stats.buildTime ?? 1;
+    const step = Math.floor((total * next) / time) - Math.floor((total * (next - 1)) / time);
+    if (bp && s.factory && sim.spend(b, s.factoryUse + step)) {
       const ticks = ++sim.productionTicks[b];
       blueprint = bp.id;
       progress = Math.floor((ticks * 100) / bp.stats.buildTime);
@@ -444,6 +457,34 @@ export function energyViewSystem(sim: Simulation): void {
       view.f.pct[e] = pct;
       view.markChanged(e);
     }
+  }
+}
+
+/**
+ * Repair modules restore hit points to the own unit or building chosen with repair(),
+ * once it is within reach, for energy per tick and matter per hit point (armour costs more). Works both ways: units mend buildings
+ * and buildings mend units.
+ */
+export function repairSystem(sim: Simulation): void {
+  for (const e of sim.world.query(sim.repairer.def)) {
+    const t = sim.world.resolve(sim.repairer.f.target[e]);
+    if (t < 0 || t === e || !sim.health.has(t) || sim.isSite(e) || sim.isSite(t)) continue;
+    if (sim.unit.f.owner[t] !== sim.unit.f.owner[e]) continue;
+    const s = sim.stats(e);
+    if (s.repairRate <= 0 || sim.edgeDistance(e, t) > sim.buildRange(e)) continue;
+    const missing = sim.stats(t).hp - sim.health.f.hp[t];
+    if (missing <= 0) continue;
+    // Energy plus matter: the matter comes from the cargo bay of a unit or the silos of a building.
+    const gain = Math.min(s.repairRate, missing);
+    const owed = gain * sim.stats(t).repairMatterPerHp;
+    const credit = sim.repairCarry[e] ?? 0; // matter already paid but not yet used (whole units are bought)
+    const buy = credit >= owed ? 0 : Math.ceil(owed - credit);
+    if (!sim.canSpendMatter(e, buy) || !sim.spend(e, s.repairUse)) continue;
+    sim.spendMatter(e, buy);
+    sim.repairCarry[e] = credit + buy - owed;
+    sim.health.f.hp[t] += gain;
+    sim.health.markChanged(t);
+    if (sim.tick % 2 === 0) sim.emit(SimEvent.Repair, e, t);
   }
 }
 

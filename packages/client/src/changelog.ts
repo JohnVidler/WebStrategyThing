@@ -11,6 +11,22 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: readonly ChangelogEntry[] = [
   {
+    date: '2026-10-15',
+    changes: [
+      'Repairs: a new Repair beam module mends your own units and buildings (units can fix buildings and the other way round). It costs energy and matter, and armour is the most expensive to mend.',
+      'New Repair Drone class you can build, with a Repair action (R, or right-click a damaged unit or building). The Construction Tower now repairs nearby things when it has nothing to build.',
+      'Repairs show as a green beam with rising crosses, so they no longer look like weapon fire.',
+      'Producing a unit now costs energy as well as matter, based on how many modules it has and what they are. Build buttons show both costs.',
+      'Lasers draw five times the energy per shot, so a few of them will drain a small grid. Damage per shot is unchanged.',
+      'Batteries hold half as much, and the starting base now has a small energy storage instead of a large one.',
+      'Fixed: an energy storage that ran flat while discharging or holding could refuse to charge again even with surplus power.',
+      'Daylight, wind and power are now large tiles at the top of the side panel, with the power balance on its own strip.',
+      'The stats strip across the top of the map and the resource bars no longer jump around as numbers change.',
+      'The main menu has an animated backdrop, a new font, larger text, and shows how many players are online.',
+      'The music widget moves into the designer while it is open.',
+    ],
+  },
+  {
     date: '2026-10-14',
     changes: [
       'New default building: the Radar Tower pings the map on its own while its radar module is switched on.',

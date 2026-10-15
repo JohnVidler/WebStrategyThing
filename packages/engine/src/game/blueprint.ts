@@ -1,6 +1,6 @@
 import type { Program } from '../vm/types';
 import { PARTS, SWITCHABLE, type PartDef, type WeaponKind } from './parts';
-import { BASE_LINK_RANGE, BASE_STACK, BUILD_TIME_BASE, BUILD_TIME_PER_MASS, COST_PER_MASS, CYCLE_COST, SPEED_FACTOR, TILE } from './rules';
+import { BASE_LINK_RANGE, BASE_STACK, BUILD_TIME_BASE, BUILD_TIME_PER_MASS, COST_PER_MASS, CYCLE_COST, PRODUCTION_ENERGY_BY_SLOT, PRODUCTION_ENERGY_PER_MODULE, REPAIR_ARMOR_MULTIPLIER, REPAIR_MATTER_PER_HP, SPEED_FACTOR, TILE } from './rules';
 import { TESLA_COOLDOWN, TESLA_RANGE } from './rules';
 
 /** Converts total thrust / mass into sub-tile units per tick. */
@@ -22,6 +22,7 @@ export const Caps = {
   Storage: 512,
   Build: 1024,
   Radar: 2048,
+  Repair: 4096,
 } as const;
 
 export class BlueprintError extends Error {
@@ -81,11 +82,18 @@ export interface BlueprintStats {
   readonly cargoUse: number;
   readonly factoryUse: number;
   readonly builderUse: number;
+  /** Hit points per tick restored by the repair module, and the energy per tick it uses. */
+  readonly repairRate: number;
+  /** Matter it costs to mend one hit point of this class (armour plating costs more). */
+  readonly repairMatterPerHp: number;
+  readonly repairUse: number;
   readonly caps: number;
   /** Credits to produce one. */
   readonly cost: number;
   /** Ticks to produce one. */
   readonly buildTime: number;
+  /** Energy the factory spends producing one (over its build time), from module count and types. */
+  readonly buildEnergy: number;
   readonly size: number;
 }
 
@@ -151,17 +159,19 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
   let cycles = 0, cpuUse = 0, thrust = 0, motorUse = 0, flying = false;
   let sensor = 0, sensorUse = 0, cargo = 0, rate = 0, cargoUse = 0;
   let factory = false, factoryUse = 0, silo = 0, charge = 0, solar = 0, wind = 0, antenna = 0, banks = 0;
-  let buildRate = 0, builderUse = 0, radarMax = 0;
+  let buildRate = 0, builderUse = 0, radarMax = 0, buildEnergy = 0, repairRate = 0, repairUse = 0, armorHp = 0;
   let weapon: BlueprintStats['weapon'] = null;
 
   defs.forEach((d, i) => {
     // Passive properties: always present.
     hp += d.hp ?? 0;
+    if (d.slot === 'armor') armorHp += d.hp ?? 0;
     mass += d.mass;
     memory += d.memory ?? 0;
     stack += d.stack ?? 0;
     energy += d.energy ?? 0;
     fullCycles += d.cycles ?? 0;
+    if (d.slot !== 'chassis') buildEnergy += PRODUCTION_ENERGY_PER_MODULE + (PRODUCTION_ENERGY_BY_SLOT[d.slot] ?? 0);
     if (d.slot === 'battery' && d.structureOnly) banks++;
     silo += d.storage ?? 0;
     const on = !(SWITCHABLE.has(d.slot) && (off >>> i) & 1);
@@ -214,6 +224,10 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
       case 'radar':
         radarMax = Math.max(radarMax, d.radarMaxEnergy ?? 0);
         break;
+      case 'repair':
+        repairRate += d.repairRate ?? 0;
+        repairUse += d.use ?? 0;
+        break;
       case 'builder':
         buildRate += d.buildRate ?? 0;
         builderUse += d.use ?? 0;
@@ -235,7 +249,8 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
     (solar + wind > 0 ? Caps.Generator : 0) |
     (banks > 0 ? Caps.Storage : 0) |
     (buildRate > 0 ? Caps.Build : 0) |
-    (radarMax > 0 ? Caps.Radar : 0);
+    (radarMax > 0 ? Caps.Radar : 0) |
+    (repairRate > 0 ? Caps.Repair : 0);
 
   return Object.freeze({
     hp,
@@ -267,9 +282,13 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
     cargoUse,
     factoryUse,
     builderUse,
+    repairRate,
+    repairUse,
+    repairMatterPerHp: hp > 0 ? (REPAIR_MATTER_PER_HP * (hp - armorHp + armorHp * REPAIR_ARMOR_MULTIPLIER)) / hp : 0,
     caps,
     cost: COST_PER_MASS * mass + CYCLE_COST * fullCycles,
     buildTime: BUILD_TIME_BASE + BUILD_TIME_PER_MASS * mass,
+    buildEnergy,
     size: frame.size ?? 0,
   });
 }

@@ -4,4 +4,6 @@ export const SimEvent = {
   Death: 2,
   /** A tesla discharge: the coil's entity index (twice, so visibility filtering sees it). */
   Pulse: 3,
+  /** A repair beam at work: repairer, repaired (sent every other tick while it runs). */
+  Repair: 4,
 } as const;

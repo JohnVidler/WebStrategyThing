@@ -10,6 +10,9 @@ const API_ROOT = '/api/v1';
 const ROOMS_PATH = `${API_ROOT}/rooms`;
 const SOCKET_PATH = `${API_ROOT}/ws`;
 const MUSIC_PATH = `${API_ROOT}/music`;
+const MENU_PATH = `${API_ROOT}/menu`;
+/** Presence sockets of players who are on the menu rather than in a match. */
+const menuSockets = new Set<unknown>();
 /** How long an empty room is kept before it is shut down. */
 const EMPTY_ROOM_MS = 60_000;
 const NAME = /^[A-Za-z0-9_-]{1,24}$/;
@@ -34,6 +37,11 @@ const http = createServer((req, res) => {
       // malformed escape: falls through to 404
     }
     void sendTrack(req, res, file).catch(() => (res.headersSent ? res.destroy() : res.writeHead(500).end()));
+    return;
+  }
+  if (req.method === 'GET' && path === MENU_PATH) {
+    res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*', 'cache-control': 'no-store' });
+    res.end(JSON.stringify({ players: menuSockets.size }));
     return;
   }
   if (req.method === 'GET' && path === ROOMS_PATH) {
@@ -101,6 +109,13 @@ wss.on('connection', (socket, request) => {
     return;
   }
   const roomName = url.searchParams.get('room');
+  if (!roomName && url.searchParams.get('menu') === '1') {
+    // Presence only: someone sitting on the menu, not in any match.
+    menuSockets.add(socket);
+    socket.on('close', () => menuSockets.delete(socket));
+    socket.on('error', () => menuSockets.delete(socket));
+    return;
+  }
   const mapId = url.searchParams.get('map') ?? undefined;
   const mode = url.searchParams.get('mode') ?? undefined;
   const token = url.searchParams.get('token') ?? undefined;

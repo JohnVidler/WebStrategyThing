@@ -210,6 +210,27 @@ describe('storage discharge', () => {
   });
 });
 
+describe('storage with an empty store', () => {
+  // A store left in DISCHARGE/HOLD that runs dry can't power its CPU to switch back, so
+  // it must still be refilled from surplus or it stays dead.
+  for (const mode of [2, 3]) {
+    it(`recharges from surplus even if its mode is ${mode === 2 ? 'DISCHARGE' : 'HOLD'}`, () => {
+      const sim = newSim();
+      sim.tick = 300; // midday
+      const solar = sim.blueprints.define(1, 'Solar', ['frame.medium', ...Array(8).fill('solar.panel')]);
+      const storeBp = sim.blueprints.define(1, 'Store', ['frame.medium', 'cpu.basic', 'battery.bank', 'battery.bank']);
+      sim.setProgram(storeBp.id, 'if netSupply() >= netDemand() { storageMode(CHARGE_STORE) }\nsleep(4)');
+      sim.spawnStructure(solar, 2, 2);
+      const store = sim.spawnStructure(storeBp, 4, 2, 0);
+      sim.storage.f.mode[store] = mode;
+      sim.energy.f.amount[store] = 0;
+      run(sim, 40);
+      expect(sim.energy.f.amount[store]).toBeGreaterThan(0);
+      expect(sim.storage.f.mode[store]).toBe(1); // the script came alive and chose CHARGE_STORE
+    });
+  }
+});
+
 describe('design upload', () => {
   const parts = ['chassis.light', 'cpu.basic', 'motor.small'];
 
@@ -242,5 +263,67 @@ describe('transmission losses', () => {
     expect(supplyWith(undefined)).toBe(fullOutput);
     expect(supplyWith(4)).toBe(fullOutput); // touching: no gap
     expect(supplyWith(5)).toBeLessThan(fullOutput); // one tile apart
+  });
+});
+
+describe('repair', () => {
+  it('needs matter, and armour costs more of it per hit point', () => {
+    const sim = newSim();
+    const plain = sim.blueprints.define(1, 'Plain', ['chassis.medium', 'motor.small']);
+    const plated = sim.blueprints.define(1, 'Plated', ['chassis.medium', 'motor.small', 'armor.plate', 'armor.plate']);
+    expect(plated.stats.repairMatterPerHp).toBeGreaterThan(plain.stats.repairMatterPerHp);
+    const tower = sim.blueprints.define(1, 'Tower', ['frame.small', 'cpu.basic', 'repair.beam', 'battery.bank', 'silo']);
+    const t = sim.spawnStructure(tower, 5, 5);
+    sim.energy.f.amount[t] = sim.stats(t).energyCapacity;
+    const g = sim.spawnUnit(plain, at(6), at(5));
+    sim.health.f.hp[g] = 5;
+    sim.repairer.f.target[t] = sim.world.handle(g);
+    run(sim, 10); // no matter in any silo
+    expect(sim.health.f.hp[g]).toBe(5);
+  });
+
+  const setup = () => {
+    const sim = newSim();
+    sim.tick = 300; // midday, so solar keeps the building powered
+    const tower = sim.blueprints.define(1, 'Tower', ['frame.small', 'cpu.basic', 'repair.beam', 'battery.bank', 'silo']);
+    const drone = sim.blueprints.define(1, 'Drone', ['chassis.medium', 'cpu.basic', 'motor.small', 'cargo.bay', 'repair.beam', 'battery.cell']);
+    const wall = sim.blueprints.define(1, 'Wall', ['frame.small', 'armor.plate']);
+    const grunt = sim.blueprints.define(1, 'Grunt', ['chassis.light', 'motor.small']);
+    return { sim, tower, drone, wall, grunt };
+  };
+
+  it('a building with a repair module mends a unit in reach, for energy', () => {
+    const { sim, tower, grunt } = setup();
+    const t = sim.spawnStructure(tower, 5, 5);
+    sim.energy.f.amount[t] = sim.stats(t).energyCapacity;
+    sim.addStock(t, 100);
+    const g = sim.spawnUnit(grunt, at(6), at(5));
+    sim.health.f.hp[g] = 5;
+    sim.repairer.f.target[t] = sim.world.handle(g);
+    const before = sim.energy.f.amount[t];
+    run(sim, 3);
+    expect(sim.health.f.hp[g]).toBeGreaterThan(5);
+    expect(sim.energy.f.amount[t]).toBeLessThan(before);
+    expect(sim.stockpile.f.amount[t]).toBeLessThan(100); // matter is paid too
+    run(sim, 40);
+    expect(sim.health.f.hp[g]).toBe(sim.stats(g).hp); // never beyond the maximum
+  });
+
+  it('a unit with a repair module mends an own building, but not an enemy one', () => {
+    const { sim, drone, wall } = setup();
+    const d = sim.spawnUnit(drone, at(6), at(5));
+    sim.energy.f.amount[d] = sim.stats(d).energyCapacity;
+    sim.cargo.f.amount[d] = 40;
+    const own = sim.spawnStructure(wall, 5, 5);
+    const enemyWall = sim.blueprints.define(2, 'EWall', ['frame.small', 'armor.plate']);
+    const foe = sim.spawnStructure(enemyWall, 8, 5);
+    sim.health.f.hp[own] = 10;
+    sim.health.f.hp[foe] = 10;
+    sim.repairer.f.target[d] = sim.world.handle(own);
+    run(sim, 5);
+    expect(sim.health.f.hp[own]).toBeGreaterThan(10);
+    sim.repairer.f.target[d] = sim.world.handle(foe);
+    run(sim, 5);
+    expect(sim.health.f.hp[foe]).toBe(10);
   });
 });

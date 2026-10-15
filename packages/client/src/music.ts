@@ -41,6 +41,13 @@ interface Voice {
  * fitting track cross-fades in over the current one. The same happens shortly
  * before a track ends. Does nothing at all if the server has no music.
  */
+let instance: MusicPlayer | undefined;
+
+/** Moves the widget into `slot` (e.g. a toolbar), or back where it started when `slot` is null. */
+export function placeMusic(slot: HTMLElement | null): void {
+  instance?.mountIn(slot);
+}
+
 export class MusicPlayer {
   private tracks: Track[] = [];
   private context: MusicContext = 'menu';
@@ -61,6 +68,7 @@ export class MusicPlayer {
     private readonly apiBase: string,
     dock = false,
   ) {
+    instance = this;
     this.root = document.createElement('div');
     this.root.className = 'music';
     this.root.hidden = true;
@@ -99,6 +107,21 @@ export class MusicPlayer {
     // Capture phase on the window, so nothing in the page can swallow the gesture.
     for (const type of ['pointerdown', 'mousedown', 'touchend', 'keydown', 'click'])
       window.addEventListener(type, this.onGesture, true);
+  }
+
+  private home: { parent: Node; next: Node | null } | undefined;
+
+  mountIn(slot: HTMLElement | null): void {
+    if (slot) {
+      this.home ??= { parent: this.root.parentNode!, next: this.root.nextSibling };
+      slot.append(this.root);
+      this.root.classList.add('inbar');
+    } else if (this.home) {
+      const { parent, next } = this.home;
+      parent.insertBefore(this.root, next && next.parentNode === parent ? next : null);
+      this.root.classList.remove('inbar');
+      this.home = undefined;
+    }
   }
 
   /** Fetches the track list; call once. Starts playing straight away if there is any. */
