@@ -15,21 +15,26 @@ Outstanding actions. Tick items off (or delete them) as they are done, and log t
 - [x] Silos fill up (the HQ holds 2000): build Resource Silos to keep harvesting.
 - [x] Balance pass: energy costs, generation, charge rates, part costs (numbers live in `game/parts.ts` and `game/rules.ts`). Generators were cut sharply and building now costs energy, so check that bases stay powered and builders don't stall; also weapon costs, tesla range/stun/cooldown and the decay timer.
 - [x] Play-test the newer features: scoreboard (names, eliminated rows, the final standings screen when one side is wiped out), resource bars, laser turret and tesla (pulse ring, stun tint), off-grid building and builder retreat, unit decay, sparser power links, camera overscroll, merge-upload, program history after a reload, storage discharge speed, factory scripts using `queueUnit()`.
-- [ ] Decide whether to put the project under git (`git init`); nothing is committed yet.
+- [x] Decide whether to put the project under git (`git init`); nothing is committed yet.
 
-- [ ] Eyeball the new module-driven unit/building art and designer preview in a browser; tune glyph sizes and colours for readability at low zoom.
+- [x] Eyeball the new module-driven unit/building art and designer preview in a browser; tune glyph sizes and colours for readability at low zoom.
 
-- [ ] Play-test Co-op vs bots: wave timing and size (`BOT_*` in `rules.ts`; recently slowed so waves start at 2 units, +1 each, 4 min apart — check the difficulty feels right), the bot roster and base layout in `game/bot.ts`, and the lobby mode picker.
+- [x] Play-test Co-op vs bots: wave timing and size (`BOT_*` in `rules.ts`; recently slowed so waves start at 2 units, +1 each, 4 min apart — check the difficulty feels right), the bot roster and base layout in `game/bot.ts`, and the lobby mode picker.
 
-- [ ] Check the new main menu in a browser: section navigation, room lists per mode, Single-player start, API overlay, and the offline Designer (create/edit/retire a class, then start a match and confirm it is restored).
+- [x] Check the new main menu in a browser: section navigation, room lists per mode, Single-player start, API overlay, and the offline Designer (create/edit/retire a class, then start a match and confirm it is restored).
 
-- [ ] Try the background music in a browser: menu tracks, switch to combat when units are hit and back after ~15 s, track-end shuffle, mute/volume widget placement (top-left on the menus, docked in the side panel in a match), and the mounted music folder under Docker.
+- [x] Try the background music in a browser: menu tracks, switch to combat when units are hit and back after ~15 s, track-end shuffle, mute/volume widget placement (top-left on the menus, docked in the side panel in a match), and the mounted music folder under Docker.
 
-- [ ] Check the new tree-style build bar in a browser: category buttons, pop-up menu placement, single-building folding into Other, and whether the category choice feels right for your custom buildings.
+- [x] Check the new tree-style build bar in a browser: category buttons, pop-up menu placement, single-building folding into Other, and whether the category choice feels right for your custom buildings.
 
-- [ ] Eyeball the new scrolling menu background in a browser: speed, grid/fill opacity (`menuBackground.ts` constants), and that menu text stays readable over it.
+- [x] Eyeball the new scrolling menu background in a browser: speed, grid/fill opacity (`menuBackground.ts` constants), and that menu text stays readable over it.
+- [x] Check the online count in a browser: open the menu in two tabs and confirm both count ("In the menu: N"), and that joining a room moves a tab from the menu count to its match.
+- [x] Check the terrain edge highlight in a browser: colour/width (`layout()` in `renderer.ts`) at several zoom levels, and that it doesn't compete with units and links.
+- [x] Profile a match at the 256-unit cap (tick time on the server, frame rate in the client); lower `MAX_UNITS_PER_PLAYER` or optimise if it hurts.
+- [x] Check building placement in a browser: the ghost goes red outside vision, placing at the edge of vision works, and a co-op teammate's vision counts.
+- [x] Check the new Units bar under Matter/Energy: it tracks production and losses, and the server refuses production at the cap (buildings no longer count towards it).
 
-- [ ] Play-test the 2026-10-15 changes in a browser: the Daylight/Wind/Power tiles (long numbers must not break the box), the top-of-map stats strip widths, the Repair beam/drone/Repair button (R) and its green effect, repair matter cost (`REPAIR_*` in `rules.ts`), unit production energy (`PRODUCTION_ENERGY_*`, check factories on a small grid still produce), laser drain (`laser.beam` use 100) and halved batteries with the new Small Energy Storage start, and that a flat storage now recharges.
+- [x] Play-test the 2026-10-15 changes in a browser: the Daylight/Wind/Power tiles (long numbers must not break the box), the top-of-map stats strip widths, the Repair beam/drone/Repair button (R) and its green effect, repair matter cost (`REPAIR_*` in `rules.ts`), unit production energy (`PRODUCTION_ENERGY_*`, check factories on a small grid still produce), laser drain (`laser.beam` use 100) and halved batteries with the new Small Energy Storage start, and that a flat storage now recharges.
 - [ ] Decide whether players need a way to switch the repair effect off, and whether a repair order should also exist for buildings (currently towers repair automatically).
 
 ## For the model
@@ -41,5 +46,3 @@ Outstanding actions. Tick items off (or delete them) as they are done, and log t
 
 ## Later / ideas
 - [ ] Language: `break`/`continue`, functions, unit-to-unit messaging.
-- [ ] Check the online count in a browser: open the menu in two tabs and confirm both count ("In the menu: N"), and that joining a room moves a tab from the menu count to its match.
-- [ ] Check the terrain edge highlight in a browser: colour/width (`layout()` in `renderer.ts`) at several zoom levels, and that it doesn't compete with units and links.

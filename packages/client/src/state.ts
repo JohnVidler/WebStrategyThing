@@ -14,6 +14,7 @@ import {
   Terrain,
   TILE,
   Unit,
+  inVision,
   viewersOf,
   wind,
   World,
@@ -165,6 +166,20 @@ export class ClientState {
       }
     }
     this.visionVersion++;
+  }
+
+  /** Own mobile units (buildings and construction sites don't count towards the unit cap). */
+  ownUnitCount(): number {
+    let n = 0;
+    for (const e of this.unit.dense) if (this.unit.f.owner[e] === this.myId && !this.stats(e)?.structure) n++;
+    return n;
+  }
+
+  /** Whether a building with its top-left on tile (x, y) would be inside own vision (the server's placement rule). */
+  canPlaceInVision(x: number, y: number, size: number): boolean {
+    if (!this.fog) return true;
+    const viewers = viewersOf(this.world, this.myId, (e) => this.stats(e), (e) => this.isSite(e));
+    return inVision(viewers, (x + size / 2) * TILE, (y + size / 2) * TILE);
   }
 
   /**

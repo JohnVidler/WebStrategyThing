@@ -111,6 +111,7 @@ export class Match {
     this.map = mapById(options.mapId);
     this.sim = createMatch(0x5eed, this.map);
     this.fog = options.fog ?? true;
+    this.sim.requirePlacementVision = this.fog;
   }
 
   get playerCount(): number {
@@ -624,7 +625,7 @@ export class Match {
         for (const e of msg.units) ignoreRefused(() => this.sim.issueModule(player.id, e, msg.index, msg.on));
         return;
       case 'produce': {
-        const owned = this.sim.unit.dense.filter((e) => this.sim.unit.f.owner[e] === player.id).length;
+        const owned = this.sim.unit.dense.filter((e) => this.sim.unit.f.owner[e] === player.id && !this.sim.stats(e).structure).length;
         if (owned >= MAX_UNITS_PER_PLAYER) throw new CommandError(`Unit cap (${MAX_UNITS_PER_PLAYER}) reached`);
         this.sim.enqueueProduction(player.id, msg.building, msg.blueprint);
         return;

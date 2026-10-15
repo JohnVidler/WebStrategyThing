@@ -501,6 +501,17 @@ describe('construction and resources', () => {
     expect(sim.world.isAlive(tower)).toBe(true);
   });
 
+  it('with fog on, buildings can only be placed inside own vision', () => {
+    const { sim, cls, own } = makeMatch();
+    sim.requirePlacementVision = true;
+    const silo = cls(1, 'Resource Silo').id;
+    const [hq] = own(1, 'HQ');
+    const x = Math.round(sim.pos.f.x[hq] / TILE);
+    const y = Math.round(sim.pos.f.y[hq] / TILE);
+    expect(() => sim.placeBlueprint(1, silo, 22, 22, [], false)).toThrow(/vision/);
+    expect(() => sim.placeBlueprint(1, silo, Math.max(0, x - 2), y, [], false)).not.toThrow(/vision/);
+  });
+
   it('retired classes cannot be produced or placed until restored', () => {
     const { sim, own, cls } = makeMatch();
     const [hq] = own(1, 'HQ');

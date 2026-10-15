@@ -362,7 +362,9 @@ sleep(4)`)}
       <h2>Placing buildings</h2>
       <p>Pick a building class in the <b>build bar</b> under the map, then left-click the map to place its blueprint
       (Ctrl/Shift-click to place several). Any selected units with a <b>build arm</b> get a <code>BUILD</code> task for it;
-      right-clicking a site with builders selected does the same. Sites block their tiles and can be attacked.</p>
+      right-clicking a site with builders selected does the same. Sites block their tiles and can be attacked.
+      Blueprints can only be placed inside your vision (the centre of the building must be in view of your units or
+      buildings); the ghost turns red outside it.</p>
       <h2>Building</h2>
       <p>A builder within ${tiles(BUILD_RANGE)} tiles of the site calls ${fnLink('build')}; from then on it invests up to its
       build rate in resources every tick until the site is finished (the building costs its class cost in total;

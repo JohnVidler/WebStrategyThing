@@ -214,7 +214,8 @@ export class Input implements ViewState {
       const tile = this.renderer.screenToTile(ev.offsetX, ev.offsetY);
       this.placement.x = Math.round(tile.x - size / 2);
       this.placement.y = Math.round(tile.y - size / 2);
-      this.placement.valid = this.state.terrain.footprintFree(this.placement.x, this.placement.y, size);
+      this.placement.valid =
+        this.state.terrain.footprintFree(this.placement.x, this.placement.y, size) && this.state.canPlaceInVision(this.placement.x, this.placement.y, size);
       return;
     }
     if (!this.dragFrom) return;

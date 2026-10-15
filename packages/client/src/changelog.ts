@@ -24,6 +24,10 @@ export const CHANGELOG: readonly ChangelogEntry[] = [
       'The stats strip across the top of the map and the resource bars no longer jump around as numbers change.',
       'The main menu has an animated backdrop, a new font, larger text, and shows how many players are online.',
       'The music widget moves into the designer while it is open.',
+      'The unit cap is now 256 per player (it was 80), and only units count towards it, not buildings. A new Units bar under Matter and Energy shows how close you are.',
+      'Buildings can now only be placed inside your vision, so you can no longer build in the dark; the placement ghost turns red there.',
+      'The edges of solid terrain are now outlined where they meet open ground, so walls and ridges stand out.',
+      'Players waiting in the menu now count towards the players online total, shown as "In the menu".',
     ],
   },
   {

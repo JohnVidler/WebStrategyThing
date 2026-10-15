@@ -34,6 +34,7 @@ import { findPath } from './path';
 import { gap, powerLinks, powerNetworks, type PowerNetwork, type PowerNode } from './power';
 import { BUILD_RANGE, BUILDING_BUILD_RANGE, BUILDING_TRANSFER_RANGE, DEMOLISH_REFUND, DOCK_RANGE, HARVEST_RANGE, MAX_PRODUCTION_QUEUE, MAX_SITES_PER_PLAYER, RADAR_COOLDOWN_TICKS, RADAR_ENERGY_PER_TILE, SITE_START_HP, UNIT_TRANSFER_RANGE } from './rules';
 import { SpatialGrid } from './spatial';
+import { inVision, viewersOf } from './vision';
 import {
   buildSystem,
   repairSystem,
@@ -163,6 +164,8 @@ export class Simulation {
   readonly repairCarry: number[] = [];
   /** Team per owner (co-op mode: the humans share one, the bots another). Owners without a team are only allied to themselves. */
   readonly teams = new Map<number, number>();
+  /** Buildings may only be placed within the owner's (or their team's) vision; off when fog of war is. */
+  requirePlacementVision = false;
   /** Owners kept at full energy with full silos (co-op mode bots). */
   readonly cheaters = new Set<number>();
   /** Entity -> tick until which its CPU is stunned. */
@@ -911,6 +914,14 @@ export class Simulation {
     queue.push(bp.id);
   }
 
+  /** Whether a point (in tiles) is inside the vision of `owner` or their team; unfinished sites don't count. */
+  private canSeeTile(owner: number, x: number, y: number): boolean {
+    const team = this.teams.get(owner);
+    const owners = new Set([owner]);
+    if (team !== undefined) for (const [o, t] of this.teams) if (t === team) owners.add(o);
+    return inVision(viewersOf(this.world, owners, (e) => this.stats(e), (e) => this.isSite(e)), x * TILE, y * TILE);
+  }
+
   /**
    * Player places a building blueprint: a construction site appears and each
    * listed builder gets a BUILD task for it. Nothing is paid until builders work.
@@ -922,6 +933,9 @@ export class Simulation {
     if (bp.retired) throw new CommandError(`${bp.name} is retired`);
     const sites = this.construction.dense.filter((e) => this.unit.f.owner[e] === owner).length;
     if (sites >= MAX_SITES_PER_PLAYER) throw new CommandError(`At most ${MAX_SITES_PER_PLAYER} construction sites at once`);
+    if (this.requirePlacementVision && !this.canSeeTile(owner, tx + bp.stats.footprint / 2, ty + bp.stats.footprint / 2)) {
+      throw new CommandError('You can only build where you have vision');
+    }
     const site = this.spawnStructure(bp, tx, ty, 0, false);
     for (const b of builders) {
       try {

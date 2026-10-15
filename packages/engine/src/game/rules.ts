@@ -134,7 +134,7 @@ export const PRODUCTION_ENERGY_BY_SLOT: Readonly<Record<string, number>> = {
 export const SITE_START_HP = 0.1;
 export const MAX_SITES_PER_PLAYER = 12;
 export const MAX_PRODUCTION_QUEUE = 8;
-export const MAX_UNITS_PER_PLAYER = 80;
+export const MAX_UNITS_PER_PLAYER = 256;
 export const MAX_CLASSES_PER_PLAYER = 40;
 
 // --- Match set-up ------------------------------------------------------------------
@@ -154,7 +154,7 @@ export const NEUTRAL_UNITS = 4;
 export const BOT_THINK_TICKS = 10;
 /** Units each assembler keeps queued, and the most mobile units a bot fields at once. */
 export const BOT_QUEUE_DEPTH = 2;
-export const BOT_MAX_UNITS = 24;
+export const BOT_MAX_UNITS = 256;
 /** First wave leaves after this many ticks; later waves every BOT_WAVE_INTERVAL_TICKS (10 ticks = 1 second). */
 export const BOT_FIRST_WAVE_TICKS = 1800;
 export const BOT_WAVE_INTERVAL_TICKS = 2400;

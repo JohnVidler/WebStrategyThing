@@ -24,16 +24,26 @@ export interface Viewer {
 const isOwner = (owner: number | ReadonlySet<number>, id: number): boolean => (typeof owner === 'number' ? owner === id : owner.has(id));
 
 /** Own entities' vision circles (sub-tile units). `stats` may be undefined while class info is in flight. */
-export function viewersOf(world: World, owner: number | ReadonlySet<number>, stats: (e: number) => BlueprintStats | undefined): Viewer[] {
+export function viewersOf(
+  world: World,
+  owner: number | ReadonlySet<number>,
+  stats: (e: number) => BlueprintStats | undefined,
+  skip?: (e: number) => boolean,
+): Viewer[] {
   const unit = world.store(Unit);
   const pos = world.store(Position);
   const out: Viewer[] = [];
   for (const e of unit.dense) {
-    if (!isOwner(owner, unit.f.owner[e]) || !pos.has(e)) continue;
+    if (!isOwner(owner, unit.f.owner[e]) || !pos.has(e) || skip?.(e)) continue;
     const s = stats(e);
     if (s) out.push({ x: pos.f.x[e], y: pos.f.y[e], r: visionRange(s) });
   }
   return out;
+}
+
+/** True if the point (sub-tile units) is inside one of the vision circles. */
+export function inVision(viewers: readonly Viewer[], x: number, y: number): boolean {
+  return viewers.some((v) => (x - v.x) ** 2 + (y - v.y) ** 2 <= v.r * v.r);
 }
 
 /** Every entity `owner` can see this tick. */

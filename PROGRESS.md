@@ -4,6 +4,22 @@ Changes to the codebase, grouped by day (newest first).
 
 ## 2026-10-15
 
+### Wrap-up: What's new, TODO
+- `changelog.ts`: 2026-10-15 block gained the online-count, terrain-edge, unit-cap, placement-vision and Units-bar entries. TODO.md: play-test items for each of those.
+
+### Unit count bar
+- The bars redraw every 5 ticks from the tick handler in `main.ts`, so the unit count follows production and losses between credits/network messages.
+- Resource bars (`ui.ts` `renderResourceBars`) gained a third "Units" bar under Matter and Energy: own mobile units / `MAX_UNITS_PER_PLAYER` (`GameState.ownUnitCount`).
+- The server's produce check (`match.ts`) now counts only mobile units too (it counted buildings and sites before, which the bar would have misreported); buildings are limited by sites/cost, not the unit cap.
+
+### Buildings must be placed inside vision
+- `Simulation.placeBlueprint` rejects a site whose centre is outside the vision of the owner (or their team; unfinished sites don't give vision for this) with "You can only build where you have vision". Enabled via `sim.requirePlacementVision`, which `Match` sets from its `fog` option (so `FOG=off` keeps placing anywhere). Shared helpers `inVision` and a `skip` filter on `viewersOf` in `vision.ts`.
+- Client: `GameState.canPlaceInVision` feeds the placement ghost's validity (red outside vision, `input.ts`); API docs "Placing buildings" mention it. Test added in `sim.test.ts`.
+- Note: `sim.test.ts` "a harvester with nothing to do goes back to a storage building" fails with the working-tree `NEUTRAL_UNITS = 15` (passes at 4) - unrelated to this change.
+
+### Unit cap 80 -> 256
+- `MAX_UNITS_PER_PLAYER` in `rules.ts` raised from 80 to 256 (single constant; the server's cap check and error message follow it). ECS storage grows on demand, so no other limit changed. Cost is linear in unit count (scripts, separation, spatial grid, sprites); not yet profiled with a full cap.
+
 ### Terrain edge highlight
 - `renderer.ts` `layout()`: after the solid fill, only the tile sides of solid terrain that border passable terrain are stroked (light blue-grey, width scales with zoom); interior wall faces and the map border get no line. Not yet seen in a browser.
 

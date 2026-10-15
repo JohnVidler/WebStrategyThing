@@ -1,5 +1,6 @@
 import {
   buildEnergyCost,
+  MAX_UNITS_PER_PLAYER,
   Cargo,
   Construction,
   CpuStatus,
@@ -179,6 +180,7 @@ export class Ui {
     const rows = [
       { icon: '◆', label: 'Matter', colour: '#7ee0b5', value: pool, max: poolCapacity },
       { icon: 'ϟ', label: 'Energy', colour: '#f5c542', value: energy, max: energyMax },
+      { icon: '▲', label: 'Units', colour: '#7eb6ff', value: this.state.ownUnitCount(), max: MAX_UNITS_PER_PLAYER },
     ].filter((r) => r.max > 0);
     const html = rows
       .map((r) => {

@@ -221,6 +221,7 @@ async function main(): Promise<void> {
       renderer.sync(info);
       input.prune();
       ui.sampleHistory();
+      if (state.tick % 5 === 0) ui.renderResourceBars();
       renderPanel();
       state.world.flush();
     },
