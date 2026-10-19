@@ -23,6 +23,9 @@ function ticks(match: Match, n: number): void {
   for (let i = 0; i < n; i++) (match as unknown as { tick(): void }).tick();
 }
 
+/** The host (first to join) starts the match. */
+const begin = (match: Match, host: FakeSocket) => match.receive(asSocket(host), { t: 'startGame' });
+
 const ownedBy = (match: Match, id: number) => match.sim.unit.dense.filter((e) => match.sim.unit.f.owner[e] === id);
 
 describe('match', () => {
@@ -44,6 +47,7 @@ describe('match', () => {
       expect(match.capacity).toBe(2);
       const a = new FakeSocket();
       match.join(asSocket(a));
+      begin(match, a);
       ticks(match, 3);
       expect(match.pauseReasons).toHaveLength(0); // one human is enough
       const id = a.messages.find((m) => m.t === 'welcome')!.playerId as number;
@@ -70,6 +74,7 @@ describe('match', () => {
       const b = new FakeSocket();
       match.join(asSocket(a));
       match.join(asSocket(b));
+      begin(match, a);
       ticks(match, 60);
       expect(a.messages.some((m) => m.t === 'matchOver')).toBe(false);
       const ids = [a, b].map((s) => s.messages.find((m) => m.t === 'welcome')!.playerId as number);
@@ -86,6 +91,7 @@ describe('match', () => {
       expect(match.capacity).toBe(1);
       const a = new FakeSocket();
       match.join(asSocket(a));
+      begin(match, a);
       ticks(match, 60);
       expect(match.pauseReasons).toHaveLength(0);
       expect(match.roster()).toHaveLength(2);
@@ -102,6 +108,7 @@ describe('match', () => {
       const match = new Match({ mode: 'coop' });
       const a = new FakeSocket();
       match.join(asSocket(a));
+      begin(match, a);
       ticks(match, 3);
       const id = a.messages.find((m) => m.t === 'welcome')!.playerId as number;
       expect(ownedBy(match, id + 1).length).toBeGreaterThan(0);
@@ -114,9 +121,10 @@ describe('match', () => {
   });
 
   it('lets a dropped player reconnect by token and resends their state', () => {
-    const match = new Match();
+    const match = new Match({ mode: 'coop' });
     const first = new FakeSocket();
     match.join(asSocket(first), 'token-one-1234');
+    begin(match, first);
     ticks(match, 3);
     const id = first.messages.find((m) => m.t === 'welcome')!.playerId as number;
     const units = ownedBy(match, id).length;
@@ -140,9 +148,10 @@ describe('match', () => {
 
   it('removes a player who does not come back in time', () => {
     vi.useFakeTimers({ toFake: ['Date'] });
-    const match = new Match();
+    const match = new Match({ mode: 'coop' });
     const socket = new FakeSocket();
     match.join(asSocket(socket), 'token-two-1234');
+    begin(match, socket);
     ticks(match, 3);
     const id = socket.messages.find((m) => m.t === 'welcome')!.playerId as number;
     match.leave(asSocket(socket));
@@ -154,15 +163,196 @@ describe('match', () => {
     expect(match.empty).toBe(true);
   });
 
-  it('pauses while only one player is connected, but still sets up their base', () => {
-    const match = new Match();
-    const socket = new FakeSocket();
-    match.join(asSocket(socket));
-    ticks(match, 30);
-    expect(match.sim.tick).toBe(0);
-    expect(ownedBy(match, socket.messages.find((m) => m.t === 'welcome')!.playerId as number).length).toBeGreaterThan(0);
-    const pause = socket.messages.filter((m) => m.t === 'pause').at(-1)!;
-    expect((pause.reasons as string[]).join(' ')).toMatch(/another player/);
+  describe('lobby', () => {
+    it('holds players without bases or game time until the host starts', () => {
+      const match = new Match();
+      const a = new FakeSocket();
+      const b = new FakeSocket();
+      match.join(asSocket(a));
+      match.join(asSocket(b));
+      ticks(match, 30);
+      expect(match.inLobby).toBe(true);
+      expect(match.sim.tick).toBe(0);
+      expect(ownedBy(match, 1)).toHaveLength(0);
+      expect(a.messages.find((m) => m.t === 'welcome')!.lobby).toBe(true);
+      const lobby = b.messages.filter((m) => m.t === 'lobby').at(-1)!;
+      expect((lobby.players as { id: number }[]).map((p) => p.id)).toEqual([1, 2]);
+      expect(lobby.hostId).toBe(1);
+      expect(lobby.minPlayers).toBe(2);
+      expect(match.roster()).toHaveLength(2);
+    });
+
+    it('only the host can start, and a free-for-all needs two players', () => {
+      const match = new Match();
+      const a = new FakeSocket();
+      const b = new FakeSocket();
+      match.join(asSocket(a));
+      begin(match, a);
+      ticks(match, 3);
+      expect(match.inLobby).toBe(true); // alone
+      match.join(asSocket(b));
+      begin(match, b);
+      ticks(match, 3);
+      expect(match.inLobby).toBe(true); // not the host
+      begin(match, a);
+      ticks(match, 3);
+      expect(match.inLobby).toBe(false);
+      expect(a.messages.some((m) => m.t === 'started')).toBe(true);
+      expect(ownedBy(match, 1).length).toBeGreaterThan(0);
+      expect(ownedBy(match, 2).length).toBeGreaterThan(0);
+      expect(match.sim.tick).toBeGreaterThan(0);
+    });
+
+    it('passes hosting on when the host leaves, and a co-op host may start alone', () => {
+      const match = new Match({ mode: 'coop', mapId: 'small-basin' });
+      const a = new FakeSocket();
+      const b = new FakeSocket();
+      match.join(asSocket(a), 'token-lobby-aaaa');
+      match.join(asSocket(b));
+      ticks(match, 2);
+      match.leave(asSocket(a)); // no grace period before the start
+      ticks(match, 2);
+      expect(match.empty).toBe(false);
+      const lobby = b.messages.filter((m) => m.t === 'lobby').at(-1)!;
+      expect(lobby.hostId).toBe(b.messages.find((m) => m.t === 'welcome')!.playerId);
+      begin(match, b);
+      ticks(match, 3);
+      expect(match.inLobby).toBe(false);
+      const idB = b.messages.find((m) => m.t === 'welcome')!.playerId as number;
+      expect(ownedBy(match, idB).length).toBeGreaterThan(0);
+      expect(ownedBy(match, 1)).toHaveLength(0);
+    });
+
+    it('lets people join a match that is already under way', () => {
+      const match = new Match();
+      const a = new FakeSocket();
+      const b = new FakeSocket();
+      match.join(asSocket(a));
+      match.join(asSocket(b));
+      begin(match, a);
+      ticks(match, 3);
+      match.leave(asSocket(b));
+      ticks(match, 2);
+      const c = new FakeSocket();
+      match.join(asSocket(c));
+      ticks(match, 3);
+      expect(c.messages.find((m) => m.t === 'welcome')!.lobby).toBe(false);
+      expect(ownedBy(match, c.messages.find((m) => m.t === 'welcome')!.playerId as number).length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('lobby designs', () => {
+    it('answers a design upload sent from the waiting room instead of ignoring it', () => {
+      const match = new Match({ mapId: 'small-basin' });
+      const a = new FakeSocket();
+      const b = new FakeSocket();
+      match.join(asSocket(a));
+      match.join(asSocket(b));
+      match.receive(asSocket(a), { t: 'loadDesigns', classes: [], reason: 'upload' });
+      ticks(match, 2);
+      const reply = a.messages.find((m) => m.t === 'designsLoaded');
+      expect(reply).toBeDefined();
+      expect((reply!.errors as string[]).length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('spectating', () => {
+    const open = (tokens = false) => {
+      const match = new Match({ mapId: 'small-basin' });
+      const sockets = [new FakeSocket(), new FakeSocket(), new FakeSocket()];
+      sockets.forEach((s, i) => match.join(asSocket(s), tokens ? `token-spec-${i}-1234` : undefined));
+      begin(match, sockets[0]);
+      ticks(match, 10);
+      return { match, a: sockets[0], b: sockets[1], c: sockets[2] };
+    };
+    const last = (s: FakeSocket, t: string) => s.messages.filter((m) => m.t === t).at(-1);
+
+    it('tells a defeated player the match goes on, then shows them the whole map', () => {
+      const { match, a, b, c } = open();
+      for (const e of ownedBy(match, 2)) match.sim.destroyEntity(e);
+      ticks(match, 10);
+      expect(b.messages.some((m) => m.t === 'defeated')).toBe(true);
+      expect(a.messages.some((m) => m.t === 'defeated')).toBe(false);
+      expect(a.messages.some((m) => m.t === 'matchOver')).toBe(false);
+
+      // Not allowed while still in it.
+      match.receive(asSocket(a), { t: 'spectate' });
+      ticks(match, 1);
+      expect(a.messages.filter((m) => m.t === 'welcome')).toHaveLength(1);
+
+      const before = b.sent.length;
+      match.receive(asSocket(b), { t: 'spectate' });
+      ticks(match, 1);
+      const welcome = last(b, 'welcome')!;
+      expect(welcome.spectating).toBe(true);
+      expect(welcome.fog).toBe(false);
+      expect(b.sent.length).toBeGreaterThan(before);
+      // Spectators give no orders: this would otherwise queue a build.
+      const bp = match.sim.blueprints.ownedBy(2).find((x) => x.stats.structure)!;
+      const sites = match.sim.unit.dense.length;
+      match.receive(asSocket(b), { t: 'place', blueprint: bp.id, x: 40, y: 40, builders: [], queue: false });
+      ticks(match, 2);
+      expect(match.sim.unit.dense.length).toBe(sites);
+      expect(c.messages.some((m) => m.t === 'defeated')).toBe(false);
+    });
+
+    it('does not make anyone wait for a defeated player who disconnects', () => {
+      const { match, a, b } = open(true);
+      for (const e of ownedBy(match, 2)) match.sim.destroyEntity(e);
+      ticks(match, 10);
+      match.leave(asSocket(b));
+      ticks(match, 5);
+      expect(match.pauseReasons).toEqual([]);
+      expect(last(a, 'pause')!.reasons).toEqual([]);
+    });
+
+    it('resigning forfeits the forces and offers the spectator view; resigning again leaves', () => {
+      const { match, b } = open();
+      match.receive(asSocket(b), { t: 'resign' });
+      ticks(match, 10);
+      expect(ownedBy(match, 2)).toHaveLength(0);
+      expect(match.playerCount).toBe(3);
+      expect(b.messages.some((m) => m.t === 'resigned')).toBe(false);
+      expect(b.messages.some((m) => m.t === 'defeated')).toBe(true);
+      match.receive(asSocket(b), { t: 'resign' });
+      expect(b.messages.some((m) => m.t === 'resigned')).toBe(true);
+      expect(match.playerCount).toBe(2);
+    });
+
+    it('a forfeit defeats the player at once, even on the first tick, so closing the tab starts no wait', () => {
+      const match = new Match({ mapId: 'small-basin' });
+      const sockets = [new FakeSocket(), new FakeSocket()];
+      sockets.forEach((s, i) => match.join(asSocket(s), `token-forfeit-${i}-1234`));
+      begin(match, sockets[0]);
+      ticks(match, 1);
+      match.receive(asSocket(sockets[1]), { t: 'forfeit' });
+      expect(sockets[1].messages.some((m) => m.t === 'defeated')).toBe(true);
+      match.leave(asSocket(sockets[1]));
+      ticks(match, 3);
+      expect(match.pauseReasons.some((r) => r.includes('disconnected'))).toBe(false);
+    });
+
+    it('leave frees the seat at once, and a forfeit is refused once defeated', () => {
+      const { match, b } = open();
+      match.receive(asSocket(b), { t: 'forfeit' });
+      ticks(match, 2);
+      const defeats = b.messages.filter((m) => m.t === 'defeated').length;
+      match.receive(asSocket(b), { t: 'forfeit' });
+      expect(b.messages.filter((m) => m.t === 'defeated')).toHaveLength(defeats);
+      match.receive(asSocket(b), { t: 'leave' });
+      expect(b.messages.some((m) => m.t === 'resigned')).toBe(true);
+      expect(match.playerCount).toBe(2);
+    });
+
+    it('lets the losers watch once the match is decided', () => {
+      const { match, a, c } = open();
+      for (const id of [2, 3]) for (const e of ownedBy(match, id)) match.sim.destroyEntity(e);
+      ticks(match, 10);
+      expect(last(a, 'matchOver')!.winner).toBe(1);
+      match.receive(asSocket(c), { t: 'spectate' });
+      ticks(match, 1);
+      expect(last(c, 'welcome')!.spectating).toBe(true);
+    });
   });
 
   it('runs with two players, and pauses with the reason when one disconnects', () => {
@@ -171,6 +361,7 @@ describe('match', () => {
     const b = new FakeSocket();
     match.join(asSocket(a), 'token-aaaa-1111');
     match.join(asSocket(b), 'token-bbbb-2222');
+    begin(match, a);
     ticks(match, 10);
     expect(match.sim.tick).toBeGreaterThan(0);
     expect(match.pauseReasons).toEqual([]);
@@ -197,6 +388,7 @@ describe('match', () => {
     const disconnected = new FakeSocket();
     match.join(asSocket(connected), 'token-live-1111');
     match.join(asSocket(disconnected), 'token-away-2222');
+    begin(match, connected);
     ticks(match, 5);
 
     match.leave(asSocket(disconnected));
@@ -214,6 +406,7 @@ describe('match', () => {
     const match = new Match();
     const socket = new FakeSocket();
     match.join(asSocket(socket), 'token-resign-1234');
+    begin(match, socket);
     ticks(match, 3);
     const id = socket.messages.find((m) => m.t === 'welcome')!.playerId as number;
 
@@ -231,6 +424,7 @@ describe('match', () => {
     const b = new FakeSocket();
     match.join(asSocket(a));
     match.join(asSocket(b));
+    begin(match, a);
     ticks(match, 25);
     expect(match.elapsedSeconds).toBe(Math.floor(match.sim.tick / 10));
     const roster = match.roster();
@@ -242,6 +436,7 @@ describe('match', () => {
     const match = new Match();
     const socket = new FakeSocket();
     match.join(asSocket(socket));
+    begin(match, socket);
     ticks(match, 3);
     const id = socket.messages.find((m) => m.t === 'welcome')!.playerId as number;
     match.leave(asSocket(socket));
@@ -255,6 +450,7 @@ describe('match', () => {
     const b = new FakeSocket();
     match.join(asSocket(a));
     match.join(asSocket(b));
+    begin(match, a);
     ticks(match, 10);
     const idA = a.messages.find((m) => m.t === 'welcome')!.playerId as number;
     const idB = b.messages.find((m) => m.t === 'welcome')!.playerId as number;
@@ -279,6 +475,7 @@ describe('match', () => {
     const b = new FakeSocket();
     match.join(asSocket(a), 'token-aaaa-1111');
     match.join(asSocket(b), 'token-bbbb-2222');
+    begin(match, a);
     ticks(match, 10);
     const idA = a.messages.find((m) => m.t === 'welcome')!.playerId as number;
     match.leave(asSocket(b));
@@ -307,6 +504,7 @@ describe('match', () => {
     const b = new FakeSocket();
     match.join(asSocket(a));
     match.join(asSocket(b));
+    begin(match, a);
     ticks(match, 10);
     const idA = a.messages.find((m) => m.t === 'welcome')!.playerId as number;
     const idB = b.messages.find((m) => m.t === 'welcome')!.playerId as number;

@@ -1,7 +1,20 @@
-import { Caps, Position, TaskType, TILE, Unit, type Blueprint, type ClientMessage } from '@wst/engine';
+import { Caps, Position, Resource, TaskType, TILE, Unit, type Blueprint, type ClientMessage } from '@wst/engine';
 import { actionsFor, type ActionButton } from './actions';
 import type { Placement, Renderer, ViewState } from './renderer';
+import { playSound } from './sound';
 import type { ClientState } from './state';
+
+/** The order sound for each common action button. */
+const TASK_SOUNDS: Record<number, string> = {
+  [TaskType.Move]: 'order.move',
+  [TaskType.Attack]: 'order.attack',
+  [TaskType.Harvest]: 'order.harvest',
+  [TaskType.Dock]: 'order.charge',
+  [TaskType.Charge]: 'order.charge',
+  [TaskType.Stop]: 'order.stop',
+  [TaskType.Supply]: 'order.supply',
+  [TaskType.Repair]: 'order.repair',
+};
 
 const DRAG_THRESHOLD = 5;
 const WHEEL_ZOOM = 1.15;
@@ -75,6 +88,7 @@ export class Input implements ViewState {
       (ev) => {
         ev.preventDefault();
         this.renderer.zoomAt(ev.offsetX, ev.offsetY, ev.deltaY < 0 ? WHEEL_ZOOM : 1 / WHEEL_ZOOM);
+        playSound('camera.zoom');
       },
       { passive: false },
     );
@@ -122,6 +136,7 @@ export class Input implements ViewState {
       if (performance.now() < this.demolishArmedUntil) {
         this.demolishArmedUntil = 0;
         this.send({ t: 'demolish', units: action.units });
+        playSound('build.demolish');
       } else {
         this.demolishArmedUntil = performance.now() + 3000;
         setTimeout(() => this.onAimChanged(), 3100);
@@ -154,8 +169,10 @@ export class Input implements ViewState {
       const task = Number(a.id.slice(4));
       if (task === TaskType.Stop) this.send({ t: 'stop', units, queue });
       else this.send({ t: 'command', units, task, x, y, target, queue });
+      playSound(queue ? 'order.queue' : TASK_SOUNDS[task] ?? 'order.acknowledge');
     } else {
       this.send({ t: 'button', units, name: a.id.slice(4), x, y, target, queue });
+      playSound(queue ? 'order.queue' : 'order.acknowledge');
     }
   }
 
@@ -183,7 +200,10 @@ export class Input implements ViewState {
       this.renderer.canvas.setPointerCapture(ev.pointerId);
     } else if (this.placement) {
       if (ev.button === 0) this.place(isQueueModifier(ev));
-      else if (ev.button === 2) this.cancelPlacement();
+      else if (ev.button === 2) {
+        this.cancelPlacement();
+        playSound('build.cancel_placement');
+      }
     } else if (this.aiming) {
       if (ev.button === 0) this.aimAt(ev.offsetX, ev.offsetY, isQueueModifier(ev));
       else if (ev.button === 2) this.cancelAiming();
@@ -246,6 +266,15 @@ export class Input implements ViewState {
     this.dragFrom = null;
     this.band = null;
     this.onSelectionChanged();
+    this.playSelectionSound();
+  }
+
+  /** One sound for what was just selected: nothing, one unit, one building, or several. */
+  private playSelectionSound(): void {
+    const n = this.selection.size;
+    if (n === 0) playSound('select.deselect');
+    else if (n > 1) playSound('select.units');
+    else playSound(this.state.isStructure([...this.selection][0]) ? 'select.building' : 'select.unit');
   }
 
   private selectClassOnScreen(ev: MouseEvent): void {
@@ -262,6 +291,7 @@ export class Input implements ViewState {
       }
     }
     this.onSelectionChanged();
+    this.playSelectionSound();
   }
 
   /**
@@ -288,6 +318,7 @@ export class Input implements ViewState {
     if (group.length) this.groups.set(n, group);
     else this.groups.delete(n);
     this.onGroupsChanged();
+    playSound('select.group_assign');
   }
 
   /** Selects group n; recalling the same group again quickly centres the view on it. */
@@ -309,14 +340,20 @@ export class Input implements ViewState {
     this.selection.clear();
     for (const e of group) this.selection.add(e);
     this.onSelectionChanged();
+    playSound('select.group_recall');
   }
 
   /** Places the current blueprint; selected builders are assigned to it. */
   private place(keepPlacing: boolean): void {
     const p = this.placement;
-    if (!p || !p.valid) return;
+    if (!p) return;
+    if (!p.valid) {
+      playSound('build.place_invalid');
+      return;
+    }
     const builders = this.ownedSelection().filter((e) => ((this.state.stats(e)?.caps ?? 0) & Caps.Build) !== 0);
     this.send({ t: 'place', blueprint: p.bp.id, x: p.x, y: p.y, builders, queue: keepPlacing });
+    playSound('build.place');
     // Optimistically block the footprint so a second click can't land on the same spot.
     this.state.terrain.occupy(p.x, p.y, p.bp.stats.footprint, 1);
     p.valid = false;
@@ -338,11 +375,15 @@ export class Input implements ViewState {
 
   private order(sx: number, sy: number, queue: boolean): void {
     const units = this.ownedSelection();
-    if (!units.length) return;
+    if (!units.length) {
+      playSound('order.invalid');
+      return;
+    }
     const target = this.renderer.pick(sx, sy);
     const tile = this.renderer.screenToTile(sx, sy);
     this.send({ t: 'order', units, x: Math.floor(tile.x), y: Math.floor(tile.y), target, queue });
     const hostile = target >= 0 && this.state.world.store(Unit).has(target) && !this.isMine(target);
+    playSound(queue ? 'order.queue' : target < 0 ? 'order.move' : hostile ? 'order.attack' : this.state.world.store(Resource).has(target) ? 'order.harvest' : 'order.acknowledge');
     this.pings.push({ x: sx, y: sy, born: performance.now(), colour: hostile ? 0xff6b5b : 0x5bd68a });
   }
 
@@ -364,10 +405,14 @@ export class Input implements ViewState {
       this.renderer.resetView();
     } else if (ev.key === 'Escape') {
       if (this.aiming) this.cancelAiming();
-      else if (this.placement) this.cancelPlacement();
-      else {
+      else if (this.placement) {
+        this.cancelPlacement();
+        playSound('build.cancel_placement');
+      } else {
+        const had = this.selection.size > 0;
         this.selection.clear();
         this.onSelectionChanged();
+        if (had) playSound('select.deselect');
       }
     } else if (/^[a-z]$/i.test(ev.key) && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
       // Action hotkeys (Shift queues).
@@ -375,6 +420,7 @@ export class Input implements ViewState {
       if (action) {
         ev.preventDefault();
         this.press(action.id, ev.shiftKey);
+        if (action.aim) playSound('action.hotkey');
       }
     } else if (ev.key === 'a' && (ev.ctrlKey || ev.metaKey)) {
       ev.preventDefault();
@@ -383,6 +429,7 @@ export class Input implements ViewState {
         if (this.isMine(e) && !this.state.isStructure(e)) this.selection.add(e);
       }
       this.onSelectionChanged();
+      this.playSelectionSound();
     } else if (/^(Digit|Numpad)[1-9]$/.test(ev.code) && !ev.altKey) {
       // By physical key, so Shift (and layouts like AZERTY) still give the digit.
       ev.preventDefault();

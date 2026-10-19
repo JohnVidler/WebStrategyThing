@@ -1,3 +1,5 @@
+import { playSound, sound } from './sound';
+
 /** What the background music should suit. */
 export type MusicContext = 'menu' | 'idle' | 'combat';
 
@@ -48,6 +50,11 @@ export function placeMusic(slot: HTMLElement | null): void {
   instance?.mountIn(slot);
 }
 
+/** The running music player, for the options screen. */
+export function musicPlayer(): MusicPlayer | undefined {
+  return instance;
+}
+
 export class MusicPlayer {
   private tracks: Track[] = [];
   private context: MusicContext = 'menu';
@@ -74,28 +81,12 @@ export class MusicPlayer {
     this.root.hidden = true;
     this.toggle = document.createElement('button');
     this.toggle.className = 'music-toggle';
-    this.toggle.onclick = () => {
-      this.saved.muted = !this.saved.muted;
-      this.save();
-      this.applyVolume();
-      if (!this.saved.muted) for (const v of this.voices) if (v.audio.paused) void v.audio.play().catch(() => undefined);
-      this.renderToggle();
-    };
+    this.toggle.onclick = () => this.setMuted(!this.saved.muted);
     this.label = document.createElement('span');
     this.label.className = 'music-label';
-    const volume = document.createElement('input');
-    volume.type = 'range';
-    volume.min = '0';
-    volume.max = '1';
-    volume.step = '0.05';
-    volume.value = String(this.saved.volume);
-    volume.title = 'Music volume';
-    volume.oninput = () => {
-      this.saved.volume = Number(volume.value);
-      this.save();
-      this.applyVolume();
-    };
-    this.root.append(this.toggle, volume, this.label);
+    // Sound effects follow the mute button but have their own volume (set in Options).
+    sound.setMuted(this.saved.muted);
+    this.root.append(this.toggle, this.label);
     const bar = dock ? document.getElementById('designs-bar') : null;
     if (bar) {
       this.root.classList.add('docked');
@@ -107,6 +98,30 @@ export class MusicPlayer {
     // Capture phase on the window, so nothing in the page can swallow the gesture.
     for (const type of ['pointerdown', 'mousedown', 'touchend', 'keydown', 'click'])
       window.addEventListener(type, this.onGesture, true);
+  }
+
+  get muted(): boolean {
+    return this.saved.muted;
+  }
+
+  setMuted(muted: boolean): void {
+    this.saved.muted = muted;
+    this.save();
+    sound.setMuted(muted);
+    if (!muted) playSound('music.unmute');
+    this.applyVolume();
+    if (!muted) for (const v of this.voices) if (v.audio.paused) void v.audio.play().catch(() => undefined);
+    this.renderToggle();
+  }
+
+  get volume(): number {
+    return this.saved.volume;
+  }
+
+  setVolume(volume: number): void {
+    this.saved.volume = Math.min(1, Math.max(0, volume));
+    this.save();
+    this.applyVolume();
   }
 
   private home: { parent: Node; next: Node | null } | undefined;

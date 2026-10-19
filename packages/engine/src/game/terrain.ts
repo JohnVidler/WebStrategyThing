@@ -200,8 +200,12 @@ export function generateTerrain(
     }
   }
 
+  // Everything below opens all four mirrored cells at once, so no corner is ever given a
+  // shortcut the others lack.
   const open = (x: number, y: number) => {
-    if (t.inBounds(x, y)) t.passable[y * width + x] = 1;
+    for (const [mx, my] of [[x, y], [width - 1 - x, y], [x, height - 1 - y], [width - 1 - x, height - 1 - y]]) {
+      if (t.inBounds(mx, my)) t.passable[my * width + mx] = 1;
+    }
   };
   for (const a of clear) {
     for (let y = Math.floor(a.y - a.r); y <= Math.ceil(a.y + a.r); y++) {
@@ -212,9 +216,11 @@ export function generateTerrain(
   }
 
   // Make sure every clear area connects to the centre: carve 3-wide corridors where needed.
+  // Only the top-left quadrant's areas are checked; the mirrored carving serves the others.
   const centre: [number, number] = [Math.floor(width / 2), Math.floor(height / 2)];
   open(centre[0], centre[1]);
   for (const a of clear) {
+    if (a.x > width / 2 || a.y > height / 2) continue;
     const reach = flood(t, centre[0], centre[1]);
     if (reach[Math.floor(a.y) * width + Math.floor(a.x)]) continue;
     const steps = Math.max(Math.abs(centre[0] - a.x), Math.abs(centre[1] - a.y));

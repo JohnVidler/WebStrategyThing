@@ -1,6 +1,7 @@
 import './docs.css';
 import {
   API_GROUPS,
+  ANTENNA_THROUGHPUT_PER_TILE,
   BASE_LINK_RANGE,
   BUILD_RANGE,
   BUILDING_BUILD_RANGE,
@@ -328,7 +329,10 @@ if r != 0 && visitorCaps() & CAN_HARVEST {
       <h2>Power networks</h2>
       <p>Buildings link automatically to other own buildings within reach (edge to edge, in tiles):
       ${BASE_LINK_RANGE} tile by default, more with an <b>energy antenna</b> module (3, 6 or 12 tiles; the larger
-      of the two buildings' reaches counts). Linked buildings form a network. Each tick, per network:</p>
+      of the two buildings' reaches counts). Linked buildings form a network. Short links (up to ${BASE_LINK_RANGE} tile) carry any
+      amount of energy; long antenna links carry at most ${ANTENNA_THROUGHPUT_PER_TILE} energy per tick for each antenna on the
+      building times the building's size (1, 2 or 3 tiles), so two antennas on one building double it and a larger
+      building carries more (a long link uses the stronger of its two ends). Each tick, per network:</p>
       <ol>
         <li>Generators produce: <b>solar panels</b> follow daylight (a ${DAY_LENGTH / TICK_RATE}s day/night cycle; dark half the time; ${SOLAR_GENERATION_MULTIPLIER}× multiplier), <b>wind turbines</b> follow the wind (drifting 0–100%; ${WIND_GENERATION_MULTIPLIER}× multiplier).</li>
         <li>If generation is short of demand, buildings in <code>DISCHARGE</code> mode supply the gap from their stores.</li>

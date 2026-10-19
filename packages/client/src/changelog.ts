@@ -11,6 +11,29 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: readonly ChangelogEntry[] = [
   {
+    date: '2026-10-19',
+    changes: [
+      'Rock on the map now has rounded outer corners and gets lighter towards the middle of big outcrops, the grid no longer shows through it, and thin lines in the fog of war are gone.',
+      'Maps are now perfectly symmetrical (Badlands no longer favours player 1), and start corners are shuffled each match so you never know where your enemies are.',
+      'A new Options screen on the main menu holds the music and effects volume sliders and a mute switch; the music widget now shows just the mute button and the track title.',
+      'Units ordered to move to one spot now spread out over free tiles around it instead of all heading for the same place.',
+      'Finished buildings now burst with sparks that run outwards along the grid lines, turning at crossings and fading, with a flash as they complete.',
+      'Builders now fire a scanning cyan build beam across their site, and sites throw off the odd spark while under construction.',
+      'Idle builders now spread out over the available building sites, and only team up on one when there are no others left.',
+      'Charging pads send out a slow green pulse while they are actively charging units.',
+      'A new Connecting screen covers the game while it loads and links up to the server, with progress as it goes.',
+      'Sound effects: menus, orders, combat and alerts now have an effects system with its own volume slider.',
+    ],
+  },
+  {
+    date: '2026-10-18',
+    changes: [
+      'Multiplayer and co-op rooms now open in a waiting room: friends join with the invite link and the host starts the game when everyone is in.',
+      'When you are defeated or resign, you can now spectate the rest of the match with the fog of war lifted, or leave for the menu.',
+      'The Resign button gives up your forces instead of quitting at once.',
+    ],
+  },
+  {
     date: '2026-10-15',
     changes: [
       'Repairs: a new Repair beam module mends your own units and buildings (units can fix buildings and the other way round). It costs energy and matter, and armour is the most expensive to mend.',

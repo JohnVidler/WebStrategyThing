@@ -2,6 +2,9 @@
 import { getPlayerName, getSavedPlayerName, NAME_MAX, setPlayerName } from './playerName';
 import { CHANGELOG } from './changelog';
 import { randomHex } from './random';
+import { playSound, sound } from './sound';
+import { musicPlayer } from './music';
+import { isShown, setShown, swapContent } from './transition';
 import { startMenuBackground } from './menuBackground';
 import { createMapTerrain, DEFAULT_MAP_ID, GAME_MODES, MAPS, parseGameMode, type GameMode } from '@wst/engine';
 
@@ -18,6 +21,8 @@ interface RoomInfo {
   /** Game time so far, in seconds (it stops while the game is paused). */
   readonly elapsed: number;
   readonly paused: boolean;
+  /** Still gathering players: the host has not started the match. */
+  readonly lobby: boolean;
   readonly scores: readonly { name: string; score: number; connected: boolean; eliminated: boolean }[];
 }
 
@@ -109,12 +114,12 @@ const join = (room: string, name: string, mapId = DEFAULT_MAP_ID, mode: GameMode
   location.href = `${location.pathname}?room=${encodeURIComponent(room)}&map=${encodeURIComponent(mapId)}&mode=${mode}`;
 };
 
-type View = 'main' | 'multi' | 'solo' | 'credits';
+type View = 'main' | 'multi' | 'solo' | 'credits' | 'options';
 
 const modeName = (mode: GameMode): string => GAME_MODES.find((m) => m.id === mode)?.name ?? mode;
 
 /** What each room-based section is called and offers. */
-const SECTIONS: Record<Exclude<View, 'main' | 'credits'>, { title: string; blurb: string }> = {
+const SECTIONS: Record<Exclude<View, 'main' | 'credits' | 'options'>, { title: string; blurb: string }> = {
   multi: { title: 'Multiplayer', blurb: 'Join a game on the left, or create one on the right: a free-for-all, or co-op against bots.' },
   solo: { title: 'Single-player', blurb: 'You against a bot that never needs to mine and sends waves of units at you. A private game; good for testing designs.' },
 };
@@ -173,7 +178,7 @@ export function showLobby(apiBase: string, joinRoom?: string, preferredMapId = D
         <h2>Choose your player name</h2>
         ${joinRoom ? `<p>Joining <strong>${esc(joinRoom)}</strong></p>` : ''}
         <label>Your name <input id="lobby-name-input" maxlength="${NAME_MAX}" autocomplete="nickname" required /></label>
-        <button type="submit">Continue</button>
+        <button type="submit" data-sound="ui.confirm">Continue</button>
       </form>`;
     const nameInput = root.querySelector<HTMLInputElement>('#lobby-name-input')!;
     root.querySelector<HTMLFormElement>('#lobby-name-form')!.onsubmit = (ev) => {
@@ -197,7 +202,7 @@ export function showLobby(apiBase: string, joinRoom?: string, preferredMapId = D
         <span>Script API reference</span>
         <span>
           <a class="button" href="docs.html" target="_blank" rel="noopener">Open in new tab ↗</a>
-          <button id="lobby-docs-close" title="Close (Esc)">✕</button>
+          <button id="lobby-docs-close" data-sound="ui.panel_close" title="Close (Esc)">✕</button>
         </span>
       </div>
       <iframe id="lobby-docs-frame" title="Script API documentation"></iframe>
@@ -220,7 +225,7 @@ export function showLobby(apiBase: string, joinRoom?: string, preferredMapId = D
   const showDocs = (open: boolean) => {
     const frame = root.querySelector<HTMLIFrameElement>('#lobby-docs-frame')!;
     if (open && !frame.src.endsWith('docs.html')) frame.src = 'docs.html';
-    docs.hidden = !open;
+    setShown(docs, open);
   };
   const closeDocs = () => (lobbyState()?.overlay === 'docs' ? history.back() : showDocs(false));
   const openDocs = () => {
@@ -229,7 +234,10 @@ export function showLobby(apiBase: string, joinRoom?: string, preferredMapId = D
   };
   root.querySelector<HTMLButtonElement>('#lobby-docs-close')!.onclick = closeDocs;
   window.addEventListener('keydown', (ev) => {
-    if (ev.key === 'Escape' && !docs.hidden) closeDocs();
+    if (ev.key === 'Escape' && isShown(docs)) {
+      playSound('ui.panel_close');
+      closeDocs();
+    }
   });
 
   const go = (to: View, pushEntry = true) => {
@@ -238,19 +246,25 @@ export function showLobby(apiBase: string, joinRoom?: string, preferredMapId = D
     current = to;
     clearInterval(refreshTimer);
     refreshTimer = undefined;
-    if (to === 'main') renderMain();
-    else if (to === 'credits') void renderCredits();
-    else renderSection(to);
+    // Going back to the main menu slides the other way from going deeper into it.
+    const render = () => {
+      if (to === 'main') renderMain();
+      else if (to === 'credits') void renderCredits();
+      else if (to === 'options') renderOptions();
+      else renderSection(to);
+    };
+    void swapContent(view, render, to === 'main' ? -1 : 1);
   };
 
   const renderMain = () => {
     view.innerHTML = `
       <nav class="menu-buttons" aria-label="Main menu">
-        <button data-go="solo"><b>Single-player</b><small>You against a bot that sends waves of units</small></button>
-        <button data-go="multi"><b>Multiplayer</b><small>Free-for-all, or co-op against bots</small></button>
-        <button id="menu-designer"><b>Designer</b><small>Design units and buildings and write their programs</small></button>
-        <button data-go="credits"><b>Credits</b><small>The music and its licences</small></button>
-        <button id="menu-docs"><b>API reference</b><small>The scripting language and every function</small></button>
+        <button data-go="solo" data-sound="menu.click"><b>Single-player</b><small>You against a bot that sends waves of units</small></button>
+        <button data-go="multi" data-sound="menu.click"><b>Multiplayer</b><small>Free-for-all, or co-op against bots</small></button>
+        <button id="menu-designer" data-sound="menu.click"><b>Designer</b><small>Design units and buildings and write their programs</small></button>
+        <button data-go="options" data-sound="menu.click"><b>Options</b><small>Music and sound effect volume</small></button>
+        <button data-go="credits" data-sound="menu.click"><b>Credits</b><small>The music and its licences</small></button>
+        <button id="menu-docs" data-sound="menu.click"><b>API reference</b><small>The scripting language and every function</small></button>
       </nav>
       ${changelogHtml()}`;
     view.querySelectorAll<HTMLButtonElement>('button[data-go]').forEach((b) => (b.onclick = () => go(b.dataset.go as View)));
@@ -271,10 +285,30 @@ export function showLobby(apiBase: string, joinRoom?: string, preferredMapId = D
     };
   };
 
+  const renderOptions = () => {
+    const music = musicPlayer();
+    const row = (id: string, label: string, value: number) =>
+      `<label class="option-row">${label}<input id="${id}" type="range" min="0" max="1" step="0.05" value="${value}" /></label>`;
+    view.innerHTML = `
+      <div class="section-head"><button id="lobby-back" data-sound="menu.back">← Main menu</button><h2>Options</h2></div>
+      <div class="options">
+        ${music ? row('opt-music', 'Music volume', music.volume) : ''}
+        ${row('opt-effects', 'Effects volume', sound.volume)}
+        ${music ? `<label class="option-row">Mute all sound<input id="opt-mute" type="checkbox"${music.muted ? ' checked' : ''} /></label>` : ''}
+      </div>`;
+    view.querySelector<HTMLButtonElement>('#lobby-back')!.onclick = () => up(() => go('main', false));
+    view.querySelector<HTMLInputElement>('#opt-music')?.addEventListener('input', (ev) => music?.setVolume(Number((ev.target as HTMLInputElement).value)));
+    const effects = view.querySelector<HTMLInputElement>('#opt-effects')!;
+    effects.oninput = () => sound.setVolume(Number(effects.value));
+    // A sample on release, so the level can be judged.
+    effects.onchange = () => playSound('ui.confirm');
+    view.querySelector<HTMLInputElement>('#opt-mute')?.addEventListener('change', (ev) => music?.setMuted((ev.target as HTMLInputElement).checked));
+  };
+
   /** Every track in the server's music manifest, with its composer and licence. */
   const renderCredits = async () => {
     view.innerHTML = `
-      <div class="section-head"><button id="lobby-back">← Main menu</button><h2>Credits</h2></div>
+      <div class="section-head"><button id="lobby-back" data-sound="menu.back">← Main menu</button><h2>Credits</h2></div>
       <div id="credits" class="muted">Loading…</div>`;
     view.querySelector<HTMLButtonElement>('#lobby-back')!.onclick = () => up(() => go('main', false));
     const box = view.querySelector<HTMLDivElement>('#credits')!;
@@ -303,7 +337,7 @@ export function showLobby(apiBase: string, joinRoom?: string, preferredMapId = D
         .join('');
   };
 
-  const renderSection = (which: Exclude<View, 'main' | 'credits'>) => {
+  const renderSection = (which: Exclude<View, 'main' | 'credits' | 'options'>) => {
     const section = SECTIONS[which];
     const modes = GAME_MODES.filter((m) => m.id !== 'solo');
     const form = `
@@ -318,11 +352,11 @@ export function showLobby(apiBase: string, joinRoom?: string, preferredMapId = D
           .join('')}</fieldset>`
         }
         ${mapPicker(rememberedMap)}
-        <button type="submit" class="primary">${which === 'solo' ? 'Start game' : 'Create room'}</button>
+        <button type="submit" class="primary" data-sound="ui.confirm">${which === 'solo' ? 'Start game' : 'Create room'}</button>
       </form>
       <div id="lobby-error" class="muted"></div>`;
     view.innerHTML = `
-      <div class="section-head"><button id="lobby-back">← Main menu</button><h2>${esc(section.title)}</h2></div>
+      <div class="section-head"><button id="lobby-back" data-sound="menu.back">← Main menu</button><h2>${esc(section.title)}</h2></div>
       <p class="muted section-blurb">${esc(section.blurb)}</p>
       ${
         which === 'solo'
@@ -383,13 +417,13 @@ export function showLobby(apiBase: string, joinRoom?: string, preferredMapId = D
       list.innerHTML = active
         .map((r) => {
           const full = r.players >= r.capacity;
-          const state = r.over ? 'finished' : full ? 'full' : 'open';
+          const state = r.over ? 'finished' : r.lobby ? 'in lobby' : full ? 'full' : 'open';
           // A game that is already under way is easy to spot: its clock is running or has run.
-          const time = r.elapsed > 0 ? `${clock(r.elapsed)} in${r.paused ? ' (paused)' : ''}` : 'not started';
+          const time = r.lobby ? 'waiting to start' : r.elapsed > 0 ? `${clock(r.elapsed)} in${r.paused ? ' (paused)' : ''}` : 'not started';
           const scores = r.scores
             .map((p) => `${esc(p.name)} ${p.score}${p.connected ? '' : ' (away)'}${p.eliminated ? ' (out)' : ''}`)
             .join(' · ');
-          return `<div class="lobby-room"><span class="name">${esc(r.name)} <span class="mode-tag ${esc(r.mode)}">${esc(modeName(r.mode))}</span><small>${esc(r.mapName)} · ${r.width} × ${r.height}<br>${scores || 'no players yet'}</small></span><span class="muted">${r.players}/${r.capacity} · ${state} · ${time}</span><button data-room="${esc(r.name)}" data-map="${esc(r.mapId)}" data-mode="${esc(r.mode)}"${full ? ' disabled' : ''}>Join</button></div>`;
+          return `<div class="lobby-room"><span class="name">${esc(r.name)} <span class="mode-tag ${esc(r.mode)}">${esc(modeName(r.mode))}</span><small>${esc(r.mapName)} · ${r.width} × ${r.height}<br>${scores || 'no players yet'}</small></span><span class="muted">${r.players}/${r.capacity} · ${state} · ${time}</span><button data-sound="ui.confirm" data-room="${esc(r.name)}" data-map="${esc(r.mapId)}" data-mode="${esc(r.mode)}"${full ? ' disabled' : ''}>Join</button></div>`;
         })
         .join('');
       list.querySelectorAll<HTMLButtonElement>('button[data-room]').forEach((b) => (b.onclick = () => join(b.dataset.room!, myName(), b.dataset.map, parseGameMode(b.dataset.mode))));

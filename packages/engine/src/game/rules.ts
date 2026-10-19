@@ -61,6 +61,14 @@ export const RESOURCE_REGEN_INTERVAL_TICKS = 5;
 export const TRANSMISSION_LOSS_PER_TILE = 0.0001;
 export const MAX_TRANSMISSION_LOSS = 0.7;
 
+/**
+ * Links no longer than BASE_LINK_RANGE tiles (edge to edge) carry any amount of energy. Longer
+ * links, which exist because of an antenna, carry at most this much per tick for each antenna
+ * on the building, times the building's footprint (tiles per side); several antennas on one
+ * building add up. A long link uses the stronger of its two ends.
+ */
+export const ANTENNA_THROUGHPUT_PER_TILE = 20;
+
 /** A discharging storage building gives at most this share of its capacity to the network per tick. */
 export const STORAGE_DISCHARGE_FRACTION = 0.02;
 /** A storage never discharges below this share of its capacity, and below it refills as a normal consumer whatever its mode. */

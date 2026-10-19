@@ -39,6 +39,8 @@ COPY packages/engine/package.json ./packages/engine/package.json
 COPY packages/engine/src ./packages/engine/src
 COPY packages/server/package.json ./packages/server/package.json
 COPY packages/server/src ./packages/server/src
+# Sound effects and their manifest ship with the image (SOUND_DIR overrides).
+COPY sound ./sound
 
 USER node
 EXPOSE 8080

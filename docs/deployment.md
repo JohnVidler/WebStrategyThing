@@ -33,3 +33,7 @@ docker compose down
 ```
 
 The `Publish Docker images` GitHub Action runs tests and typechecking on pull requests, then publishes the Dockerfile's two targets to GHCR on pushes to `main` and `v*` tags. The images are `ghcr.io/johnvidler/webstrategything-client` and `ghcr.io/johnvidler/webstrategything-server`; each gets branch/tag and short-SHA tags, and `latest` is updated from the default branch. The client and server images must run on the same Docker network so the client Nginx proxy can reach the server at `server:8080`.
+
+### Sound effects
+
+Sound effects live in `./sound` with `sound_manifest.json` and are copied into the server image (set `SOUND_DIR` to read another folder, or mount one over `/app/sound`). The manifest is an array of sound-file entries (`filename`, `name`, `author`, `license`, `url`, `tags`, optional `volume`, `pitchVariance`, `loop`) and tag entries (`{ "tag": "ui.click", "use": [] }`, optionally `use`, `only`, `cooldownMs`, `maxVoices`, `positional`). Every event the game can raise already has a tag entry that plays nothing: add a sound entry carrying the tag, or point a tag at another with `use`. See [SOUND_EVENTS.md](../SOUND_EVENTS.md).

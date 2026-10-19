@@ -2,6 +2,135 @@
 
 Changes to the codebase, grouped by day (newest first).
 
+## 2026-10-19
+
+### Terrain visuals: rounded rock, depth shading, seam fixes
+- `Renderer.layout` draws rock through a shared `fillShape` helper: convex corners (both sides facing tiles outside the shape) are rounded with radius 0.23 tile, in the fill and in the outline (edges trimmed, arc added). Concave corners stay sharp.
+- Three rock tones by depth: base `0x343b47`; depth 2 (all eight neighbours solid, map edge counts as solid) `0x414a58`; depth 3 (all neighbours depth 2, the heart of large outcrops) `0x4d5767`. Inner tiers share the rounded corners. Depth is a small per-layout pass, not per frame; layout only reruns when its key changes.
+- The 8-tile grid is drawn before the rock fills so it no longer shows through solid sections.
+- The horizontal lines over rock were the fog layer: its row rects overlapped by 0.5px, doubling the translucent fill into a seam every tile. `drawFog` now snaps rect edges to whole pixels so rows meet exactly.
+- Not yet checked in a browser.
+
+### Fair maps, shuffled starts
+- `generateTerrain` now opens base clearings and the carved connecting corridors through a four-way mirrored `open()`, and only checks the top-left quadrant for reachability. Previously corridors were carved per corner in order, so player 1 (first corner) got a private straight route to the centre on Badlands. Every map is now exactly symmetric (new test).
+- Start corners are random: `Match.freeCorner/randomFreeCorner` pick a free corner for each human and each human's bot (was fixed slots 0/2 with the bot next door). Bots are named by free name ("Bot 1"/"Bot 2"). Uses `Math.random` server-side, not the sim RNG.
+- sim.test: the harvester swap test now empties the harvester's cargo (it was seed-dependent and shifted by the terrain change).
+
+### Options screen; slimmer music widget
+- Main menu has an Options view (music volume, effects volume, mute all). `MusicPlayer` now exposes `muted/setMuted/volume/setVolume` and `musicPlayer()`; the widget is just the mute button plus the track title (no sliders).
+- Options panel uses the shared glass panel style; every checkbox in the app is now a glass slide toggle (global `input[type=checkbox]` rule in style.css).
+- Not yet checked in a browser.
+
+### Charging pad pulse
+- New `SimEvent.Charge` (pad, pad). `chargingSystem` keeps a smoothed (10% per tick) energy/tick delivery rate per pad; while it is at least 5 (about a quarter of one unit's full rate) the pad emits the event every 20 ticks, so a unit sipping the last few points doesn't keep it running. Renderer draws a slow (2 s) green ring easing out from the pad centre to the edge of its charge zone, with a faint fill. Typecheck and tests pass; not seen in a browser, no dedicated test.
+
+### Mid-build sparks and a bigger completion burst
+- `makeBuildSparks` takes an optional `count`. While a site is being built, each Build event has a 10% chance to throw off 1-2 grid sparks (renderer, capped at 100 live effects). With no count it is the completion burst: now 16 + 8 per footprint tile sparks (max 64, was 8 + 4/tile, max 28), plus a 450 ms flash: white wash over the footprint and two expanding rings. Test added. Typecheck and tests pass; not seen in a browser.
+
+### Build beam effect
+- New `SimEvent.Build` (builder, site), emitted by `buildSystem` every other tick while a builder actually invests matter. Renderer (`drawBuildBeams`) draws a continuous cyan laser from the build arm to a point that rasters across the site's footprint (fast sideways sweep, slow top-to-bottom), with a faint scan line across the site at the current row, a glow, a white core and a hot spot. Lingers 350 ms after the last event. Distinct from shots (instant owner-coloured line) and repair (green ribbon with dots). Typecheck and tests pass; not seen in a browser.
+
+### Builders spread over free sites
+- `Simulation.nearestSite` (used by the Builder and Construction Tower programs when idle) now counts how many other own builders already have a site as their BUILD task / current target, and prefers the least-claimed site (nearest among ties). Builders only share a site once every site has someone on it. Orders given by the player are unchanged. Test in `engine/test/sim.test.ts`.
+
+### Building completion sparks
+- New `client/src/buildSparks.ts`: when a construction site finishes and the building stands, bright streaks (same colours as the menu sparks, soft blue glow) leave the footprint outline and run along the tile grid lines. At every crossing a spark goes straight or turns left/right at random, but never towards the building, and each fades with distance covered. Routes are rolled up front (`makeBuildSparks`); `drawBuildSparks` walks them each frame. Hooked into `renderer.ts` `sync` (via `Construction.removed`) and the Graphics pass beside the explosions. Count scales with footprint (8 + 4 per tile, max 28). Test in `client/test/buildSparks.test.ts`. Typecheck passes; not seen in a browser.
+
+### Connecting screen
+- New `client/src/connecting.ts` (`ConnectingScreen`) and a `#connecting` element in `index.html`/`style.css`: a full-screen cover with a centred "Connecting…" title, a scrolling list of progress lines and a sweeping bar, shown from when a match page starts until the server's `welcome` arrives. Real steps (music library, sound bank, graphics engine, server link open, map received) get a green tick; grey made-up lines ("Calibrating flux capacitors…") fill the gaps. It fades out via `setShown`, after a 600 ms minimum so it never flashes. A refused connection turns it red with the reason; a dropped first connection adds a "retrying" line. Typecheck and tests pass; not seen in a browser.
+
+### Warn on unparseable manifests
+- New `server/src/manifest.ts` `readManifest(dir, name)`, used by `loadSounds` and `loadTracks`: a missing file is silent, but invalid JSON or a non-array logs a `[manifest] ...` warning (once per distinct message, since manifests are re-read per request). Test in `server/test/manifest.test.ts`.
+- Main-menu updates list (`changelog.ts`): added a 2026-10-19 entry for group move spreading and the sound effects system.
+
+### Sound manifest fix
+- `sound/sound_manifest.json` was invalid JSON (missing comma after the last sound entry, before the tag entries), so the server returned an empty bank and no effects played. Added the comma. The server drops a bad manifest silently, which hid it.
+
+### Group move orders spread out
+- `Simulation.freeMoveTile`: plain Move orders (right-click on ground, and the Move button) pick the nearest walkable tile to the click that no other unit is parked on or already ordered to, so a group fans out around the point instead of stacking. Attack-move, harvest and other target orders are unchanged. Test in `engine/test/sim.test.ts`.
+
+### More dramatic explosions
+- `renderer.ts` `drawExplosion`: deaths now add a white-yellow light flash with a warm glow, a two-tone fireball, a second thin white shockwave, spark streaks, falling debris and drifting smoke, on top of the red ring. Fragments are rolled per blast (`makeExplosion`) and scale with blast radius; bigger blasts last longer (`EXPLOSION_MS` + `EXPLOSION_MS_PER_TILE`). All expansion uses ease-out. Typecheck passes; not seen in a browser.
+
+## 2026-10-18
+
+### Animated menu transitions
+- New `client/src/transition.ts` (Web Animations API, honours `prefers-reduced-motion`): `swapContent` eases the old menu view out (ease-in, slides and fades), swaps it, then eases the new one in (ease-out); the slide reverses when returning to the main menu. `setShown`/`isShown` fade-and-rise overlays with ease-in-out and set `hidden` only after the close finishes.
+- Used for the lobby view changes (`lobby.ts` `go`), the lobby and in-game API docs overlays, and the Designer overlay (`designer.ts`, which now reads `isOpen` instead of `root.hidden`). Typecheck passes; nothing was seen in a browser.
+
+### Sound tags: one `menu.click`
+- The per-section `menu.single_player` / `menu.multiplayer` / `menu.credits` / `menu.docs` / `menu.designer` tags are replaced by a general `menu.click` (next to `menu.enter` and `menu.back`) in the manifest, `lobby.ts`, `index.html` and SOUND_EVENTS.md.
+
+### Sound effects system (SOUND_EVENTS.md)
+- Server: `server/src/sound.ts` loads `sound/sound_manifest.json` (sound-file entries plus tag entries; missing files and malformed tags dropped) and serves `GET /api/v1/sound` and `/api/v1/sound/<file>` (manifest-named files only). `SOUND_DIR` overrides the folder; the Dockerfile copies `sound/` into the server image. Tests in `server/test/sound.test.ts`.
+- Client: `soundbank.ts` flattens the manifest once (own sounds + chained `use` references, `only`, cycle warnings, parent-tag fallback, inherited cooldown/voice/positional settings) and picks at random without repeating the last choice. `sound.ts` plays with Web Audio (decoded buffers, pitch variance, distance attenuation and panning, cooldown, voice limit, looping ambient layers with fades, effects volume saved in `wst-sfx`, follows the music mute button, unlocks on the first gesture). `uiSounds.ts` covers every button/select/checkbox/slider/typing on the page (`data-sound` overrides, `none` silences). `input.ts` plays selection/order/build sounds; `gameSounds.ts` maps server messages and per-tick world changes (shots, deaths, hits, spawns, completions, cargo, charge, CPU state, power and credit alerts, radar) to tags; `renderer.listener()` gives the view for positional sounds. Tests: `soundbank.test.ts`, and `soundmanifest.test.ts` (every tag the client plays must be listed in the manifest).
+- Manifest: `sound/sound_manifest.json` now has an empty ("plays nothing") tag entry for each of the 142 events in SOUND_EVENTS.md, with cooldowns/voice limits for the noisy ones; the existing UI Authorised sound is tagged `ui.confirm` and `match.start`. Several tags are not hooked yet (listed at the end of SOUND_EVENTS.md). No sim events were added. Docs: `docs/client.md`, `docs/server.md`, `docs/deployment.md`. `npm test` and typecheck pass; nothing was heard in a browser.
+
+### Sound event tag list (SOUND_EVENTS.md)
+- Update: the whole tag list is kept. Added reference entries to the manifest design (`{ "tag", "use": [...], "only"? }`, chained, merged random pool, cycles reported at load) and a load-time flattening scheme so triggering is one lookup plus one random index. The file now lives at the repo root.
+- New `SOUND_EVENTS.md`: proposed manifest tags for menu, lobby, match lifecycle, in-game UI, world SFX, alerts and ambience, each marked with its source (existing `SimEvent`, server message, client UI, or a new sim event still needed), plus the random-pick rule, fallback chain and optional entry fields. Documentation only; no code or manifest changes and no audio player exists yet.
+
+### Review fixes: power routing, match lifecycle, renderer (REVIEW.md)
+- Engine power: `power.ts` gains `powerTopology()` (clusters, bridges, per-cluster routes and member buckets, built once per rebuild) and `emptyNetwork()`; `Simulation.rebuildNetworks` is now a short caller. `routeEnergy` gives each cluster its proportional share, then a cleanup pass lets clusters still short take idle energy (own cluster first), so a capped bridge no longer strands a base's own generation; bridge caps count flow in both directions. `powerSystem` buckets members per cluster in one pass (no `filter`/`indexOf` in loops). New `engine/test/power.test.ts`. The bridges form a tree because `powerLinks` is a spanning forest, so the "parallel bridges" review item was closed as not a bug.
+- Protocol: new `forfeit` and `leave` client messages (`resign` stays as a legacy alias), `ClientPhase` + `messageAllowed()` shared by server and client, `lobby.mode` typed as `GameMode`.
+- Server (`match.ts`): `forfeit` marks the player defeated immediately via `defeat()` (the scoreboard loop uses it too), so a resign can't leave a player in limbo or start a reconnect wait; `removeForces()` shared by forfeit and leave; `loadDesigns` outside a match is answered with an error `designsLoaded`; `lobbyMessage()` used by the report and by `sendWelcome`; host and `minPlayers` come from their getters only. Tests added for forfeit, leave and the lobby design reply.
+- Client: renderer clears `lastHp`/`blastRadius` on despawn and full snapshots (no more phantom damage numbers), pools damage-number `Text`s and restyles power labels only when the colour changes; menu spark timer stops while hidden and reads the drift period from the animation; `Ui` takes `startGame`/`spectate`/`leave` as constructor handlers and binds the Power hover there; `defeated` and `inLobby` moved to `ClientState`; the pause panel offers the invite link again while waiting for another player; the Resign button sends `forfeit`, and leaving sends `leave`.
+- Docs: `docs/server.md`, `docs/game.md` updated. Not done (see REVIEW.md): explicit match/player state machine, per-tick elimination check, one per-entity renderer record, `SimEvent.Damage`, per-bridge flow animation, `DesignStore` sync marker, `showPowerLabels` off `ClientState`. Nothing here was checked in a browser.
+
+### Code review of today's changes (REVIEW.md)
+- New `REVIEW.md`, a checklist for later fixing. It has two sections: correctness/performance (9 findings: capped bridges strand a cluster's own supply, `lastHp` causes fake damage numbers, resign limbo, `loadDesigns` dropped in the lobby, O(n²) cluster bucketing in `powerSystem`, Pixi text regenerated every frame, spark timer runs during matches, bridge cap enforced on net flow, dead invite link) and architecture (power topology belongs in `power.ts` and should be precomputed; parallel bridges are ignored; match/player phase booleans should become explicit states; defeat detection is inside the scoreboard report; `resign` is overloaded; the message allowlist is duplicated between client and server; renderer per-entity maps sit outside the sprite lifecycle; UI callback wiring is inconsistent; docs drift in `menuBackground.ts`). No code changed.
+
+### Fix: units halting and ignoring orders (empty programs saved)
+- Symptom: units move briefly after the game starts, then stop and stack up orders; the rest of the sim runs. Units execute tasks through their class program, and a class with an empty program goes CPU-offline.
+- Cause (most likely, not yet confirmed against your browser's saved data): `DesignStore` autosaves `state.programs` into localStorage, and a save made while programs were missing wrote empty programs for default classes; the next game's session restore then applied them as "modified" designs ~300 ms after the start. My spectator switch triggered exactly that (the second `welcome` clears programs, and `blueprints` schedules a save).
+- `client/src/designs.ts`: autosave is skipped while spectating or while no programs are loaded (`programsLoaded`); `restoreSession` now replaces an empty saved program of a default class with the default program, which also repairs data already saved.
+
+### Game lobby and spectating
+- Protocol (`net/protocol.ts`): new client messages `startGame`, `spectate`; new server messages `lobby` (players, hostId, mode, mapName, capacity, minPlayers), `started`, `defeated`; `welcome` gains `lobby` and `spectating`. `resign` now means "forfeit" while a player has forces.
+- `server/match.ts`: `started` flag (solo starts at once; versus/co-op begin in a lobby with no bases and no game time). `reportLobby` broadcasts the occupant list on change; the host (lowest id present) sends `startGame` (needs `minPlayers`: 2 versus, 1 co-op/solo) and `startMatch` runs `setUpSide` for everyone (the old join-time set-up, shared with late joiners). Leaving the lobby is immediate (no reconnect grace); hosting passes on. Late joiners to a running match behave as before.
+- Defeat/spectating: new `forfeit` command destroys the resigner's forces; `reportScoreboard` marks newly eliminated humans `defeated` and sends `defeated`. `spectate` (defeated players, or anyone once the match is over) sets `spectating` and re-sends `welcome` (fog false) with a full unfiltered snapshot; spectators then receive the unfiltered per-tick frame and their orders are ignored. A second `resign` from a defeated player (or in the lobby / a finished match) leaves for good; a defeated player disconnecting no longer starts the reconnect pause. Room list API adds `lobby`.
+- Client: `ui.ts` waiting room (player list, host/you tags, invite link, Start/Leave), defeat dialog (Spectate / Leave to menu), spectating badge and `body.spectating` CSS hiding build bar/actions; standings screen now offers Spectate and Leave to the losers. `main.ts` wires them; Resign button text is Resign (Leave while spectating); orders are dropped client-side while spectating. `lobby.ts` room list shows "in lobby / waiting to start". The pause overlay no longer carries the invite link (the waiting room does).
+- Tests: existing server tests start matches via `begin()` (host `startGame`); new `lobby` and `spectating` suites in `server/test/match.test.ts`. Docs (`docs/server.md`, `docs/client.md`) and changelog updated.
+- Not changed: spectators do not appear in the room list or scoreboard; there is no way to join a room purely as a spectator, and no ready toggle (host starts).
+
+### Link throughput caps and an honest Power meter
+- Cause of the huge Power numbers: `demand` is the free room in every normal-mode store, not a draw, so `supply - demand` swung with how empty batteries/units were.
+- Meter now uses `NetworkInfo.delivered` (new; energy normal consumers actually received last tick, incl. discharged storage): balance = generated - delivered (deficit only while storage is drained), bar = delivered / wanted. Script API `netDemand()` unchanged.
+- Throughput caps: links up to `BASE_LINK_RANGE` (1 tile) are uncapped. Longer (antenna) links carry at most `antennas x footprint x ANTENNA_THROUGHPUT_PER_TILE` (20) energy per tick, using the stronger end; links to construction sites stay uncapped. New `BlueprintStats.linkThroughput`.
+- `rebuildNetworks` splits each network into clusters (joined by uncapped links) and capped `bridges` (`PowerNetwork.clusterOf/clusters/bridges`). `powerSystem` now distributes per cluster with `routeEnergy` (`power.ts`): each cluster gets its proportional share, pulls from itself then nearest clusters limited by free bridge capacity; same three phases (generation to normal, discharge for the shortfall, leftover to charging). Networks with no long links behave exactly as before (all 114 existing tests pass). New tests in `sim.test.ts`; docs updated (`docs.ts`, `docs/game.md`).
+- Not changed: the link-flow dot animation still approximates flow from per-building take/give, so it does not show a cap.
+
+### Death explosions
+- `renderer.ts`: `SimEvent.Death` now spawns an `Explosion` at the entity's last position: a red (`EXPLOSION_COLOUR`) filled ring that expands and fades over `EXPLOSION_MS` (500 ms), drawn in the overlay. Radius is remembered per entity in `blastRadius` (0.9 tiles for units, 0.75 x footprint for buildings) since stats are gone once it dies. Also fires for decay deaths. Not yet seen in a browser.
+
+### Power meter hover labels
+- Hovering the Power tile (`ui.ts`, listeners on the stable `#environment` container since the tiles are rebuilt every tick) sets `ClientState.showPowerLabels`. While set, `renderer.ts` `drawPowerLabels` puts a Pixi `Text` on every on-screen own building with non-zero network `flow`: `+N` in the meter's green for supply (negative flow), `-N` in its red for load. Colours are `POWER_GOOD`/`POWER_BAD` (mirror `--good`/`--bad`). Units are energy per tick, last tick. Not yet seen in a browser.
+
+### Floating damage numbers
+- `renderer.ts`: when a replicated `Health.hp` drops for a visible entity (compared with `lastHp`), a Pixi `Text` with the damage is spawned just above it in `damageLayer` (above the overlay). It is pinned to a world position, rises `DAMAGE_NUMBER_RISE` (1.2 tiles) and fades out over `DAMAGE_NUMBER_MS` (900 ms), then is destroyed. Client-only: derived from health deltas, so no engine/event changes. Not yet seen in a browser.
+
+### Menu background sparks
+- `menuBackground.ts` `startSparks`: every 80-220 ms (max 30 alive) a short bright streak is spawned on a random on-screen grid line and runs 10-25 cells along it (180 px/s), fading in and out. Sparks are children of the scrolling layer so they stay on their line as the grid drifts; each is one element moved by the Web Animations API (compositor) and removed on finish. Skipped when the menu is hidden, the tab is in the background, or reduced motion is set. Styles `.menu-bg-spark` in `style.css`. Not yet seen in a browser.
+
+### Menu frame alignment
+- `style.css`: `#lobby fieldset { margin: 0; min-width: 0 }`. The Game type fieldset (`.mode-picker`) kept the browser's default 2px side margin while the Map fieldset reset it, so their borders were offset by a few pixels.
+
+### Spark tail length parameter
+- `menuBackground.ts`: new `SPARK_TAIL` (px, default 48) sets each spark's `--spark-tail` CSS variable, which `.menu-bg-spark` in `style.css` uses for its length.
+
+### Sparks: longer-lived and more frequent
+- `menuBackground.ts`: sparks now spawn about every 100 ms (~10 Hz), run 10-25 cells at 80 px/s (about 5x the previous lifetime, ~10 s on average), and the cap rose from 3 to 120 so it no longer throttles the spawn rate (~100 alive at steady state). If this costs frame rate, lower `MAX_SPARKS` or the spawn rate.
+
+### Hover highlight
+- `style.css`: buttons, `a.button`, selects, `summary`, map choices and designer class items brighten (`filter: brightness(1.25)`) with a faint accent glow on hover, with a 0.12 s transition; enabled text inputs/textareas get an accent border. Disabled buttons and `button.link` are excluded. Not yet seen in a browser.
+
+### Menu panel falloff
+- `style.css`: menu panels (`#lobby section, aside, fieldset, .lobby-name-screen`) gained a soft dark `box-shadow` halo (`0 0 22px 8px`) so the backdrop grid fades out around each panel; the glass `backdrop-filter: blur(3px)` and fill are unchanged.
+
+### Lighter menu background
+- Revised: the 3D tilt was dropped in favour of a flat 2D scroll (same pre-painted tile, 48px cells, 40 s per tile, radial edge darkening; no `perspective`/`rotateX`). The description below is of the first, perspective attempt.
+- `menuBackground.ts` no longer redraws a perspective grid on a canvas every frame (thousands of path segments, three glow strokes and a gradient per frame). It paints one seamless 1280px grid-and-terrain texture once (value noise wrapped so it tiles), and CSS does the rest: `#menu-bg` in `style.css` tilts a plane with `rotateX(70deg)` under `perspective: 500px`, a transform animation scrolls the texture diagonally (55 s per tile), and a gradient overlay fades the distance. No JS per frame; a `MutationObserver` on the lobby's `hidden` attribute hides it (`display: none` stops the animation) when a match starts. Reduced-motion still disables the scroll.
+
 ## 2026-10-15
 
 ### Wrap-up: What's new, TODO

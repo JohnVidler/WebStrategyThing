@@ -6,4 +6,8 @@ export const SimEvent = {
   Pulse: 3,
   /** A repair beam at work: repairer, repaired (sent every other tick while it runs). */
   Repair: 4,
+  /** A build arm at work: builder, site (sent every other tick while it invests). */
+  Build: 5,
+  /** A charging pad actively topping up units: the pad's entity index (twice). Rate-limited, and only above a delivery threshold. */
+  Charge: 6,
 } as const;

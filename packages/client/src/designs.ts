@@ -246,6 +246,15 @@ export class DesignStore {
       this.ready = true;
       return; // keep the unreadable copy until the next change overwrites it
     }
+    // An earlier save made before the programs had arrived left default classes with empty
+    // programs, which would switch every unit of the class off: use the default instead.
+    saved = {
+      ...saved,
+      classes: saved.classes.map((c) => {
+        const template = DEFAULT_DESIGNS.get(c.name);
+        return template && !c.program.trim() && template.program.trim() ? { ...c, program: template.program } : c;
+      }),
+    };
     const classified = classifyDesigns(saved);
     const needChoice = classified.filter((c) => c.status === 'conflict' || c.status === 'invalid');
     let mine = new Set<string>(needChoice.map((c) => c.entry.name));
@@ -316,10 +325,19 @@ export class DesignStore {
     return `<ul class="design-plan">${items}</ul>`;
   }
 
+  /**
+   * False while class programs are missing altogether (a fresh welcome clears them and the
+   * server resends them after the class list): saving then would store empty programs.
+   */
+  private programsLoaded(): boolean {
+    const mine = this.state.blueprints.ownedBy(this.state.myId);
+    return this.state.programs.size > 0 || !mine.some((b) => b.stats.cyclesPerTick > 0 && !b.retired);
+  }
+
   private scheduleSave(): void {
     clearTimeout(this.saveTimer);
     this.saveTimer = setTimeout(() => {
-      if (!this.ready) return;
+      if (!this.ready || this.state.spectating || !this.programsLoaded()) return;
       if (!writeStorage(JSON.stringify(this.snapshot())) && this.storageWorks) {
         this.storageWorks = false;
         this.host.notify('This browser won’t store your designs; use Download designs to keep a copy.', false);

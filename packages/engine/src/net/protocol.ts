@@ -1,5 +1,6 @@
 import type { BlueprintInfo } from '../game/blueprint';
 import { MAX_DESIGNS, type DesignEntry } from '../game/designs';
+import type { GameMode } from '../game/map';
 
 export const TICK_RATE = 10;
 export const DEFAULT_PORT = 8080;
@@ -16,8 +17,16 @@ export const DEFAULT_PORT = 8080;
 export type ClientMessage =
   /** Display name for the scoreboard (the server trims and shortens it). */
   | { t: 'setName'; name: string }
-  /** Leave the match immediately instead of entering the reconnect grace period. */
+  /** Give up the match: the player's forces are destroyed and they are offered the spectator view. */
+  | { t: 'forfeit' }
+  /** Leave the room for good, skipping the reconnect grace period. */
+  | { t: 'leave' }
+  /** Legacy combination of the two: forfeits while the player has forces, otherwise leaves. */
   | { t: 'resign' }
+  /** The lobby host starts the match (needs enough players). */
+  | { t: 'startGame' }
+  /** A defeated player (or anyone once the match is over) switches to the spectator view: fog of war lifted, no orders. */
+  | { t: 'spectate' }
   | { t: 'defineBlueprint'; name: string; parts: string[] }
   | { t: 'setProgram'; blueprint: number; source: string }
   /**
@@ -53,9 +62,19 @@ export type ServerMessage =
       seed: number;
       /** Terrain.encode(): '1' passable, '0' blocked, row-major. */
       terrain: string;
-      /** Fog of war: the client only receives what its units and buildings can see. */
+      /** Fog of war: the client only receives what its units and buildings can see (never for spectators). */
       fog: boolean;
+      /** The match is still in its lobby: no bases exist yet. */
+      lobby: boolean;
+      /** This client is a spectator and sees the whole map. */
+      spectating: boolean;
     }
+  /** The lobby's occupants; sent whenever it changes while the match has not started. */
+  | { t: 'lobby'; players: LobbyPlayer[]; hostId: number; mode: GameMode; mapName: string; capacity: number; minPlayers: number }
+  /** The host started the match: bases are being created. */
+  | { t: 'started' }
+  /** The player has no forces left but the match goes on: offer to spectate or leave. */
+  | { t: 'defeated' }
   | { t: 'blueprints'; list: BlueprintInfo[] }
   /** Program source is only ever sent to the class owner. */
   | { t: 'program'; blueprint: number; source: string }
@@ -93,6 +112,12 @@ export type ServerMessage =
  */
 export type MatchEndReason = 'eliminated' | 'last-player' | 'no-power';
 
+/** One occupant of the pre-game lobby. */
+export interface LobbyPlayer {
+  readonly id: number;
+  readonly name: string;
+}
+
 /** One player's line on the scoreboard. */
 export interface ScoreEntry {
   readonly id: number;
@@ -117,6 +142,8 @@ export interface NetworkInfo {
   readonly supply: number;
   /** Wanted by normal consumers last tick. */
   readonly demand: number;
+  /** Energy normal consumers actually received last tick (what the Power meter counts as load). */
+  readonly delivered: number;
   readonly stored: number;
   readonly capacity: number;
   /** A finished silo is on the network (sites on it draw from the common pool). */
@@ -137,6 +164,19 @@ const isUnitList = (v: unknown): v is number[] =>
   Array.isArray(v) && v.length > 0 && v.length <= LIMITS.unitsPerOrder && v.every((e) => isInt(e) && e >= 0);
 
 /** Validates untrusted input from a socket. Returns null if malformed. */
+/** Where a client stands, which decides what it may send. */
+export type ClientPhase = 'lobby' | 'playing' | 'spectating';
+
+const ALWAYS: readonly ClientMessage['t'][] = ['setName', 'resign', 'leave'];
+// loadDesigns is let through so the server can answer that designs can't change yet.
+const BEFORE_START = new Set<ClientMessage['t']>([...ALWAYS, 'startGame', 'loadDesigns']);
+const WATCHING = new Set<ClientMessage['t']>([...ALWAYS, 'loadDesigns']);
+
+/** Whether a client in `phase` may send a message of type `t`: nothing is ordered before the start or while spectating. */
+export function messageAllowed(phase: ClientPhase, t: ClientMessage['t']): boolean {
+  return phase === 'lobby' ? BEFORE_START.has(t) : phase === 'spectating' ? WATCHING.has(t) : t !== 'startGame';
+}
+
 export function parseClientMessage(raw: unknown): ClientMessage | null {
   if (typeof raw !== 'object' || raw === null) return null;
   const m = raw as Record<string, unknown>;
@@ -145,6 +185,10 @@ export function parseClientMessage(raw: unknown): ClientMessage | null {
       if (typeof m.name !== 'string') return null;
       return { t: m.t, name: m.name.slice(0, 64) };
     case 'resign':
+    case 'forfeit':
+    case 'leave':
+    case 'startGame':
+    case 'spectate':
       return { t: m.t };
     case 'defineBlueprint':
       if (typeof m.name !== 'string' || m.name.length < 1 || m.name.length > LIMITS.nameLength) return null;

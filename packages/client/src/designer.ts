@@ -14,6 +14,7 @@ import {
 import { diffLines, withContext } from './diff';
 import { createScriptEditor, type ScriptEditor } from './editor';
 import { placeMusic } from './music';
+import { isShown, setShown } from './transition';
 import type { ClientState } from './state';
 
 export interface DesignerActions {
@@ -114,7 +115,7 @@ export class Designer {
         <strong>Class designer</strong>
         <span class="muted">Design units and buildings, and write their programs. The game keeps running underneath.</span>
         <span class="designer-music"></span>
-        <button data-role="close" title="Close (Esc / F2)">✕</button>
+        <button data-role="close" data-sound="ui.panel_close" title="Close (Esc / F2)">✕</button>
       </div>
       <div class="designer-body">
         <section class="designer-classes">
@@ -151,7 +152,7 @@ export class Designer {
               <label>Length <select data-role="test-ticks"><option value="100">10 s</option><option value="300" selected>30 s</option><option value="600">60 s</option></select></label>
               <label>Order <select data-role="test-order"><option value="none">none</option><option value="move">move across the map</option><option value="attack">attack an enemy scout</option></select></label>
               <label><input type="checkbox" data-role="test-enemy"> enemy scout nearby</label>
-              <button data-role="test-run" class="primary">Run</button>
+              <button data-role="test-run" class="primary" data-sound="ui.designer_run">Run</button>
             </div>
             <div data-role="test-out" class="test-out muted">Runs the unsaved design and program next to a copy of your starting base. Nothing in the real match changes.</div>
           </details>
@@ -160,8 +161,8 @@ export class Designer {
           <h2>Upload these changes?</h2>
           <div data-role="diff-body" class="diff-body"></div>
           <div class="diff-actions">
-            <button data-role="diff-cancel">Keep editing</button>
-            <button data-role="diff-confirm" class="primary">Upload</button>
+            <button data-role="diff-cancel" data-sound="ui.cancel">Keep editing</button>
+            <button data-role="diff-confirm" class="primary" data-sound="ui.confirm">Upload</button>
           </div>
         </div>
       </div>
@@ -169,8 +170,8 @@ export class Designer {
         <div data-role="status" class="status"></div>
         <button data-role="retire" title="Retired classes can't be produced or placed; units already built carry on">Retire class</button>
         <button data-role="copy">Copy as new design</button>
-        <button data-role="upload" class="primary">Upload program</button>
-        <button data-role="create" class="primary">Create class</button>
+        <button data-role="upload" class="primary" data-sound="ui.confirm">Upload program</button>
+        <button data-role="create" class="primary" data-sound="ui.confirm">Create class</button>
       </div>`;
     host.appendChild(this.root);
 
@@ -242,8 +243,8 @@ export class Designer {
     window.addEventListener('keydown', (ev) => {
       if (ev.key === 'F2') {
         ev.preventDefault();
-        this.toggle(this.root.hidden !== false);
-      } else if (ev.key === 'Escape' && !this.root.hidden && !(ev.target as HTMLElement | null)?.closest('.cm-editor')) {
+        this.toggle(!this.isOpen);
+      } else if (ev.key === 'Escape' && this.isOpen && !(ev.target as HTMLElement | null)?.closest('.cm-editor')) {
         this.toggle(false);
       }
     });
@@ -251,15 +252,15 @@ export class Designer {
   }
 
   get isOpen(): boolean {
-    return !this.root.hidden;
+    return isShown(this.root);
   }
 
   /** Called when the overlay goes from open to closed, by whatever means. */
   onClose?: () => void;
 
   toggle(open: boolean): void {
-    const wasOpen = !this.root.hidden;
-    this.root.hidden = !open;
+    const wasOpen = this.isOpen;
+    setShown(this.root, open);
     // The music widget lives in the top bar while the designer covers the page.
     placeMusic(open ? this.root.querySelector<HTMLElement>('.designer-music') : null);
     if (wasOpen && !open) this.onClose?.();
@@ -284,7 +285,7 @@ export class Designer {
         this.showResult(`Created ${made.name}.`, true);
       }
     }
-    if (!this.root.hidden) {
+    if (this.isOpen) {
       this.renderClassList();
       this.renderDesign();
     }

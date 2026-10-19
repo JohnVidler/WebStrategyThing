@@ -3,7 +3,7 @@ import { UNIT_API, VisitReason } from './api';
 import { CpuState } from './components';
 import { SimEvent } from './events';
 import { TILE } from './parts';
-import { daylight, share, StorageMode, wind } from './power';
+import { daylight, routeEnergy, share, StorageMode, wind } from './power';
 import { GENERATION_SCALE } from './parts';
 import { BUILDER_ENERGY_RESERVE, SEPARATION_RADIUS, DECAY_TICKS, MAX_TRANSMISSION_LOSS, RESOURCE_REGEN_INTERVAL_TICKS, SOLAR_GENERATION_MULTIPLIER, STORAGE_DISCHARGE_FRACTION, STORAGE_RESERVE_FRACTION, TESLA_SELF_STUN_FACTOR, TESLA_STUN_TICKS, TRANSMISSION_LOSS_PER_TILE, WIND_GENERATION_MULTIPLIER, buildEnergyCost } from './rules';
 import { CHARGE_PAD_RATE_MULTIPLIER, CHARGE_RANGE } from './rules';
@@ -64,35 +64,69 @@ export function powerSystem(sim: Simulation): void {
     }
     const demand = normalRoom.reduce((a, b) => a + b, 0);
     const m = net.members;
-    let pool = generated;
-    let discharged = 0;
-    for (const i of discharging) {
-      if (pool >= demand) break;
+    // Energy moves freely inside a cluster (short links); long antenna links between clusters are capped.
+    const K = net.clusters;
+    const cl = net.clusterOf;
+    const perCluster = (): number[] => new Array(K).fill(0);
+    /** Positions in `list` grouped by cluster of the member each refers to. */
+    const bucket = (list: readonly number[]): number[][] => {
+      const out: number[][] = Array.from({ length: K }, () => []);
+      list.forEach((i, k) => out[cl[i]].push(k));
+      return out;
+    };
+    const normalK = bucket(normal);
+    const chargingK = bucket(charging);
+    const bridgeFlow = net.bridges.map(() => 0);
+    const genK = perCluster();
+    gen.forEach((g, i) => (genK[cl[i]] += g));
+    const demandK = normalK.map((ks) => ks.reduce((t, k) => t + normalRoom[k], 0));
+    const first = routeEnergy(net, bridgeFlow, genK, demandK);
+    // Storage in discharge mode covers what generation could not deliver.
+    const shortK = demandK.map((d, c) => d - first.got[c]);
+    const availK = perCluster();
+    const avail = discharging.map((i) => {
       const cap = sim.stats(m[i]).energyCapacity;
       const give = Math.max(0, store[m[i]] - reserveOf(cap)); // keep enough to run the CPU
-      const take = Math.min(demand - pool, give, Math.ceil(cap * STORAGE_DISCHARGE_FRACTION));
+      const a = Math.min(give, Math.ceil(cap * STORAGE_DISCHARGE_FRACTION));
+      availK[cl[i]] += a;
+      return a;
+    });
+    const second = routeEnergy(net, bridgeFlow, availK, shortK);
+    const takeK = [...second.gave];
+    discharging.forEach((i, k) => {
+      const take = Math.min(takeK[cl[i]], avail[k]);
+      takeK[cl[i]] -= take;
       store[m[i]] -= take;
       flow[i] -= take;
-      pool += take;
-      discharged += take;
+    });
+    let delivered = 0;
+    for (let c = 0; c < K; c++) {
+      const ks = normalK[c];
+      share(first.got[c] + second.got[c], ks.map((k) => normalRoom[k])).forEach((g, j) => {
+        const i = normal[ks[j]];
+        store[m[i]] += g;
+        flow[i] += g;
+        delivered += g;
+      });
     }
-    let used = 0;
-    const served = share(Math.min(pool, demand), normalRoom);
-    served.forEach((g, k) => {
-      store[m[normal[k]]] += g;
-      flow[normal[k]] += g;
-      used += g;
-    });
-    pool -= served.reduce((a, b) => a + b, 0);
-    share(pool, chargingRoom).forEach((g, k) => {
-      store[m[charging[k]]] += g;
-      flow[charging[k]] += g;
-      used += g;
-    });
-    // Generators gave what was used beyond the discharged energy, in proportion to their output.
-    share(used - discharged, gen).forEach((g, i) => (flow[i] -= g));
+    // Whatever generation is left tops up storage in charge mode.
+    const leftK = genK.map((g, c) => g - first.gave[c]);
+    const chargeK = chargingK.map((ks) => ks.reduce((t, k) => t + chargingRoom[k], 0));
+    const third = routeEnergy(net, bridgeFlow, leftK, chargeK);
+    for (let c = 0; c < K; c++) {
+      const ks = chargingK[c];
+      share(third.got[c], ks.map((k) => chargingRoom[k])).forEach((g, j) => {
+        const i = charging[ks[j]];
+        store[m[i]] += g;
+        flow[i] += g;
+      });
+      // Generators gave what was used beyond the discharged energy, in proportion to their output.
+      const givers = net.byCluster[c];
+      share(first.gave[c] + third.gave[c], givers.map((i) => gen[i])).forEach((g, k) => (flow[givers[k]] -= g));
+    }
 
     net.supply = generated;
+    net.delivered = delivered;
     net.demand = demand;
     net.stored = 0;
     net.capacity = 0;
@@ -381,19 +415,35 @@ function teslaDischarge(sim: Simulation, e: number, range: number): void {
  */
 export function chargingSystem(sim: Simulation): void {
   const owner = sim.unit.f.owner;
+  let flow = chargeFlow.get(sim);
+  if (!flow) chargeFlow.set(sim, (flow = new Map()));
   for (const b of sim.unit.dense) {
     const s = sim.stats(b);
     if (s.chargeRate <= 0 || sim.isSite(b)) continue;
+    let delivered = 0;
     const reach = (s.footprint * TILE) / 2 + CHARGE_RANGE + TILE;
     sim.spatial.forEachInRadius(sim.pos.f.x[b], sim.pos.f.y[b], reach, (o) => {
       if (!sim.motion.has(o) || owner[o] !== owner[b]) return;
       const room = sim.stats(o).energyCapacity - sim.energy.f.amount[o];
       // Up to the boosted rate, but never more than the pad currently holds.
       const amount = Math.min(s.chargeRate * CHARGE_PAD_RATE_MULTIPLIER, room, sim.energy.f.amount[b]);
-      if (amount > 0) sim.transferEnergy(b, o, amount);
+      if (amount > 0) delivered += sim.transferEnergy(b, o, amount);
     });
+    // Only a pad that is really working shows it: a smoothed delivery rate must clear the
+    // threshold, so a unit sipping the last few points doesn't keep the pulse running.
+    const smooth = (flow.get(b) ?? 0) * (1 - CHARGE_FLOW_SMOOTHING) + delivered * CHARGE_FLOW_SMOOTHING;
+    flow.set(b, smooth);
+    if (smooth >= CHARGE_PULSE_THRESHOLD && sim.tick % CHARGE_PULSE_TICKS === 0) sim.emit(SimEvent.Charge, b, b);
   }
 }
+
+/** Smoothed energy/tick each pad has been delivering (cosmetic: only drives the Charge event). */
+const chargeFlow = new WeakMap<Simulation, Map<number, number>>();
+const CHARGE_FLOW_SMOOTHING = 0.1;
+/** Smoothed delivery needed to show the pulse: about a quarter of one unit's full charge rate. */
+const CHARGE_PULSE_THRESHOLD = 5;
+/** Ticks between pulses while the pad is working. */
+const CHARGE_PULSE_TICKS = 20;
 
 /** Factories build their queue front to back; each new unit becomes the factory's visitor. */
 export function productionSystem(sim: Simulation): void {
@@ -523,6 +573,7 @@ export function buildSystem(sim: Simulation): void {
       const need = Math.min(budget, siteStats.cost - sim.invested[site]);
       used += sim.investIn(site, sim.drawPool(owner, need));
     }
+    if (used > 0 && sim.tick % 2 === 0) sim.emit(SimEvent.Build, e, site);
     const energy = Math.ceil(used * perMatter);
     if (supplied) sim.drawGridEnergy(site, energy);
     else sim.energy.f.amount[e] = Math.max(0, sim.energy.f.amount[e] - energy);

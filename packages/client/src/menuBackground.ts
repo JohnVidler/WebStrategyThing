@@ -1,21 +1,20 @@
 /**
- * Animated main-menu backdrop: a ground plane of grid lines with some cells filled in like map
- * terrain, seen in perspective and drifting slowly diagonally towards the viewer, fading into
- * blackness at the horizon. Cells are filled from a deterministic value-noise function of their
- * world coordinates, so the scroll is endless without any wrap-around seam or repeat.
+ * Main-menu backdrop: a flat grid with some cells filled in like map terrain, drifting slowly
+ * diagonally, with the edges darkened.
+ *
+ * It is deliberately cheap: one seamless texture is painted once, then the browser's compositor
+ * scrolls it (a CSS transform animation). There is no per-frame JavaScript or canvas drawing, and
+ * `display: none` (the game has taken over) stops the animation. Occasional sparks run along the grid
+ * lines: a timer launches one every fraction of a second while the menu is showing (compositor-
+ * animated elements, no per-frame work), and the timer is stopped whenever the backdrop is hidden.
+ * Layout lives in style.css under `#menu-bg`.
  */
-/** Cell edge length in world units (the camera is 1 unit above the ground). */
-const TILE = 0.14;
-/** Camera drift in world units per second, sideways and forwards (so the drift is diagonal). */
-const DRIFT_U = 0.04;
-const DRIFT_V = 0.04;
-/** Nearest and farthest ground distance drawn. */
-const V_NEAR = 0.9;
-const V_FAR = 9;
-/** Where the horizon sits, as a fraction of the screen height from the top. */
-const HORIZON = 0.0;
-/** Noise scale: smaller is bigger terrain blobs. */
-const NOISE_SCALE = 0.17;
+/** Cell edge length in texture pixels, and cells per texture side (the texture repeats seamlessly). */
+const CELL = 48;
+const CELLS = 24;
+const SIZE = CELL * CELLS;
+/** Noise lattice period in cells: the terrain blobs repeat every CELLS, so this must divide it. */
+const NOISE_CELLS = 6;
 const FILL_THRESHOLD = 0.56;
 
 const hash = (x: number, y: number): number => {
@@ -26,122 +25,150 @@ const hash = (x: number, y: number): number => {
 
 const smooth = (t: number): number => t * t * (3 - 2 * t);
 
-/** Smooth value noise in 0..1 at a (fractional) lattice position. */
-const noise = (x: number, y: number): number => {
+/** Smooth value noise in 0..1 that wraps every `period` lattice steps, so the texture tiles. */
+const noise = (x: number, y: number, period: number): number => {
   const x0 = Math.floor(x);
   const y0 = Math.floor(y);
   const fx = smooth(x - x0);
   const fy = smooth(y - y0);
-  const top = hash(x0, y0) * (1 - fx) + hash(x0 + 1, y0) * fx;
-  const bottom = hash(x0, y0 + 1) * (1 - fx) + hash(x0 + 1, y0 + 1) * fx;
+  const at = (ix: number, iy: number): number => hash(((ix % period) + period) % period, ((iy % period) + period) % period);
+  const top = at(x0, y0) * (1 - fx) + at(x0 + 1, y0) * fx;
+  const bottom = at(x0, y0 + 1) * (1 - fx) + at(x0 + 1, y0 + 1) * fx;
   return top * (1 - fy) + bottom * fy;
 };
 
-let canvas: HTMLCanvasElement | undefined;
-let frame = 0;
-
-/** Starts (or keeps running) the backdrop behind `root`; it pauses itself while `root` is hidden. */
-export function startMenuBackground(root: HTMLElement): void {
-  if (!canvas) {
-    canvas = document.createElement('canvas');
-    canvas.id = 'menu-bg';
-    canvas.setAttribute('aria-hidden', 'true');
-    document.body.prepend(canvas);
-  }
-  const cv = canvas;
+/** Paints the seamless grid-and-terrain texture once and returns it as a data URL. */
+function paintTexture(): string | undefined {
+  const cv = document.createElement('canvas');
+  cv.width = SIZE;
+  cv.height = SIZE;
   const ctx = cv.getContext('2d');
-  if (!ctx || frame) return;
-  const still = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
-
-  const resize = (): void => {
-    const dpr = window.devicePixelRatio || 1;
-    cv.width = Math.ceil(window.innerWidth * dpr);
-    cv.height = Math.ceil(window.innerHeight * dpr);
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  };
-  resize();
-  window.addEventListener('resize', resize);
-
-  const start = performance.now();
-  const draw = (now: number): void => {
-    if (root.hidden) {
-      // The game has taken over: stop until showLobby runs again.
-      cv.hidden = true;
-      window.removeEventListener('resize', resize);
-      frame = 0;
-      return;
+  if (!ctx) return undefined;
+  ctx.fillStyle = 'rgba(78, 161, 255, 0.16)';
+  const per = NOISE_CELLS / CELLS;
+  for (let iy = 0; iy < CELLS; iy++) {
+    for (let ix = 0; ix < CELLS; ix++) {
+      if (noise(ix * per + 0.5, iy * per + 0.5, NOISE_CELLS) > FILL_THRESHOLD) ctx.fillRect(ix * CELL, iy * CELL, CELL, CELL);
     }
-    cv.hidden = false;
+  }
+  // Grid lines sit on the texture edge, so each is split between opposite sides and rejoins when tiled.
+  const lines = new Path2D();
+  for (let i = 0; i <= CELLS; i++) {
+    lines.moveTo(i * CELL, 0);
+    lines.lineTo(i * CELL, SIZE);
+    lines.moveTo(0, i * CELL);
+    lines.lineTo(SIZE, i * CELL);
+  }
+  ctx.strokeStyle = 'rgba(78, 161, 255, 0.09)';
+  ctx.lineWidth = 8;
+  ctx.stroke(lines);
+  ctx.strokeStyle = 'rgba(150, 200, 255, 0.3)';
+  ctx.lineWidth = 2;
+  ctx.stroke(lines);
+  return cv.toDataURL('image/png');
+}
+
+/** Sparks: bright points that occasionally run along grid lines (at most MAX_SPARKS at once). */
+const MAX_SPARKS = 30;
+const SPARK_GAP_MS: [number, number] = [80, 220];
+/** Travel speed in px/s and run length in cells. */
+const SPARK_SPEED = 180;
+const SPARK_CELLS: [number, number] = [10, 25];
+/** Length of a spark's fading tail in px (its whole visible length; the bright end is the head). */
+const SPARK_TAIL = 148;
+
+const between = (lo: number, hi: number): number => lo + Math.random() * (hi - lo);
+
+/**
+ * Starts the spark spawner and returns `wake`, which restarts it after the backdrop was hidden.
+ * Sparks live inside the scrolling layer, so they stay on their grid line as the grid drifts; each is
+ * one element animated by the compositor and removed when it finishes. While the backdrop (or the
+ * tab) is hidden the timer stops altogether instead of ticking for nothing.
+ */
+function startSparks(host: HTMLElement, scroll: HTMLElement): () => void {
+  if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return () => undefined;
+  let live = 0;
+  let timer: number | undefined;
+  const wake = (): void => {
+    if (timer === undefined && !host.hidden && !document.hidden) timer = window.setTimeout(spawn, between(...SPARK_GAP_MS));
+  };
+  const spawn = (): void => {
+    timer = undefined;
+    if (host.hidden || document.hidden) return; // wake() restarts it when the menu shows again
+    if (live < MAX_SPARKS) launch();
+    wake();
+  };
+  document.addEventListener('visibilitychange', wake);
+  const launch = (): void => {
     const w = window.innerWidth;
     const h = window.innerHeight;
-    const t = still ? 0 : (now - start) / 1000;
-    const camU = t * DRIFT_U;
-    const camV = t * DRIFT_V;
-    const horizon = h * HORIZON;
-    // Screen scale: a point 1 unit ahead and 1 unit down lands on the bottom edge.
-    const k = h - horizon;
-    const sx = (u: number, v: number): number => w / 2 + (u * k) / v;
-    const sy = (v: number): number => horizon + k / v;
-
-    ctx.fillStyle = '#04060a';
-    ctx.fillRect(0, 0, w, h);
-
-    const row0 = Math.floor((camV + V_NEAR) / TILE) - 1;
-    const row1 = Math.ceil((camV + V_FAR) / TILE);
-    const fills = new Path2D();
-    const lines = new Path2D();
-    for (let iv = row0; iv <= row1; iv++) {
-      const v0 = iv * TILE - camV;
-      const v1 = v0 + TILE;
-      if (v0 < V_NEAR * 0.5 || v1 > V_FAR) continue;
-      const y0 = sy(v0);
-      const y1 = sy(v1);
-      // Lateral range visible at this depth, in world units.
-      const half = (w / 2 / k) * v1 + TILE;
-      const c0 = Math.floor((camU - half) / TILE);
-      const c1 = Math.ceil((camU + half) / TILE);
-      lines.moveTo(0, y0);
-      lines.lineTo(w, y0);
-      for (let ic = c0; ic < c1; ic++) {
-        const u0 = ic * TILE - camU;
-        const u1 = u0 + TILE;
-        // One line per cell column edge, drawn as a segment of this row.
-        lines.moveTo(sx(u0, v0), y0);
-        lines.lineTo(sx(u0, v1), y1);
-        if (noise(ic * NOISE_SCALE, iv * NOISE_SCALE) > FILL_THRESHOLD) {
-          fills.moveTo(sx(u0, v0), y0);
-          fills.lineTo(sx(u1, v0), y0);
-          fills.lineTo(sx(u1, v1), y1);
-          fills.lineTo(sx(u0, v1), y1);
-          fills.closePath();
-        }
-      }
-    }
-    ctx.fillStyle = 'rgba(78, 161, 255, 0.16)';
-    ctx.fill(fills);
-    // Glow: wide, faint strokes under the crisp line (cheaper than shadowBlur on a big path).
-    ctx.lineJoin = 'round';
-    ctx.lineCap = 'round';
-    ctx.strokeStyle = 'rgba(78, 161, 255, 0.05)';
-    ctx.lineWidth = 7;
-    ctx.stroke(lines);
-    ctx.strokeStyle = 'rgba(78, 161, 255, 0.09)';
-    ctx.lineWidth = 3.5;
-    ctx.stroke(lines);
-    ctx.strokeStyle = 'rgba(150, 200, 255, 0.28)';
-    ctx.lineWidth = 1;
-    ctx.stroke(lines);
-
-    // Fade the distance into blackness.
-    const fade = ctx.createLinearGradient(0, horizon, 0, h);
-    fade.addColorStop(0, 'rgba(4, 6, 10, 1)');
-    fade.addColorStop(0.18, 'rgba(4, 6, 10, 0.85)');
-    fade.addColorStop(0.55, 'rgba(4, 6, 10, 0.3)');
-    fade.addColorStop(1, 'rgba(4, 6, 10, 0)');
-    ctx.fillStyle = fade;
-    ctx.fillRect(0, horizon - 1, w, h - horizon + 1);
-
-    frame = requestAnimationFrame(draw);
+    // The layer starts one tile up-left of the screen and slides by up to one tile over its loop.
+    const loop = scroll.getAnimations()[0];
+    const period = Number(loop?.effect?.getTiming().duration ?? 0);
+    const drift = loop && period > 0 ? ((Number(loop.currentTime ?? 0) % period) / period) * SIZE : 0;
+    const left = SIZE - drift;
+    const top = SIZE - drift;
+    const horizontal = Math.random() < 0.5;
+    const dir = Math.random() < 0.5 ? 1 : -1;
+    const run = Math.round(between(...SPARK_CELLS)) * CELL;
+    const spark = document.createElement('div');
+    spark.className = `menu-bg-spark ${horizontal ? 'h' : 'v'} ${dir > 0 ? 'fwd' : 'back'}`;
+    // Pick a grid line crossing the screen and a start point on it.
+    const along = horizontal ? w : h;
+    const across = horizontal ? h : w;
+    const lineAt = Math.round(((horizontal ? top : left) + Math.random() * across) / CELL) * CELL;
+    const start = (horizontal ? left : top) + Math.random() * along;
+    const x = horizontal ? start : lineAt;
+    const y = horizontal ? lineAt : start;
+    spark.style.setProperty('--spark-tail', `${SPARK_TAIL}px`);
+    spark.style.left = `${x}px`;
+    spark.style.top = `${y}px`;
+    scroll.appendChild(spark);
+    live++;
+    const to = dir * run;
+    const move = horizontal ? (d: number) => `translate(${d}px, 0)` : (d: number) => `translate(0, ${d}px)`;
+    const anim = spark.animate(
+      [
+        { transform: move(0), opacity: 0 },
+        { transform: move(to * 0.15), opacity: 1, offset: 0.15 },
+        { transform: move(to * 0.8), opacity: 1, offset: 0.8 },
+        { transform: move(to), opacity: 0 },
+      ],
+      { duration: (run / SPARK_SPEED) * 1000, easing: 'linear' },
+    );
+    anim.onfinish = () => {
+      spark.remove();
+      live--;
+    };
   };
-  frame = requestAnimationFrame(draw);
+  wake();
+  return wake;
+}
+
+let backdrop: HTMLElement | undefined;
+let wakeSparks: () => void = () => undefined;
+
+/** Starts (or keeps running) the backdrop behind `root`; it is hidden whenever `root` is hidden. */
+export function startMenuBackground(root: HTMLElement): void {
+  if (backdrop) {
+    backdrop.hidden = root.hidden;
+    wakeSparks();
+    return;
+  }
+  const url = paintTexture();
+  if (!url) return;
+  const el = document.createElement('div');
+  el.id = 'menu-bg';
+  el.setAttribute('aria-hidden', 'true');
+  el.style.setProperty('--menu-bg-tile', `${SIZE}px`);
+  el.innerHTML = '<div class="menu-bg-scroll"></div>';
+  el.querySelector<HTMLElement>('.menu-bg-scroll')!.style.backgroundImage = `url(${url})`;
+  document.body.prepend(el);
+  backdrop = el;
+  wakeSparks = startSparks(el, el.querySelector<HTMLElement>('.menu-bg-scroll')!);
+  // The game takes over by hiding the lobby; follow that without polling.
+  new MutationObserver(() => {
+    el.hidden = root.hidden;
+    wakeSparks();
+  }).observe(root, { attributes: true, attributeFilter: ['hidden'] });
 }

@@ -5,6 +5,7 @@ import {
   CORNERS,
   createMatch,
   mapById,
+  messageAllowed,
   parseGameMode,
   setUpBot,
   type BotPlayer,
@@ -20,6 +21,7 @@ import {
   visibleTo,
   type Blueprint,
   type ClientMessage,
+  type ClientPhase,
   type NetworkInfo,
   type MatchEndReason,
   type ScoreEntry,
@@ -55,6 +57,10 @@ interface Player extends Side {
   /** What this client currently holds of the world (fog of war). */
   readonly interest: Interest;
   lastNetworks: string;
+  /** Has no forces left while the match goes on; leaving no longer waits for a reconnect. */
+  defeated: boolean;
+  /** Sees the whole map (fog lifted) and gives no orders. */
+  spectating: boolean;
 }
 
 export interface MatchOptions {
@@ -74,6 +80,7 @@ export interface MatchOptions {
 type Command =
   | { kind: 'join'; player: Player }
   | { kind: 'leave'; player: Player }
+  | { kind: 'forfeit'; player: Player }
   | { kind: 'msg'; player: Player; msg: ClientMessage };
 
 function ignoreRefused(fn: () => void): void {
@@ -98,6 +105,8 @@ export class Match {
   /** Disconnected players who may still reconnect, by token. */
   private readonly away = new Map<string, { player: Player; since: number }>();
   private over = false;
+  /** False while players gather in the lobby: no bases exist and time stands still until the host starts. */
+  private started: boolean;
   /** Players who have ever had forces: a match only counts once two sides have. */
   private readonly fielded = new Set<number>();
   private timer: NodeJS.Timeout | undefined;
@@ -108,6 +117,7 @@ export class Match {
 
   constructor(options: MatchOptions = {}) {
     this.mode = parseGameMode(options.mode);
+    this.started = this.mode === 'solo';
     this.map = mapById(options.mapId);
     this.sim = createMatch(0x5eed, this.map);
     this.fog = options.fog ?? true;
@@ -128,14 +138,39 @@ export class Match {
     return this.mode !== 'versus';
   }
 
-  /** Co-op: humans take every other corner, with their bot in the one after. */
+  /** A random free start corner, so nobody knows where their enemies begin. -1 if none is free. */
+  private randomFreeCorner(): number {
+    const free = this.corners.flatMap((id, c) => (id === 0 ? [c] : []));
+    return free.length ? free[Math.floor(Math.random() * free.length)] : -1;
+  }
+
+  /** Bot modes need a corner for the human and another for their bot. */
   private freeCorner(): number {
-    if (this.mode === 'versus') return this.corners.indexOf(0);
-    return (this.mode === 'solo' ? [0] : [0, 2]).find((c) => this.corners[c] === 0) ?? -1;
+    const sides = this.botted ? 2 : 1;
+    const free = this.corners.filter((id) => id === 0).length;
+    if (free < sides || (this.corners.length - free) / sides >= this.capacity) return -1;
+    return this.randomFreeCorner();
   }
 
   get isOver(): boolean {
     return this.over;
+  }
+
+  /** Players are still gathering; the host has not started the match. */
+  get inLobby(): boolean {
+    return !this.started;
+  }
+
+  /** Fewest players the host may start with: bot modes run with one human, a free-for-all needs two. */
+  get minPlayers(): number {
+    return this.botted ? 1 : 2;
+  }
+
+  /** The lobby host: whoever has been present longest. */
+  private get host(): Player | undefined {
+    let host: Player | undefined;
+    for (const p of this.players.values()) if (!host || p.id < host.id) host = p;
+    return host;
   }
 
   start(): void {
@@ -180,13 +215,17 @@ export class Match {
       lastCredits: '',
       interest: new Interest(),
       lastNetworks: '',
+      defeated: false,
+      spectating: false,
     };
     player.name = `Player ${player.id}`;
     // A token already held by a connected player (a second tab) can't be used to reconnect.
     if (token && ![...this.players.values()].some((p) => p.token === token)) player.token = token;
     this.corners[corner] = player.id;
     if (this.botted) {
-      const bot: BotSide = { id: this.nextPlayerId++, name: corner === 0 ? 'Bot 1' : 'Bot 2', hadForces: false, corner: corner + 1 };
+      const names = new Set([...this.bots.values()].map((b) => b.name));
+      const name = names.has('Bot 1') ? 'Bot 2' : 'Bot 1';
+      const bot: BotSide = { id: this.nextPlayerId++, name, hadForces: false, corner: this.randomFreeCorner() };
       this.corners[bot.corner] = bot.id;
       this.bots.set(player.id, bot);
       this.sim.teams.set(player.id, 1);
@@ -194,7 +233,8 @@ export class Match {
     }
     this.players.set(socket, player);
     this.sendWelcome(player);
-    this.pending.push({ kind: 'join', player });
+    // In the lobby nothing is built yet: the host's start sets everyone up together.
+    if (this.started) this.pending.push({ kind: 'join', player });
   }
 
   /** Brings the client up to date with the committed state; deltas follow from the next tick. */
@@ -208,11 +248,14 @@ export class Match {
       height,
       seed,
       terrain: this.sim.terrain.encode(),
-      fog: this.fog,
+      fog: this.fog && !player.spectating,
+      lobby: !this.started,
+      spectating: player.spectating,
     });
+    if (!this.started) this.send(player, this.lobbyMessage());
     this.send(player, { t: 'blueprints', list: this.sim.blueprints.all().map(toInfo) });
     this.send(player, this.pauseMessage());
-    const view = this.fog ? player.interest.reset(this.visibleTo(player)) : undefined;
+    const view = this.fog && !player.spectating ? player.interest.reset(this.visibleTo(player)) : undefined;
     player.socket.send(encodeTick(this.sim.world, this.sim.tick, [], true, view));
   }
 
@@ -241,16 +284,45 @@ export class Match {
     const player = this.players.get(socket);
     if (!player) return;
     this.players.delete(socket);
-    if (player.token) this.away.set(player.token, { player, since: Date.now() });
+    // Nobody is kept waiting for a lobby member or a defeated player: there is no base to hold.
+    if (player.token && this.started && !player.defeated) this.away.set(player.token, { player, since: Date.now() });
     else this.pending.push({ kind: 'leave', player });
     this.lastScoreboard = '';
   }
 
-  /** An explicit resignation skips the reconnect grace period. */
-  private resign(socket: WebSocket): void {
-    const player = this.players.get(socket);
-    if (!player) return;
-    this.players.delete(socket);
+  /** Resigning forfeits while a player has forces and otherwise leaves for good. */
+  private resign(player: Player): void {
+    if (this.canForfeit(player)) this.forfeit(player);
+    else this.leaveForGood(player);
+  }
+
+  private canForfeit(player: Player): boolean {
+    return this.started && !player.defeated && !this.over;
+  }
+
+  /**
+   * Gives up the player's forces. They are marked defeated at once (so closing the tab doesn't
+   * start a reconnect wait) and offered the spectator view; the forces go at the next tick.
+   * In co-op the player's bot is left alone: the bots win once every human is out.
+   */
+  private forfeit(player: Player): void {
+    if (!this.canForfeit(player)) return;
+    this.defeat(player);
+    this.pending.push({ kind: 'forfeit', player });
+  }
+
+  /** Marks the player out of the game and offers them the spectator view. */
+  private defeat(player: Player): void {
+    if (player.defeated) return;
+    player.defeated = true;
+    player.hadForces = true;
+    this.send(player, { t: 'defeated' });
+    this.lastScoreboard = '';
+  }
+
+  /** Leaving for good frees the seat at once instead of waiting for a reconnect. */
+  private leaveForGood(player: Player): void {
+    if (!this.players.delete(player.socket)) return;
     this.pending.push({ kind: 'leave', player });
     this.lastScoreboard = '';
     this.send(player, { t: 'resigned' });
@@ -272,12 +344,18 @@ export class Match {
   receive(socket: WebSocket, msg: ClientMessage): void {
     const player = this.players.get(socket);
     if (!player) return;
-    if (msg.t === 'resign') this.resign(socket);
+    if (msg.t === 'resign') this.resign(player);
+    else if (msg.t === 'forfeit') this.forfeit(player);
+    else if (msg.t === 'leave') this.leaveForGood(player);
     else this.pending.push({ kind: 'msg', player, msg });
   }
 
   private tick(): void {
     for (const cmd of this.pending.splice(0)) this.apply(cmd);
+    if (!this.started) {
+      this.reportLobby();
+      return;
+    }
     // Commands still apply while paused (a new player's base appears), but time stands still.
     const reasons = this.pauseReasons;
     const paused = reasons.length > 0;
@@ -288,6 +366,8 @@ export class Match {
     }
     // Without fog: one encode, broadcast to everyone. With fog: one per client, filtered to what it sees.
     const shared = this.fog ? undefined : encodeTick(this.sim.world, this.sim.tick, this.sim.events, false);
+    // Spectators see everything, fog or not.
+    let unfiltered = shared;
     const tasks = this.collectTaskUpdates();
     // Energy moved per building, summed over the report window (single ticks are too jumpy to animate).
     for (const net of paused ? [] : this.sim.networks) {
@@ -295,8 +375,9 @@ export class Match {
     }
     for (const p of this.players.values()) {
       if (p.socket.readyState !== WebSocket.OPEN) continue;
+      if (p.spectating) unfiltered ??= encodeTick(this.sim.world, this.sim.tick, this.sim.events, false);
       p.socket.send(
-        shared ??
+        (p.spectating ? unfiltered : shared) ??
           encodeTick(this.sim.world, this.sim.tick, this.sim.events, false, p.interest.update(this.visibleTo(p), this.sim.world.despawned)),
       );
       const amount = this.sim.pool(p.id);
@@ -327,8 +408,9 @@ export class Match {
 
   /** Why the game is stopped, if it is: it needs two connected players and nobody missing. */
   get pauseReasons(): string[] {
+    if (!this.started) return []; // the lobby has its own panel
     const reasons = [...this.away.values()].map(({ player }) => `${player.name} disconnected — waiting for them to come back`);
-    const needed = this.botted ? 1 : 2;
+    const needed = this.minPlayers;
     if (this.players.size < needed) reasons.push(needed === 1 ? 'Waiting for a player' : 'Waiting for another player — a match needs at least two');
     return reasons;
   }
@@ -367,6 +449,50 @@ export class Match {
   }
 
   private lastPause = '';
+  private lastLobby = '';
+
+  private lobbyMessage(): Extract<ServerMessage, { t: 'lobby' }> {
+    const players = [...this.players.values()].sort((a, b) => a.id - b.id).map((p) => ({ id: p.id, name: p.name }));
+    return {
+      t: 'lobby',
+      players,
+      hostId: this.host?.id ?? 0,
+      mode: this.mode,
+      mapName: this.map.name,
+      capacity: this.capacity,
+      minPlayers: this.minPlayers,
+    };
+  }
+
+  /** Who is waiting in the lobby, and who may start the match. */
+  private reportLobby(): void {
+    const message = this.lobbyMessage();
+    const key = JSON.stringify(message);
+    if (key === this.lastLobby) return;
+    this.lastLobby = key;
+    this.broadcast(message);
+  }
+
+  /** Builds every waiting player's base (and bot) and lets time run. */
+  private startMatch(): void {
+    this.started = true;
+    for (const player of this.players.values()) this.setUpSide(player);
+    this.broadcast({ t: 'started' });
+    this.lastScoreboard = '';
+  }
+
+  private setUpSide(player: Player): void {
+    const corner = this.corners.indexOf(player.id);
+    const classes = setUpPlayer(this.sim, player.id, CORNERS[corner], STARTING_CREDITS);
+    this.announce(player, classes);
+    const bot = this.bots.get(player.id);
+    if (bot) {
+      const set = setUpBot(this.sim, bot.id, CORNERS[bot.corner], player.id);
+      bot.controller = set.bot;
+      // Everyone needs the bot's class shapes to draw its units; nobody sees its programs.
+      this.broadcast({ t: 'blueprints', list: set.classes.map(toInfo) });
+    }
+  }
 
   private reportPause(reasons: string[]): void {
     const message = this.pauseMessage();
@@ -403,6 +529,9 @@ export class Match {
       score: this.sim.score(p.id),
       ...this.sim.tally(p.id),
     });
+    for (const p of this.players.values()) {
+      if (p.hadForces && !owning.has(p.id)) this.defeat(p);
+    }
     const players = [...this.players.values(), ...bots].map(entry);
     const text = JSON.stringify({ t: 'scoreboard', players } satisfies ServerMessage);
     if (text !== this.lastScoreboard) {
@@ -467,6 +596,7 @@ export class Match {
         members: n.members,
         supply: n.supply,
         demand: n.demand,
+        delivered: n.delivered,
         stored: n.stored,
         capacity: n.capacity,
         depot: n.depot,
@@ -501,28 +631,25 @@ export class Match {
     return byOwner;
   }
 
+  /** Destroys every unit and building of the given owners. */
+  private removeForces(...owners: (number | undefined)[]): void {
+    for (const e of this.sim.world.query(this.sim.unit.def)) {
+      if (owners.includes(this.sim.unit.f.owner[e])) this.sim.destroyEntity(e);
+    }
+  }
+
   private apply(cmd: Command): void {
     const { player } = cmd;
     switch (cmd.kind) {
-      case 'join': {
-        const corner = this.corners.indexOf(player.id);
-        const classes = setUpPlayer(this.sim, player.id, CORNERS[corner], STARTING_CREDITS);
-        this.announce(player, classes);
-        const bot = this.bots.get(player.id);
-        if (bot) {
-          const set = setUpBot(this.sim, bot.id, CORNERS[bot.corner], player.id);
-          bot.controller = set.bot;
-          // Everyone needs the bot's class shapes to draw its units; nobody sees its programs.
-          this.broadcast({ t: 'blueprints', list: set.classes.map(toInfo) });
-        }
+      case 'join':
+        this.setUpSide(player);
         return;
-      }
+      case 'forfeit':
+        this.removeForces(player.id);
+        return;
       case 'leave': {
         const bot = this.bots.get(player.id);
-        for (const e of this.sim.world.query(this.sim.unit.def)) {
-          const owner = this.sim.unit.f.owner[e];
-          if (owner === player.id || owner === bot?.id) this.sim.destroyEntity(e);
-        }
+        this.removeForces(player.id, bot?.id);
         this.corners[this.corners.indexOf(player.id)] = 0;
         if (bot) {
           this.corners[bot.corner] = 0;
@@ -557,7 +684,20 @@ export class Match {
   }
 
   private handle(player: Player, msg: ClientMessage): void {
+    const phase: ClientPhase = !this.started ? 'lobby' : player.spectating ? 'spectating' : 'playing';
+    // Spectators only watch, and nothing can be ordered before the match starts.
+    if (!messageAllowed(phase, msg.t)) return;
     switch (msg.t) {
+      case 'startGame':
+        if (!this.started && this.host === player && this.players.size >= this.minPlayers) this.startMatch();
+        return;
+      case 'spectate':
+        // Only those who are out (or once the match is decided) may watch the whole map.
+        if (this.started && !player.spectating && (player.defeated || this.over)) {
+          player.spectating = true;
+          this.sendWelcome(player);
+        }
+        return;
       case 'setName': {
         // eslint-disable-next-line no-control-regex
         const name = msg.name.replace(/[\u0000-\u001f\u007f<>&"]/g, '').trim().slice(0, 16);
@@ -573,6 +713,11 @@ export class Match {
         return;
       }
       case 'loadDesigns': {
+        if (phase !== 'playing') {
+          // The classes don't exist yet (or the player is only watching): say so, so the client's store recovers.
+          this.send(player, { t: 'designsLoaded', reason: msg.reason, defined: 0, updated: 0, retired: 0, errors: ['Designs can only be changed during a match you are playing in.'] });
+          return;
+        }
         const report = this.sim.loadDesigns(player.id, msg.classes, MAX_CLASSES_PER_PLAYER, msg.merge === true);
         if (report.changed.length) this.broadcast({ t: 'blueprints', list: report.changed.map(toInfo) });
         for (const bp of report.programs) this.send(player, { t: 'program', blueprint: bp.id, source: bp.program?.source ?? '' });

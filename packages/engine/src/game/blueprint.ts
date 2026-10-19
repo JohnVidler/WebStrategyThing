@@ -1,6 +1,6 @@
 import type { Program } from '../vm/types';
 import { PARTS, SWITCHABLE, type PartDef, type WeaponKind } from './parts';
-import { BASE_LINK_RANGE, BASE_STACK, BUILD_TIME_BASE, BUILD_TIME_PER_MASS, COST_PER_MASS, CYCLE_COST, PRODUCTION_ENERGY_BY_SLOT, PRODUCTION_ENERGY_PER_MODULE, REPAIR_ARMOR_MULTIPLIER, REPAIR_MATTER_PER_HP, SPEED_FACTOR, TILE } from './rules';
+import { ANTENNA_THROUGHPUT_PER_TILE, BASE_LINK_RANGE, BASE_STACK, BUILD_TIME_BASE, BUILD_TIME_PER_MASS, COST_PER_MASS, CYCLE_COST, PRODUCTION_ENERGY_BY_SLOT, PRODUCTION_ENERGY_PER_MODULE, REPAIR_ARMOR_MULTIPLIER, REPAIR_MATTER_PER_HP, SPEED_FACTOR, TILE } from './rules';
 import { TESLA_COOLDOWN, TESLA_RANGE } from './rules';
 
 /** Converts total thrust / mass into sub-tile units per tick. */
@@ -72,6 +72,8 @@ export interface BlueprintStats {
   readonly wind: number;
   /** Tiles a power link reaches from this building's edge. */
   readonly linkRange: number;
+  /** Energy per tick a long (antenna) link from this building can carry; 0 without an antenna. */
+  readonly linkThroughput: number;
   readonly energyCapacity: number;
   /** Energy per 100 CPU cycles / per tick moving / per scan / per tick harvesting / per tick producing. */
   readonly cpuUse: number;
@@ -158,7 +160,7 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
   let hp = 0, mass = 0, memory = 0, stack = BASE_STACK, energy = 0, fullCycles = 0;
   let cycles = 0, cpuUse = 0, thrust = 0, motorUse = 0, flying = false;
   let sensor = 0, sensorUse = 0, cargo = 0, rate = 0, cargoUse = 0;
-  let factory = false, factoryUse = 0, silo = 0, charge = 0, solar = 0, wind = 0, antenna = 0, banks = 0;
+  let factory = false, factoryUse = 0, silo = 0, charge = 0, solar = 0, wind = 0, antenna = 0, antennas = 0, banks = 0;
   let buildRate = 0, builderUse = 0, radarMax = 0, buildEnergy = 0, repairRate = 0, repairUse = 0, armorHp = 0;
   let weapon: BlueprintStats['weapon'] = null;
 
@@ -220,6 +222,7 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
         break;
       case 'antenna':
         antenna = Math.max(antenna, d.antennaRange ?? 0);
+        antennas++;
         break;
       case 'radar':
         radarMax = Math.max(radarMax, d.radarMaxEnergy ?? 0);
@@ -274,6 +277,7 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
     solar,
     wind,
     linkRange: Math.max(BASE_LINK_RANGE, antenna),
+    linkThroughput: antennas * (structure ? (frame.footprint ?? 1) : 0) * ANTENNA_THROUGHPUT_PER_TILE,
     energyCapacity: energy,
     cpuUse,
     motorUse,

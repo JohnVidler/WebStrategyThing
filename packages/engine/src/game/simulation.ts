@@ -31,8 +31,8 @@ import {
 } from './components';
 import { PARTS, SWITCHABLE, TILE } from './parts';
 import { findPath } from './path';
-import { gap, powerLinks, powerNetworks, type PowerNetwork, type PowerNode } from './power';
-import { BUILD_RANGE, BUILDING_BUILD_RANGE, BUILDING_TRANSFER_RANGE, DEMOLISH_REFUND, DOCK_RANGE, HARVEST_RANGE, MAX_PRODUCTION_QUEUE, MAX_SITES_PER_PLAYER, RADAR_COOLDOWN_TICKS, RADAR_ENERGY_PER_TILE, SITE_START_HP, UNIT_TRANSFER_RANGE } from './rules';
+import { emptyNetwork, powerLinks, powerNetworks, powerTopology, type PowerNetwork, type PowerNode } from './power';
+import { BASE_LINK_RANGE, BUILD_RANGE, BUILDING_BUILD_RANGE, BUILDING_TRANSFER_RANGE, DEMOLISH_REFUND, DOCK_RANGE, HARVEST_RANGE, MAX_PRODUCTION_QUEUE, MAX_SITES_PER_PLAYER, RADAR_COOLDOWN_TICKS, RADAR_ENERGY_PER_TILE, SITE_START_HP, UNIT_TRANSFER_RANGE } from './rules';
 import { SpatialGrid } from './spatial';
 import { inVision, viewersOf } from './vision';
 import {
@@ -425,16 +425,32 @@ export class Simulation {
     return report;
   }
 
-  /** Nearest own construction site to e, or -1. */
+  /**
+   * Best own construction site for e, or -1. Sites no other builder has claimed come
+   * first (nearest of those); builders only pile onto a shared site once every site
+   * has someone, then they pick the least crowded, nearest first.
+   */
   nearestSite(e: number): number {
     const owner = this.unit.f.owner[e];
+    const claims = new Map<number, number>();
+    for (const b of this.builder.dense) {
+      if (b === e || this.unit.f.owner[b] !== owner) continue;
+      const q = this.tasks[b];
+      let site = -1;
+      if (q && q.count > 0 && q.type(0) === TaskType.Build) site = this.world.resolve(q.target(0));
+      else site = this.world.resolve(this.builder.f.target[b]);
+      if (site >= 0) claims.set(site, (claims.get(site) ?? 0) + 1);
+    }
     let best = -1;
+    let bestC = Infinity;
     let bestD = Infinity;
     for (const s of this.construction.dense) {
       if (this.unit.f.owner[s] !== owner) continue;
+      const c = claims.get(s) ?? 0;
       const d = this.edgeDistance(e, s);
-      if (d < bestD) {
+      if (c < bestC || (c === bestC && d < bestD)) {
         best = s;
+        bestC = c;
         bestD = d;
       }
     }
@@ -793,7 +809,46 @@ export class Simulation {
       }
     }
     const flags = TaskFlag.Player | (queue ? 0 : TaskFlag.Urgent);
-    return this.tasks[e]!.push(type, this.clampTile(x, this.config.width), this.clampTile(y, this.config.height), handle, flags);
+    x = this.clampTile(x, this.config.width);
+    y = this.clampTile(y, this.config.height);
+    if (type === TaskType.Move && handle < 0) [x, y] = this.freeMoveTile(e, x, y);
+    return this.tasks[e]!.push(type, x, y, handle, flags);
+  }
+
+  /**
+   * Nearest walkable tile to (x, y) that no other unit is parked on or already
+   * ordered to, so a group sent to one point spreads out around it.
+   */
+  freeMoveTile(e: number, x: number, y: number): [number, number] {
+    const taken = new Set<number>();
+    const w = this.config.width;
+    for (const o of this.unit.dense) {
+      if (o === e || this.stats(o).structure) continue;
+      const q = this.tasks[o];
+      if (q) {
+        for (let i = 0; i < q.count; i++) if (q.type(i) === TaskType.Move && q.target(i) < 0) taken.add(q.y(i) * w + q.x(i));
+      }
+      if (this.motion.has(o) && !this.motion.f.moving[o]) taken.add(this.tileY(this.pos.f.y[o]) * w + this.tileX(this.pos.f.x[o]));
+    }
+    const free = (i: number, j: number) => i >= 0 && j >= 0 && i < w && j < this.config.height && this.terrain.walkable(i, j) && !taken.has(j * w + i);
+    if (free(x, y)) return [x, y];
+    const max = 30;
+    for (let r = 1; r <= max; r++) {
+      let best: [number, number] | null = null;
+      let bestD = Infinity;
+      for (let j = y - r; j <= y + r; j++) {
+        for (let i = x - r; i <= x + r; i++) {
+          if (Math.max(Math.abs(i - x), Math.abs(j - y)) !== r || !free(i, j)) continue;
+          const d = (i - x) ** 2 + (j - y) ** 2;
+          if (d < bestD) {
+            bestD = d;
+            best = [i, j];
+          }
+        }
+      }
+      if (best) return best;
+    }
+    return [x, y];
   }
 
   issueStop(owner: number, e: number, queue: boolean): boolean {
@@ -840,7 +895,10 @@ export class Simulation {
     }
     const flags = TaskFlag.Player | (queue ? 0 : TaskFlag.Urgent);
     const handle = goal >= 0 ? this.world.handle(goal) : -1;
-    return this.tasks[e]!.push(task, this.clampTile(x, this.config.width), this.clampTile(y, this.config.height), handle, flags);
+    x = this.clampTile(x, this.config.width);
+    y = this.clampTile(y, this.config.height);
+    if (task === TaskType.Move) [x, y] = this.freeMoveTile(e, x, y);
+    return this.tasks[e]!.push(task, x, y, handle, flags);
   }
 
   /**
@@ -1091,12 +1149,21 @@ export class Simulation {
     const ids = powerNetworks(nodes);
     this.networks = [];
     nodes.forEach((n, i) => {
-      const net = (this.networks[ids[i]] ??= { members: [], supply: 0, demand: 0, stored: 0, capacity: 0, depot: false, linkTiles: 0, flow: [] });
+      const net = (this.networks[ids[i]] ??= emptyNetwork());
       net.members.push(n.e);
       if (this.stockpile.has(n.e)) net.depot = true;
       this.networkOf[n.e] = ids[i];
     });
-    for (const [i, j] of powerLinks(nodes)) this.networks[ids[i]].linkTiles += gap(nodes[i], nodes[j]);
+    // Short links (and links to construction sites) join clusters; long antenna links are capped bridges.
+    // A long link exists because an end's reach covers it, and carries what the stronger such end can.
+    const through = (n: PowerNode, g: number) => (n.reach >= g ? this.stats(n.e).linkThroughput : 0);
+    const { topologies, linkTiles } = powerTopology(nodes, ids, powerLinks(nodes), BASE_LINK_RANGE, (i, j, g) =>
+      Math.max(through(nodes[i], g), through(nodes[j], g)),
+    );
+    this.networks.forEach((net, id) => {
+      Object.assign(net, topologies[id]);
+      net.linkTiles = linkTiles[id];
+    });
     this.powerDirty = false;
   }
 

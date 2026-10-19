@@ -22,6 +22,7 @@ describe('radar over the wire', () => {
     const match = new Match({ mode: 'coop', mapId: 'small-basin' });
     const sock = new FakeSocket();
     match.join(sock as unknown as WebSocket);
+    match.receive(sock as unknown as WebSocket, { t: 'startGame' });
     const tick = () => (match as unknown as { tick(): void }).tick();
     for (let i = 0; i < 3; i++) tick();
     const id = sock.messages.find((m) => m.t === 'welcome')!.playerId as number;

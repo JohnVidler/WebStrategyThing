@@ -1,7 +1,8 @@
 import { createReadStream } from 'node:fs';
-import { readFile, stat } from 'node:fs/promises';
+import { stat } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { basename, extname, resolve } from 'node:path';
+import { readManifest } from './manifest';
 
 /** Where the (separately distributed) music files and music_manifest.json live. */
 export const MUSIC_DIR = resolve(process.env.MUSIC_DIR ?? resolve(import.meta.dirname, '../../../music'));
@@ -33,13 +34,7 @@ const text = (v: unknown) => (typeof v === 'string' ? v : '');
 
 /** Manifest entries whose file exists and has a playable type. Missing manifest or folder: no music. */
 export async function loadTracks(dir = MUSIC_DIR): Promise<MusicTrack[]> {
-  let raw: unknown;
-  try {
-    raw = JSON.parse(await readFile(resolve(dir, MANIFEST), 'utf8'));
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(raw)) return [];
+  const raw = await readManifest(dir, MANIFEST);
   const tracks: MusicTrack[] = [];
   for (const item of raw as Record<string, unknown>[]) {
     // Manifest paths are relative to the project root ("music/x.mp3"): only the file name matters here.

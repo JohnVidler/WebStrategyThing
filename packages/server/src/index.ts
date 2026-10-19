@@ -3,6 +3,7 @@ import { DEFAULT_PORT, mapById, parseClientMessage, parseGameMode } from '@wst/e
 import { WebSocketServer } from 'ws';
 import { Match } from './match';
 import { loadTracks, sendTrack } from './music';
+import { loadSounds, sendSound } from './sound';
 
 const port = Number(process.env.PORT ?? DEFAULT_PORT);
 const MAX_ROOMS = 20;
@@ -10,6 +11,7 @@ const API_ROOT = '/api/v1';
 const ROOMS_PATH = `${API_ROOT}/rooms`;
 const SOCKET_PATH = `${API_ROOT}/ws`;
 const MUSIC_PATH = `${API_ROOT}/music`;
+const SOUND_PATH = `${API_ROOT}/sound`;
 const MENU_PATH = `${API_ROOT}/menu`;
 /** Presence sockets of players who are on the menu rather than in a match. */
 const menuSockets = new Set<unknown>();
@@ -39,6 +41,23 @@ const http = createServer((req, res) => {
     void sendTrack(req, res, file).catch(() => (res.headersSent ? res.destroy() : res.writeHead(500).end()));
     return;
   }
+  if ((req.method === 'GET' || req.method === 'HEAD') && path === SOUND_PATH) {
+    void loadSounds().then((bank) => {
+      res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      res.end(JSON.stringify(bank));
+    });
+    return;
+  }
+  if ((req.method === 'GET' || req.method === 'HEAD') && path.startsWith(`${SOUND_PATH}/`)) {
+    let file = '';
+    try {
+      file = decodeURIComponent(path.slice(SOUND_PATH.length + 1));
+    } catch {
+      // malformed escape: falls through to 404
+    }
+    void sendSound(req, res, file).catch(() => (res.headersSent ? res.destroy() : res.writeHead(500).end()));
+    return;
+  }
   if (req.method === 'GET' && path === MENU_PATH) {
     res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*', 'cache-control': 'no-store' });
     res.end(JSON.stringify({ players: menuSockets.size }));
@@ -60,6 +79,7 @@ const http = createServer((req, res) => {
       over: match.isOver,
       elapsed: match.elapsedSeconds,
       paused: match.pauseReasons.length > 0,
+      lobby: match.inLobby,
       scores: match.roster(),
       }));
     res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*', 'cache-control': 'no-store' });

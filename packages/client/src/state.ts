@@ -86,8 +86,16 @@ export class ClientState {
   radarRings: { x: number; y: number; range: number; born: number }[] = [];
   /** Own power networks (owner-only reports from the server). */
   networks: NetworkInfo[] = [];
+  /** True while the Power meter is hovered: the renderer labels own buildings with their supply/load. */
+  showPowerLabels = false;
   /** Whether the server filters by vision (fog of war). */
   fog = false;
+  /** Watching the whole map without playing (after defeat or resigning). */
+  spectating = false;
+  /** The match has not started: the waiting room is up and nothing can be ordered. */
+  inLobby = false;
+  /** Out of forces while the match goes on, until they spectate or leave. */
+  defeated = false;
   /** Per tile: 2 = in view now, 1 = seen before, 0 = never seen. Updated by updateVision(). */
   vision = new Uint8Array(0);
   visionVersion = 0;

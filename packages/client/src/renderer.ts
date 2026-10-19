@@ -1,3 +1,4 @@
+import { buildSparksDone, drawBuildSparks, makeBuildSparks, type BuildSparks } from './buildSparks';
 import {
   Cargo,
   Construction,
@@ -20,7 +21,7 @@ import {
   type Blueprint,
   type TickInfo,
 } from '@wst/engine';
-import { AlphaFilter, Application, Container, Graphics, Sprite, type Texture } from 'pixi.js';
+import { AlphaFilter, Application, Container, Graphics, Sprite, Text, type Texture } from 'pixi.js';
 import { drawLook, lookOf } from './art';
 import { renderClassImage, TEX, TEX_RESOLUTION } from './artstudio';
 import type { ClientState } from './state';
@@ -52,9 +53,34 @@ const healthColour = (f: number) => (f > 0.6 ? 0x5bd68a : f > 0.3 ? 0xf5c542 : 0
 /** Tasks from class buttons. */
 const CUSTOM_TASK_COLOUR = 0xc792ea;
 const SHOT_MS = 180;
+const EXPLOSION_MS = 600;
+/** Extra lifetime per tile of blast radius, so a building's blast lingers longer than a unit's. */
+const EXPLOSION_MS_PER_TILE = 260;
+const EXPLOSION_COLOUR = 0xff3b30;
 const PULSE_MS = 450;
+/** A working charging pad sends out a slow green ring this often (see the engine's Charge event). */
+const CHARGE_PULSE_MS = 2000;
+const CHARGE_PULSE_COLOUR = 0x5dff9a;
 /** A repair effect lingers this long after the last repair event (events come every other tick). */
 const REPAIR_MS = 350;
+/** Build beams: cyan lasers that raster across the site. Lingers a little after the last build event. */
+const BUILD_BEAM_COLOUR = 0x4fd8ff;
+const BUILD_BEAM_MS = 350;
+/** Triangle wave 0..1..0 with the given period. */
+const pingPong = (t: number, period: number): number => {
+  const f = (t / period) % 1;
+  return f < 0.5 ? f * 2 : 2 - f * 2;
+};
+/** The Power meter's colours (`--good` / `--bad` in style.css). */
+const POWER_GOOD = 0x5bd68a;
+const POWER_BAD = 0xff6b5b;
+/** Damage numbers drift up this many tiles while fading out over this long. */
+const DAMAGE_NUMBER_MS = 900;
+const DAMAGE_NUMBER_RISE = 1.2;
+/** Finished damage-number texts kept for reuse. */
+const DAMAGE_TEXT_POOL = 64;
+/** Font for the floating texts drawn in the map (damage numbers, power labels). */
+const TEXT_FONT = 'ui-monospace, Consolas, monospace';
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 8;
 /** Power-flow dots: spacing in tiles, and speed in tiles per second. */
@@ -73,10 +99,59 @@ const PING_MS = 500;
 export const ownerColour = (owner: number) =>
   owner === 0 ? OWNER_COLOURS[0] : OWNER_COLOURS[1 + ((owner - 1) % (OWNER_COLOURS.length - 1))];
 
+/** A red ring that expands from where a unit or building died; x, y and radius are in tiles. */
+/** One flying fragment of an explosion; angle and speed are fixed when it spawns. */
+interface Fragment {
+  angle: number;
+  /** Distance travelled by the end, in blast radii. */
+  reach: number;
+  size: number;
+}
+
+interface Explosion {
+  x: number;
+  y: number;
+  radius: number;
+  born: number;
+  /** Bigger blasts last longer. */
+  ms: number;
+  sparks: Fragment[];
+  debris: Fragment[];
+  smoke: Fragment[];
+}
+
+/** Rolls the random fragments for one blast; bigger blasts throw more of them. */
+function makeExplosion(x: number, y: number, radius: number, born: number): Explosion {
+  const fragments = (n: number, reach: [number, number], size: [number, number]): Fragment[] =>
+    Array.from({ length: n }, () => ({
+      angle: Math.random() * Math.PI * 2,
+      reach: reach[0] + Math.random() * (reach[1] - reach[0]),
+      size: size[0] + Math.random() * (size[1] - size[0]),
+    }));
+  const big = Math.min(3, radius);
+  return {
+    x,
+    y,
+    radius,
+    born,
+    ms: EXPLOSION_MS + EXPLOSION_MS_PER_TILE * radius,
+    sparks: fragments(Math.round(10 + big * 6), [1.1, 2.2], [1.5, 2.5]),
+    debris: fragments(Math.round(4 + big * 3), [0.8, 1.7], [1.5, 3.5]),
+    smoke: fragments(Math.round(3 + big * 2), [0.1, 0.7], [0.3, 0.5]),
+  };
+}
+
 interface Pulse {
   e: number;
   born: number;
   colour: number;
+}
+
+interface BuildBeam {
+  a: number;
+  b: number;
+  /** Time of the latest build event for this pair. */
+  last: number;
 }
 
 interface Repair {
@@ -140,6 +215,17 @@ export class Renderer {
   private readonly radarSprites: Sprite[] = [];
   private fogDrawnFor = '';
   private readonly overlay = new Graphics();
+  /** Floating damage numbers; they rise and fade over DAMAGE_NUMBER_MS. */
+  private readonly damageLayer = new Container();
+  private damageNumbers: { text: Text; x: number; y: number; born: number }[] = [];
+  /** Finished damage-number texts, kept for reuse: building a Pixi Text renders a canvas texture. */
+  private readonly damageTextPool: Text[] = [];
+  /** Supply/load labels shown while the Power meter is hovered, by building. */
+  private readonly powerLabelLayer = new Container();
+  private readonly powerLabels = new Map<number, Text>();
+  private readonly powerLabelColour = new WeakMap<Text, number>();
+  /** Last health seen per entity, to spot drops. */
+  private readonly lastHp = new Map<number, number>();
   private readonly ghost = new Sprite();
   private readonly sprites = new Map<number, Sprite>();
   private readonly textures = new Map<string, Texture>();
@@ -153,7 +239,13 @@ export class Renderer {
   private curY = new Float32Array(1024);
   private shots: Shot[] = [];
   private pulses: Pulse[] = [];
+  private chargePulses: Pulse[] = [];
+  private explosions: Explosion[] = [];
+  private buildSparks: BuildSparks[] = [];
+  /** Blast radius in tiles per entity, remembered while alive because stats are gone once it dies. */
+  private readonly blastRadius = new Map<number, number>();
   private repairs = new Map<string, Repair>();
+  private buildBeams = new Map<string, BuildBeam>();
   private lastTickAt = 0;
   private alpha = 1;
   private tickMs = 100;
@@ -181,7 +273,7 @@ export class Renderer {
     this.ghost.alpha = 0.55;
     this.ghost.visible = false;
     this.zoneLayer.filters = [new AlphaFilter({ alpha: CHARGE_ZONE_ALPHA })];
-    app.stage.addChild(this.backdrop, this.zoneLayer, this.linkLayer, this.layer, this.fogLayer, this.radarLayer, this.overlay, this.ghost);
+    app.stage.addChild(this.backdrop, this.zoneLayer, this.linkLayer, this.layer, this.fogLayer, this.radarLayer, this.overlay, this.damageLayer, this.powerLabelLayer, this.ghost);
     app.ticker.add(() => this.frame());
   }
 
@@ -264,6 +356,13 @@ export class Renderer {
     return { x: (sx - this.offX) / this.scale, y: (sy - this.offY) / this.scale };
   }
 
+  /** The middle of the view in tiles, and how far from it things can still be heard (a little past the screen corners). */
+  listener(): { x: number; y: number; radius: number } {
+    const { width, height } = this.app.screen;
+    const centre = this.screenToTile(width / 2, height / 2);
+    return { x: centre.x, y: centre.y, radius: (Math.hypot(width, height) / 2 / this.scale) * 1.2 };
+  }
+
   private tileX(e: number): number {
     return this.prevX[e] + (this.curX[e] - this.prevX[e]) * this.alpha;
   }
@@ -320,16 +419,24 @@ export class Renderer {
   sync(info: TickInfo): void {
     const world = this.state.world;
     this.ensureCapacity(world.capacity);
+    // Entities that die this tick keep their blast radius until the Death event below uses it.
+    const dying = new Set<number>();
+    for (let i = 0; i < info.events.length; i += 3) if (info.events[i] === SimEvent.Death) dying.add(info.events[i + 1]);
     if (info.full) {
       for (const s of this.sprites.values()) s.destroy();
       this.sprites.clear();
       this.facing.clear();
+      this.lastHp.clear();
+      this.blastRadius.clear();
     }
     for (const e of world.despawned) {
       this.sprites.get(e)?.destroy();
       this.sprites.delete(e);
       this.routes.delete(e);
       this.facing.delete(e);
+      // Forget what was seen: an entity that comes back (or an id that is reused) starts afresh.
+      this.lastHp.delete(e);
+      if (!dying.has(e)) this.blastRadius.delete(e);
     }
 
     // Last tick's target becomes this tick's interpolation origin.
@@ -355,7 +462,10 @@ export class Renderer {
 
     const unit = world.store(Unit);
     for (const e of unit.changed) {
-      if (unit.has(e)) this.ensureSprite(e, this.unitTexture(this.state.blueprints.get(unit.f.blueprint[e]), unit.f.owner[e]));
+      if (!unit.has(e)) continue;
+      this.ensureSprite(e, this.unitTexture(this.state.blueprints.get(unit.f.blueprint[e]), unit.f.owner[e]));
+      const st = this.state.stats(e);
+      this.blastRadius.set(e, st?.structure ? st.footprint * 0.75 : 0.9);
     }
 
     const res = world.store(Resource);
@@ -366,6 +476,19 @@ export class Renderer {
 
     const health = world.store(Health);
     const sites = world.store(Construction);
+    const spawnedAt = performance.now();
+    for (const e of health.changed) {
+      if (!health.has(e)) {
+        this.lastHp.delete(e);
+        continue;
+      }
+      const hp = health.f.hp[e];
+      const before = this.lastHp.get(e);
+      this.lastHp.set(e, hp);
+      if (before !== undefined && hp < before && this.sprites.has(e)) {
+        this.spawnDamageNumber(e, Math.round(before - hp), spawnedAt);
+      }
+    }
     for (const e of [...health.changed, ...sites.changed, ...sites.removed]) {
       const s = this.sprites.get(e);
       if (!s || !health.has(e)) continue;
@@ -381,10 +504,38 @@ export class Renderer {
     }
 
     const now = performance.now();
+    // A construction site that finishes (and is still standing) sends sparks out along the grid.
+    for (const e of sites.removed) {
+      if (!unit.has(e) || !world.isAlive(e) || !this.sprites.has(e)) continue;
+      const f = this.state.footprint(e);
+      this.buildSparks.push(makeBuildSparks(f.x, f.y, f.size, now));
+    }
     for (let i = 0; i < info.events.length; i += 3) {
+      if (info.events[i] === SimEvent.Charge) {
+        const a = info.events[i + 1];
+        this.chargePulses.push({ e: a, born: now, colour: CHARGE_PULSE_COLOUR });
+        continue;
+      }
       if (info.events[i] === SimEvent.Pulse) {
         const a = info.events[i + 1];
         this.pulses.push({ e: a, born: now, colour: ownerColour(unit.f.owner[a]) });
+        continue;
+      }
+      if (info.events[i] === SimEvent.Death) {
+        const a = info.events[i + 1];
+        this.explosions.push(makeExplosion(this.curX[a], this.curY[a], this.blastRadius.get(a) ?? 0.9, now));
+        this.blastRadius.delete(a);
+        continue;
+      }
+      if (info.events[i] === SimEvent.Build) {
+        const a = info.events[i + 1];
+        const b = info.events[i + 2];
+        this.buildBeams.set(`${a}:${b}`, { a, b, last: now });
+        // Now and then the site throws off a spark or two along the grid.
+        if (Math.random() < 0.1 && this.buildSparks.length < 100 && this.sprites.has(b)) {
+          const f = this.state.footprint(b);
+          this.buildSparks.push(makeBuildSparks(f.x, f.y, f.size, now, 1 + Math.floor(Math.random() * 2)));
+        }
         continue;
       }
       if (info.events[i] === SimEvent.Repair) {
@@ -398,6 +549,84 @@ export class Renderer {
       this.shots.push({ a, b: info.events[i + 2], born: now, colour: ownerColour(unit.f.owner[a]) });
     }
     this.lastTickAt = now;
+  }
+
+  /** Pins a number to the spot (in tiles) just above the entity that was hit. */
+  private spawnDamageNumber(e: number, amount: number, now: number): void {
+    if (amount <= 0) return;
+    const text =
+      this.damageTextPool.pop() ??
+      new Text({
+        text: '',
+        style: { fontFamily: TEXT_FONT, fontSize: 14, fontWeight: 'bold', fill: 0xffe08a, stroke: { color: 0x000000, width: 3 } },
+      });
+    text.text = String(amount);
+    text.anchor.set(0.5, 1);
+    text.alpha = 1;
+    this.damageLayer.addChild(text);
+    const half = this.state.stats(e)?.structure ? (this.state.stats(e)?.footprint ?? 1) / 2 : 0.5;
+    // Small sideways jitter so simultaneous hits don't stack exactly.
+    this.damageNumbers.push({ text, x: this.curX[e] + (Math.random() - 0.5) * 0.4, y: this.curY[e] - half, born: now });
+  }
+
+  private drawDamageNumbers(now: number): void {
+    this.damageNumbers = this.damageNumbers.filter((d) => {
+      const age = (now - d.born) / DAMAGE_NUMBER_MS;
+      if (age >= 1) {
+        this.damageLayer.removeChild(d.text);
+        if (this.damageTextPool.length < DAMAGE_TEXT_POOL) this.damageTextPool.push(d.text);
+        else d.text.destroy();
+        return false;
+      }
+      d.text.position.set(this.offX + d.x * this.scale, this.offY + (d.y - age * DAMAGE_NUMBER_RISE) * this.scale);
+      d.text.alpha = 1 - age * age;
+      return true;
+    });
+  }
+
+  /**
+   * While the Power meter is hovered, labels every on-screen own building with the
+   * energy per tick it supplied (+, green) or drew (-, red) last tick, in the meter's colours.
+   */
+  private drawPowerLabels(): void {
+    const wanted = new Map<number, number>();
+    if (this.state.showPowerLabels) {
+      const { width, height } = this.app.screen;
+      for (const net of this.state.networks) {
+        net.members.forEach((e, i) => {
+          const flow = net.flow[i] ?? 0;
+          if (flow === 0 || !this.sprites.has(e)) return;
+          wanted.set(e, flow);
+        });
+      }
+      for (const [e, flow] of wanted) {
+        const p = this.screenOf(e);
+        if (p.x < 0 || p.y < 0 || p.x > width || p.y > height) {
+          wanted.delete(e);
+          continue;
+        }
+        let label = this.powerLabels.get(e);
+        if (!label) {
+          label = new Text({ text: '', style: { fontFamily: TEXT_FONT, fontSize: 13, fontWeight: 'bold', fill: 0xffffff, stroke: { color: 0x000000, width: 3 } } });
+          label.anchor.set(0.5);
+          this.powerLabelLayer.addChild(label);
+          this.powerLabels.set(e, label);
+        }
+        const text = flow < 0 ? `+${-flow}` : `-${flow}`;
+        if (label.text !== text) label.text = text;
+        const colour = flow < 0 ? POWER_GOOD : POWER_BAD;
+        if (this.powerLabelColour.get(label) !== colour) {
+          label.style.fill = colour; // restyling re-renders the text's texture, so only when it changes
+          this.powerLabelColour.set(label, colour);
+        }
+        label.position.set(p.x, p.y);
+      }
+    }
+    for (const [e, label] of this.powerLabels) {
+      if (wanted.has(e)) continue;
+      label.destroy();
+      this.powerLabels.delete(e);
+    }
   }
 
   /** Blueprint info can arrive after units; re-skin everything (rare). */
@@ -433,6 +662,8 @@ export class Renderer {
     this.drawFog();
     this.drawRadar();
     this.drawOverlay(now);
+    this.drawDamageNumbers(now);
+    this.drawPowerLabels();
     this.drawGhost();
   }
 
@@ -558,7 +789,10 @@ export class Renderer {
           }
           const start = x;
           while (x < width && v[y * width + x] === level) x++;
-          g.rect(this.offX + start * this.scale, this.offY + y * this.scale, (x - start) * this.scale, this.scale + 0.5);
+          // Pixel-snapped edges: neighbouring rows meet exactly, since an overlap would double the translucent fill into a visible seam.
+          const left = Math.round(this.offX + start * this.scale);
+          const top = Math.round(this.offY + y * this.scale);
+          g.rect(left, top, Math.round(this.offX + x * this.scale) - left, Math.round(this.offY + (y + 1) * this.scale) - top);
         }
       }
       g.fill({ color: 0x05070a, alpha });
@@ -736,6 +970,24 @@ export class Renderer {
       g.circle(c.x, c.y, (range / TILE) * this.scale * age).fill({ color: p.colour, alpha: 0.15 * (1 - age) });
     }
 
+    this.chargePulses = this.chargePulses.filter((p) => now - p.born < CHARGE_PULSE_MS && this.sprites.has(p.e));
+    for (const p of this.chargePulses) {
+      const c = this.screenOf(p.e);
+      const footprint = this.state.stats(p.e)?.footprint ?? 1;
+      const age = (now - p.born) / CHARGE_PULSE_MS;
+      const full = (chargeZoneRadius(footprint) / TILE) * this.scale;
+      const r = full * (0.15 + 0.85 * (1 - (1 - age) * (1 - age))); // eases out to the edge of the charge zone
+      const fade = (1 - age) * Math.min(1, age * 8);
+      g.circle(c.x, c.y, r).fill({ color: p.colour, alpha: 0.12 * fade });
+      g.circle(c.x, c.y, r).stroke({ width: Math.max(2, this.scale * 0.1), color: p.colour, alpha: 0.7 * fade });
+    }
+
+    this.buildSparks = this.buildSparks.filter((x) => !buildSparksDone(x, now));
+    for (const x of this.buildSparks) drawBuildSparks(g, x, now, this.offX, this.offY, this.scale);
+
+    this.explosions = this.explosions.filter((x) => now - x.born < x.ms);
+    for (const x of this.explosions) this.drawExplosion(g, x, now);
+
     this.shots = this.shots.filter((s) => now - s.born < SHOT_MS && this.sprites.has(s.a) && this.sprites.has(s.b));
     for (const s of this.shots) {
       const a = this.screenOf(s.a);
@@ -744,6 +996,7 @@ export class Renderer {
     }
 
     this.drawRepairs(g, now);
+    this.drawBuildBeams(g, now);
 
     const pings = this.view.pings;
     for (let i = pings.length - 1; i >= 0; i--) {
@@ -799,6 +1052,99 @@ export class Renderer {
    * from the repairer to the target, a breathing ring on the target, and little crosses
    * rising from it (the classic "healing" glyph).
    */
+  /** Flash, fireball, shockwaves, sparks, debris and smoke; every motion eases out. */
+  private drawExplosion(g: Graphics, x: Explosion, now: number): void {
+    const t = (now - x.born) / x.ms;
+    const out = 1 - (1 - t) ** 3;
+    const cx = this.offX + x.x * this.scale;
+    const cy = this.offY + x.y * this.scale;
+    const R = x.radius * this.scale;
+
+    // Light: a bright flash in the first moments, then a warm glow that fades with the fireball.
+    const flash = Math.max(0, 1 - t / 0.2);
+    if (flash > 0) {
+      g.circle(cx, cy, R * 2.6).fill({ color: 0xffd27a, alpha: 0.14 * flash });
+      g.circle(cx, cy, R * 1.7).fill({ color: 0xffe9a8, alpha: 0.3 * flash });
+      g.circle(cx, cy, R * 0.9).fill({ color: 0xffffff, alpha: 0.85 * flash });
+    }
+    const glow = (1 - t) ** 2;
+    g.circle(cx, cy, R * 2.2).fill({ color: 0xff7a1a, alpha: 0.1 * glow });
+    g.circle(cx, cy, R * 1.4).fill({ color: 0xff9a2e, alpha: 0.14 * glow });
+
+    // Smoke: dark puffs that drift up and swell once the fireball dies back.
+    const smokeT = Math.max(0, (t - 0.15) / 0.85);
+    if (smokeT > 0) {
+      const ease = 1 - (1 - smokeT) ** 2;
+      for (const f of x.smoke) {
+        const d = R * f.reach * ease;
+        const px = cx + Math.cos(f.angle) * d;
+        const py = cy + Math.sin(f.angle) * d - R * 0.6 * ease;
+        g.circle(px, py, R * f.size * (0.5 + ease)).fill({ color: 0x2a2d33, alpha: 0.4 * (1 - smokeT) });
+      }
+    }
+
+    // Fireball: hot core inside an orange body, shrinking in brightness as it grows.
+    const body = R * (0.25 + 0.55 * out);
+    g.circle(cx, cy, body).fill({ color: 0xff8a1f, alpha: 0.55 * (1 - t) });
+    g.circle(cx, cy, body * 0.6).fill({ color: 0xffd36a, alpha: 0.7 * (1 - t) ** 1.5 });
+
+    // Shockwaves: the original red ring, plus a thin fast white one ahead of it.
+    g.circle(cx, cy, R * (0.2 + 0.8 * out)).fill({ color: EXPLOSION_COLOUR, alpha: 0.2 * (1 - t) });
+    g.circle(cx, cy, R * (0.2 + 0.8 * out)).stroke({ width: 3, color: EXPLOSION_COLOUR, alpha: 1 - t });
+    g.circle(cx, cy, R * (0.3 + 1.2 * out)).stroke({ width: 1.5, color: 0xffffff, alpha: 0.6 * (1 - t) ** 2 });
+
+    // Sparks: bright streaks flung outwards, cooling from yellow to orange.
+    for (const f of x.sparks) {
+      const head = R * f.reach * out;
+      const tail = R * f.reach * Math.max(0, out - 0.18);
+      const cos = Math.cos(f.angle);
+      const sin = Math.sin(f.angle);
+      g.moveTo(cx + cos * tail, cy + sin * tail)
+        .lineTo(cx + cos * head, cy + sin * head)
+        .stroke({ width: f.size, color: t < 0.4 ? 0xfff2a0 : 0xff9a2e, alpha: (1 - t) ** 1.5 });
+    }
+
+    // Debris: dark chunks that arc outwards and fall back under gravity.
+    for (const f of x.debris) {
+      const d = R * f.reach * out;
+      const px = cx + Math.cos(f.angle) * d;
+      const py = cy + Math.sin(f.angle) * d + R * 0.5 * t * t;
+      g.circle(px, py, f.size).fill({ color: t < 0.3 ? 0xffb347 : 0x3b3f47, alpha: 1 - t * t });
+    }
+  }
+
+  /**
+   * Build beams are a continuous laser, unlike shots (instant lines) and repair (dots):
+   * a thin cyan beam from the build arm to a point that rasters back and forth across the
+   * site's footprint, with a faint scan line left across the building at that row.
+   */
+  private drawBuildBeams(g: Graphics, now: number): void {
+    for (const [key, r] of this.buildBeams) {
+      if (now - r.last > BUILD_BEAM_MS || !this.sprites.has(r.a) || !this.sprites.has(r.b)) {
+        this.buildBeams.delete(key);
+        continue;
+      }
+      const a = this.screenOf(r.a);
+      const f = this.state.footprint(r.b);
+      const fade = 1 - (now - r.last) / BUILD_BEAM_MS;
+      const unit = this.scale;
+      const left = this.offX + f.x * unit;
+      const top = this.offY + f.y * unit;
+      const size = f.size * unit;
+      const rowY = top + size * (0.05 + 0.9 * pingPong(now + r.b * 137, 1800));
+      const hitX = left + size * (0.05 + 0.9 * pingPong(now * 1.0 + r.a * 71, 420));
+      // Scan line across the site at the current row.
+      g.moveTo(left, rowY).lineTo(left + size, rowY).stroke({ width: Math.max(1.5, unit * 0.05), color: BUILD_BEAM_COLOUR, alpha: 0.45 * fade });
+      // Beam: wide soft glow, bright core.
+      g.moveTo(a.x, a.y).lineTo(hitX, rowY).stroke({ width: Math.max(4, unit * 0.2), color: BUILD_BEAM_COLOUR, alpha: 0.14 * fade });
+      g.moveTo(a.x, a.y).lineTo(hitX, rowY).stroke({ width: Math.max(1.5, unit * 0.06), color: 0xe8fbff, alpha: 0.9 * fade });
+      // Hot spot where the beam lands, and a glint on the emitter.
+      g.circle(hitX, rowY, Math.max(3, unit * 0.14)).fill({ color: BUILD_BEAM_COLOUR, alpha: 0.35 * fade });
+      g.circle(hitX, rowY, Math.max(1.5, unit * 0.06)).fill({ color: 0xffffff, alpha: fade });
+      g.circle(a.x, a.y, Math.max(2, unit * 0.09)).fill({ color: BUILD_BEAM_COLOUR, alpha: 0.7 * fade });
+    }
+  }
+
   private drawRepairs(g: Graphics, now: number): void {
     for (const [key, r] of this.repairs) {
       if (now - r.last > REPAIR_MS || !this.sprites.has(r.a) || !this.sprites.has(r.b)) {
@@ -900,13 +1246,6 @@ export class Renderer {
 
     const g = this.backdrop.clear();
     g.rect(this.offX, this.offY, t.width * this.scale, t.height * this.scale).fill(0x161c24);
-    for (let y = 0; y < t.height; y++) {
-      for (let x = 0; x < t.width; x++) {
-        if (t.isPassable(x, y)) continue;
-        g.rect(this.offX + x * this.scale, this.offY + y * this.scale, this.scale + 0.5, this.scale + 0.5);
-      }
-    }
-    g.fill(0x343b47);
     for (let x = 0; x <= t.width; x += 8) {
       g.moveTo(this.offX + x * this.scale, this.offY).lineTo(this.offX + x * this.scale, this.offY + t.height * this.scale);
     }
@@ -914,18 +1253,93 @@ export class Renderer {
       g.moveTo(this.offX, this.offY + y * this.scale).lineTo(this.offX + t.width * this.scale, this.offY + y * this.scale);
     }
     g.stroke({ width: 1, color: 0x222a35, alpha: 0.6 });
+    // Rock is painted over the grid so the lines only show on open ground. Outer (convex) corners are
+    // rounded: a corner is rounded where both of its sides face tiles outside the shape being filled.
+    const rad = this.scale * 0.23;
+    const PI = Math.PI;
+    const open = (x: number, y: number) => t.isPassable(x, y);
+    const fillShape = (inShape: (x: number, y: number) => boolean) => {
+      for (let y = 0; y < t.height; y++) {
+        for (let x = 0; x < t.width; x++) {
+          if (!inShape(x, y)) continue;
+          const up = !inShape(x, y - 1);
+          const down = !inShape(x, y + 1);
+          const lf = !inShape(x - 1, y);
+          const rt = !inShape(x + 1, y);
+          const l = this.offX + x * this.scale;
+          const top = this.offY + y * this.scale;
+          const r = l + this.scale + 0.5;
+          const b = top + this.scale + 0.5;
+          const tl = up && lf ? rad : 0;
+          const tr = up && rt ? rad : 0;
+          const br = down && rt ? rad : 0;
+          const bl = down && lf ? rad : 0;
+          if (!(tl || tr || br || bl)) {
+            g.rect(l, top, this.scale + 0.5, this.scale + 0.5);
+            continue;
+          }
+          g.moveTo(l + tl, top).lineTo(r - tr, top);
+          if (tr) g.arc(r - tr, top + tr, tr, -PI / 2, 0);
+          g.lineTo(r, b - br);
+          if (br) g.arc(r - br, b - br, br, 0, PI / 2);
+          g.lineTo(l + bl, b);
+          if (bl) g.arc(l + bl, b - bl, bl, PI / 2, PI);
+          g.lineTo(l, top + tl);
+          if (tl) g.arc(l + tl, top + tl, tl, PI, PI * 1.5);
+          g.closePath();
+        }
+      }
+    };
+    fillShape((x, y) => !open(x, y));
+    g.fill(0x343b47);
+
+    // Depth into the rock: 1 at the edge, 2 where all eight neighbours are solid too, 3 where
+    // they are all depth 2 (the heart of a large outcrop). The map edge counts as solid.
+    const w = t.width;
+    const depth = new Uint8Array(w * t.height);
+    for (let i = 0; i < depth.length; i++) depth[i] = t.passable[i] ? 0 : 1;
+    const depthAt = (d: Uint8Array, x: number, y: number) => (t.inBounds(x, y) ? d[y * w + x] : 255);
+    for (let n = 2; n <= 3; n++) {
+      const prev = depth.slice();
+      for (let y = 0; y < t.height; y++) {
+        for (let x = 0; x < w; x++) {
+          if (prev[y * w + x] < n - 1) continue;
+          let deep = true;
+          for (let j = -1; j <= 1 && deep; j++) for (let i = -1; i <= 1 && deep; i++) deep = depthAt(prev, x + i, y + j) >= n - 1;
+          if (deep) depth[y * w + x] = n;
+        }
+      }
+    }
+    fillShape((x, y) => depthAt(depth, x, y) >= 2);
+    g.fill(0x414a58);
+    fillShape((x, y) => depthAt(depth, x, y) >= 3);
+    g.fill(0x4d5767);
 
     // Only the sides of solid tiles that face open ground are outlined, so walls read as shapes, not a grid.
     const s = this.scale;
     for (let y = 0; y < t.height; y++) {
       for (let x = 0; x < t.width; x++) {
-        if (t.isPassable(x, y)) continue;
+        if (open(x, y)) continue;
+        const up = open(x, y - 1);
+        const down = open(x, y + 1);
+        const lf = open(x - 1, y);
+        const rt = open(x + 1, y);
         const l = this.offX + x * s;
         const top = this.offY + y * s;
-        if (t.isPassable(x, y - 1)) g.moveTo(l, top).lineTo(l + s, top);
-        if (t.isPassable(x, y + 1)) g.moveTo(l, top + s).lineTo(l + s, top + s);
-        if (t.isPassable(x - 1, y)) g.moveTo(l, top).lineTo(l, top + s);
-        if (t.isPassable(x + 1, y)) g.moveTo(l + s, top).lineTo(l + s, top + s);
+        const r = l + s;
+        const b = top + s;
+        const tl = up && lf ? rad : 0;
+        const tr = up && rt ? rad : 0;
+        const br = down && rt ? rad : 0;
+        const bl = down && lf ? rad : 0;
+        if (up) g.moveTo(l + tl, top).lineTo(r - tr, top);
+        if (down) g.moveTo(l + bl, b).lineTo(r - br, b);
+        if (lf) g.moveTo(l, top + tl).lineTo(l, b - bl);
+        if (rt) g.moveTo(r, top + tr).lineTo(r, b - br);
+        if (tl) g.moveTo(l, top + tl).arc(l + tl, top + tl, tl, PI, PI * 1.5);
+        if (tr) g.moveTo(r - tr, top).arc(r - tr, top + tr, tr, -PI / 2, 0);
+        if (br) g.moveTo(r, b - br).arc(r - br, b - br, br, 0, PI / 2);
+        if (bl) g.moveTo(l + bl, b).arc(l + bl, b - bl, bl, PI / 2, PI);
       }
     }
     g.stroke({ width: Math.max(1.5, s * 0.12), color: 0x8a9bb5, alpha: 0.9, cap: 'square' });

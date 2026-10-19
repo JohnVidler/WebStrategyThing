@@ -1,4 +1,5 @@
 music/
+sound/
 node_modules/
 dist/
 *.log

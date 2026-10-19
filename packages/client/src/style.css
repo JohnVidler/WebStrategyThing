@@ -124,6 +124,30 @@ body {
 #standings .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
 .lobby-player { display: flex; align-items: center; gap: 8px; }
 
+/* Covers everything while the game's assets load and the server connection comes up. */
+#connecting {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+}
+.connecting-box { width: min(420px, calc(100vw - 32px)); text-align: center; }
+#connecting h2 { margin: 0 0 14px; font-size: 26px; letter-spacing: 0.08em; font-weight: 400; }
+#connecting.failed h2 { color: var(--bad); }
+#connecting ul { margin: 0 0 16px; padding: 0; list-style: none; height: 8.4em; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; color: var(--muted); }
+#connecting li { padding: 1px 0; animation: connecting-line 0.25s ease-out; }
+#connecting li.real { color: var(--good); }
+#connecting.failed li:last-child { color: var(--bad); }
+.connecting-bar { height: 3px; background: var(--line); border-radius: 2px; overflow: hidden; }
+.connecting-bar span { display: block; width: 35%; height: 100%; background: var(--accent); animation: connecting-sweep 1.4s ease-in-out infinite alternate; }
+#connecting.failed .connecting-bar span { animation: none; background: var(--bad); width: 100%; }
+@keyframes connecting-line { from { opacity: 0; transform: translateY(6px); } }
+@keyframes connecting-sweep { from { margin-left: 0; } to { margin-left: 65%; } }
+@media (prefers-reduced-motion: reduce) { #connecting li, .connecting-bar span { animation: none; } }
+
 /* Shown over the map while the server has paused the game. */
 #pause {
   position: absolute;
@@ -145,18 +169,73 @@ body {
 .pause-invite input { min-width: 0; flex: 1; font-size: 11px; }
 .pause-invite button { flex: none; }
 
+/* Waiting room before the host starts, and the choice offered to a defeated player. */
+#waiting, #defeat {
+  position: absolute;
+  inset: 12% auto auto 50%;
+  transform: translateX(-50%);
+  z-index: 9;
+  width: min(460px, calc(100vw - 32px));
+  background: rgb(22 27 34 / 0.96);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 16px 22px;
+  text-align: center;
+  pointer-events: auto;
+}
+#defeat { z-index: 10; border-color: var(--bad); }
+#waiting h2, #defeat h2 { margin: 0 0 6px; font-size: 18px; }
+#waiting p, #defeat p { margin: 0 0 10px; }
+#waiting ul { margin: 0 0 12px; padding: 0; list-style: none; text-align: left; }
+#waiting li { padding: 3px 0; display: flex; align-items: center; gap: 6px; }
+#waiting li .tag { margin-left: auto; color: var(--muted); font-size: 12px; }
+#waiting .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex: none; }
+#waiting .row, #defeat .row { display: flex; justify-content: center; gap: 8px; margin-top: 10px; }
+#spectating {
+  position: absolute;
+  inset: 8px auto auto 50%;
+  transform: translateX(-50%);
+  z-index: 7;
+  padding: 3px 12px;
+  border-radius: 12px;
+  background: rgb(22 27 34 / 0.85);
+  border: 1px solid var(--accent);
+  color: var(--muted);
+  pointer-events: none;
+}
+/* Spectators only watch: the controls that need forces stay out of the way. */
+body.spectating #buildbar, body.spectating #actions, body.spectating #action-hint, body.spectating #groups { display: none; }
+
 /* Room list, shown instead of the game when no room is chosen. */
-#menu-bg { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 0; pointer-events: none; }
+/* Menu backdrop: a flat pre-painted tile scrolled diagonally by the compositor (no JS per frame). */
+#menu-bg { position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; background: #04060a; }
+#menu-bg[hidden] { display: none; }
+#menu-bg::after { content: ''; position: absolute; inset: 0; background: radial-gradient(ellipse at center, rgba(4, 6, 10, 0) 30%, rgba(4, 6, 10, 0.75) 100%); }
+.menu-bg-scroll { position: absolute; top: calc(var(--menu-bg-tile) * -1); left: calc(var(--menu-bg-tile) * -1); right: 0; bottom: 0; background-repeat: repeat; background-size: var(--menu-bg-tile) var(--menu-bg-tile); animation: menu-bg-drift 40s linear infinite; }
+@keyframes menu-bg-drift { to { transform: translate(var(--menu-bg-tile), var(--menu-bg-tile)); } }
+/* A spark: a short bright streak whose leading end is the head; positioned on a grid line and sized (--spark-tail) by menuBackground.ts. */
+.menu-bg-spark { position: absolute; pointer-events: none; opacity: 0; border-radius: 2px; box-shadow: 0 0 8px 2px rgba(120, 190, 255, 0.55); }
+.menu-bg-spark.h { width: var(--spark-tail, 48px); height: 2px; margin-top: -1px; }
+.menu-bg-spark.v { width: 2px; height: var(--spark-tail, 48px); margin-left: -1px; }
+.menu-bg-spark.h.fwd { background: linear-gradient(to right, transparent, #cfe8ff); }
+.menu-bg-spark.h.back { background: linear-gradient(to left, transparent, #cfe8ff); }
+.menu-bg-spark.v.fwd { background: linear-gradient(to bottom, transparent, #cfe8ff); }
+.menu-bg-spark.v.back { background: linear-gradient(to top, transparent, #cfe8ff); }
+@media (prefers-reduced-motion: reduce) { .menu-bg-scroll { animation: none; } }
 #lobby { position: relative; z-index: 1; flex: 1; display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 10vh 16px; }
 #lobby { font-size: 1.5em; }
 /* Menu areas sit on translucent panels so the animated backdrop shows through but text stays legible. */
-#lobby section, #lobby aside, #lobby fieldset, #lobby .lobby-name-screen {
+#lobby section, #lobby aside, #lobby fieldset, #lobby .lobby-name-screen, #lobby .options {
   background: rgba(22, 27, 34, 0.62);
   border: 1px solid var(--line);
   border-radius: 6px;
   padding: 12px 14px;
   backdrop-filter: blur(3px);
+  /* Soft dark halo so the grid fades out around each panel instead of meeting its edge sharply. */
+  box-shadow: 0 0 22px 8px rgba(4, 6, 10, 0.6);
 }
+/* Fieldsets default to a 2px side margin and min-content width; reset so every panel frame lines up. */
+#lobby fieldset { margin: 0; min-width: 0; }
 #lobby .lobby-right { border-left: 1px solid var(--line); }
 #lobby .lobby-changes details, #lobby .lobby-room { background: rgba(22, 27, 34, 0.55); }
 #lobby-docs { font-size: 13px; }
@@ -419,6 +498,14 @@ a.button {
   padding: 6px 8px;
 }
 a.button:hover { border-color: var(--accent); }
+/* Subtle rollover highlight for interactable elements: brighten (works over any fill) plus a faint accent glow. */
+button, a.button, select, summary, .map-choice, .class-item { transition: filter 0.12s, box-shadow 0.12s, border-color 0.12s; }
+button:not(:disabled):hover, a.button:hover, select:hover, summary:hover, .map-choice:hover, .class-item:hover {
+  filter: brightness(1.25);
+  box-shadow: 0 0 8px rgba(78, 161, 255, 0.25);
+}
+input:not(:disabled):hover, textarea:hover { border-color: var(--accent); }
+button.link:hover { filter: none; box-shadow: none; }
 header { display: flex; flex-direction: column; gap: 8px; }
 #environment { font-variant-numeric: tabular-nums; }
 .env-tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin-top: 4px; }
@@ -642,3 +729,51 @@ button.primary { border-color: var(--accent); background: #1b2a40; }
 .music.inbar { position: static; max-width: 40vw; opacity: 1; background: none; }
 .designer-music { display: flex; }
 .music.docked .music-label { flex: 1; min-width: 0; }
+
+/* Options screen. */
+#lobby .options { display: flex; flex-direction: column; gap: 14px; width: min(460px, 100%); box-sizing: border-box; margin: 16px auto; padding: 16px 20px; }
+.option-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.option-row input[type='range'] { width: 220px; }
+
+/* Glass slide toggle: every checkbox in the app. */
+input[type='checkbox'] {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  flex: none;
+  width: 2.3em;
+  height: 1.3em;
+  margin: 0 0.3em;
+  vertical-align: middle;
+  cursor: pointer;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(4, 6, 10, 0.25);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  transition: background 0.2s, border-color 0.2s, box-shadow 0.2s;
+}
+input[type='checkbox']::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 0.12em;
+  width: 0.92em;
+  height: 0.92em;
+  transform: translateY(-50%);
+  border-radius: 2px;
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.85), rgba(200, 220, 245, 0.45));
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+  transition: left 0.2s ease;
+}
+input[type='checkbox']:checked {
+  background: rgba(255, 140, 20, 0.75);
+  border-color: #ffb050;
+  box-shadow: inset 0 1px 3px rgba(90, 30, 0, 0.5), 0 0 8px rgba(255, 140, 20, 0.55);
+}
+input[type='checkbox']:checked::after { left: calc(100% - 1.04em - 0.12em); }
+input[type='checkbox']:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+input[type='checkbox']:disabled { opacity: 0.4; cursor: not-allowed; }
+@media (prefers-reduced-motion: reduce) { input[type='checkbox'], input[type='checkbox']::after { transition: none; } }

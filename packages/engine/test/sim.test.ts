@@ -92,6 +92,19 @@ describe('terrain and movement', () => {
     expect(new Set(MAPS.map((map) => `${map.width}x${map.height}`)).size).toBeGreaterThan(1);
   });
 
+  it('lays out every map symmetrically, so no corner has a shortcut the others lack', () => {
+    for (const map of MAPS) {
+      const t = createMapTerrain(map.id);
+      for (let y = 0; y < t.height; y++) {
+        for (let x = 0; x < t.width; x++) {
+          const here = t.isPassable(x, y);
+          expect(t.isPassable(t.width - 1 - x, y)).toBe(here);
+          expect(t.isPassable(x, t.height - 1 - y)).toBe(here);
+        }
+      }
+    }
+  });
+
   it('finds paths around obstacles', () => {
     const t = walledSim().terrain;
     const path = findPath(t, 2, 2, 20, 2);
@@ -184,6 +197,46 @@ describe('energy and power', () => {
     expect(sim.networkFor(alone)).not.toBe(sim.networkFor(linked));
   });
 
+  it('caps long antenna links by antenna count and building size, but not short links', () => {
+    const throughput = (pylonParts: string[], pylonFrame = 'frame.small') => {
+      const sim = new Simulation({ width: 40, height: 40, seed: 1 });
+      sim.tick = 300; // midday
+      const solar = sim.blueprints.define(1, 'Solar', ['frame.large', ...Array(20).fill('solar.panel')]);
+      const sink = sim.blueprints.define(1, 'Sink', ['frame.small', 'battery.cell']);
+      const pylon = sim.blueprints.define(1, 'Pylon', [pylonFrame, ...pylonParts]);
+      sim.spawnStructure(solar, 2, 2);
+      const near = sim.spawnStructure(sink, 5, 2, 0); // short link: uncapped
+      const far = sim.spawnStructure(sink, 5, 12, 0); // reached over a long link through the pylon
+      sim.spawnStructure(pylon, 5, 7);
+      run(sim, 1);
+      return { near: sim.energy.f.amount[near], far: sim.energy.f.amount[far], sim };
+    };
+    const one = throughput(['antenna.large']);
+    expect(one.near).toBeGreaterThan(20); // not capped
+    expect(one.far).toBeGreaterThan(0);
+    expect(one.far).toBeLessThanOrEqual(20);
+    const two = throughput(['antenna.large', 'antenna.large']);
+    expect(two.far).toBeGreaterThan(one.far);
+    expect(two.far).toBeLessThanOrEqual(40);
+    const big = throughput(['antenna.large'], 'frame.medium');
+    expect(big.far).toBeGreaterThan(one.far);
+    expect(big.far).toBeLessThanOrEqual(40);
+  });
+
+  it('counts only what consumers actually received as delivered', () => {
+    const sim = new Simulation({ width: 20, height: 20, seed: 1 });
+    sim.tick = 300;
+    const solar = sim.blueprints.define(1, 'Solar', ['frame.medium', ...Array(8).fill('solar.panel')]);
+    const sink = sim.blueprints.define(1, 'Sink', ['frame.small', 'battery.cell']);
+    const gen = sim.spawnStructure(solar, 2, 2);
+    sim.spawnStructure(sink, 5, 2, 0);
+    run(sim, 1);
+    const net = sim.networkFor(gen)!;
+    expect(net.delivered).toBeGreaterThan(0);
+    expect(net.delivered).toBeLessThanOrEqual(net.supply);
+    expect(net.demand).toBeGreaterThan(net.delivered - 1);
+  });
+
   it('records the energy each member took from or gave to its network', () => {
     const sim = new Simulation({ width: 20, height: 20, seed: 1 });
     sim.tick = 300; // midday
@@ -250,6 +303,18 @@ describe('energy and power', () => {
     expect(full - sim.energy.f.amount[b]).toBe(60); // 60 cycles/tick × 100 ticks / 100
     expect(sim.energy.f.amount[l]).toBe(full);
     expect(full - sim.energy.f.amount[y]).toBeLessThan(5); // only the loop around yield costs anything
+  });
+
+  it('a group ordered to one point spreads over free tiles near it', () => {
+    const sim = new Simulation({ width: 20, height: 20, seed: 1 });
+    const bot = sim.blueprints.define(1, 'Bot', ['chassis.light', 'cpu.basic', 'motor.small']);
+    sim.setProgram(bot.id, MOVER);
+    const units = [0, 1, 2, 3, 4].map((i) => sim.spawnUnit(bot, at(2), at(2 + i)));
+    for (const u of units) sim.issueOrder(1, u, 12, 10, -1, false);
+    const goals = units.map((u) => `${sim.tasks[u]!.x(0)},${sim.tasks[u]!.y(0)}`);
+    expect(new Set(goals).size).toBe(5);
+    expect(goals[0]).toBe('12,10');
+    for (const u of units) expect(Math.max(Math.abs(sim.tasks[u]!.x(0) - 12), Math.abs(sim.tasks[u]!.y(0) - 10))).toBeLessThanOrEqual(1);
   });
 
   it('units can revive a flat unit: right-click it to SUPPLY energy', () => {
@@ -501,6 +566,26 @@ describe('construction and resources', () => {
     expect(sim.world.isAlive(tower)).toBe(true);
   });
 
+  it('idle builders spread over free sites before sharing one', () => {
+    const { sim, own, cls } = makeMatch();
+    const bp = cls(1, 'Builder');
+    const a = sim.spawnUnit(bp, at(9), at(4));
+    const b = sim.spawnUnit(bp, at(9), at(4));
+    const wind = cls(1, 'Wind Turbine').id;
+    const s1 = sim.placeBlueprint(1, wind, 11, 2, [], false);
+    const s2 = sim.placeBlueprint(1, wind, 14, 2, [], false);
+    const first = sim.nearestSite(a);
+    sim.tasks[a]!.push(TaskType.Build, 0, 0, sim.world.handle(first), 0);
+    const second = sim.nearestSite(b);
+    expect(second).not.toBe(first);
+    expect([s1, s2]).toContain(second);
+    sim.tasks[b]!.push(TaskType.Build, 0, 0, sim.world.handle(second), 0);
+    // Every site claimed: a third builder shares one rather than idling.
+    const c = sim.spawnUnit(bp, at(9), at(4));
+    expect([s1, s2]).toContain(sim.nearestSite(c));
+    void own;
+  });
+
   it('with fog on, buildings can only be placed inside own vision', () => {
     const { sim, cls, own } = makeMatch();
     sim.requirePlacementVision = true;
@@ -586,6 +671,7 @@ describe('construction and resources', () => {
     const spent = sim.resource.dense.find((e) => sim.resource.f.amount[e] > 0)!;
     const hv = own(1, 'Harvester')[1] ?? harvester;
     sim.tasks[hv]!.clear();
+    sim.cargo.f.amount[hv] = 0; // a full harvester would deliver first rather than swap
     sim.resource.f.amount[spent] = 2;
     sim.tasks[hv]!.push(TaskType.Harvest, 0, 0, sim.world.handle(spent), 0);
     run(sim, 10);

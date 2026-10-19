@@ -17,7 +17,10 @@ import {
   Unit,
   type ScoreEntry,
   type MatchEndReason,
+  type ServerMessage,
 } from '@wst/engine';
+import { playSound } from './sound';
+import { isShown, setShown } from './transition';
 import type { ActionButton } from './actions';
 import { ownerColour } from './renderer';
 import { HISTORY_EVERY, HISTORY_SAMPLES, METRICS, ResourceHistory, sparkline } from './resources';
@@ -34,11 +37,36 @@ export interface UiActions {
   press(id: string, queue: boolean): void;
   /** Select control group n (like pressing its number key). */
   recallGroup(n: number): void;
+  /** The waiting room's host starts the match. */
+  startGame(): void;
+  /** Switch to watching the whole map (after defeat, or once the match is decided). */
+  spectate(): void;
+  /** Leave the room and return to the menu. */
+  leave(): void;
 }
 
 const el = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
 const CPU_STATES = ['running', 'asleep', 'NO POWER', 'offline', 'STUNNED'];
+
+/** The invite link row shared by the pause and waiting-room panels. */
+const inviteHtml = (url?: string): string =>
+  url
+    ? `<div class="pause-invite"><input class="invite-url" aria-label="Invite link" readonly value="${esc(url)}"><button class="invite-copy" type="button" data-sound="lobby.invite_copied">Copy link</button></div>`
+    : '';
+
+function bindInvite(root: HTMLElement, url?: string): void {
+  const copy = root.querySelector<HTMLButtonElement>('.invite-copy');
+  copy?.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(url!);
+      copy.textContent = 'Copied';
+    } catch {
+      root.querySelector<HTMLInputElement>('.invite-url')?.select();
+      copy.textContent = 'Select link';
+    }
+  });
+}
 
 /** Plain-DOM play UI: header, selection details, production, module switches, build bar, hover bar. */
 export class Ui {
@@ -62,6 +90,9 @@ export class Ui {
   private readonly scoreboard = el<HTMLTableElement>('scoreboard');
   private readonly standings = el<HTMLDivElement>('standings');
   private readonly pauseView = el<HTMLDivElement>('pause');
+  private readonly waitingView = el<HTMLDivElement>('waiting');
+  private readonly defeatView = el<HTMLDivElement>('defeat');
+  private readonly spectatingBadge = el<HTMLDivElement>('spectating');
   private pauseTimer: number | undefined;
   private readonly actionGrid = el<HTMLDivElement>('actions');
   private readonly groupBar = el<HTMLDivElement>('groups');
@@ -87,11 +118,20 @@ export class Ui {
     window.addEventListener('keydown', (ev) => {
       if (ev.key === 'F1') {
         ev.preventDefault();
-        this.toggleDocs(this.docsOverlay.hidden !== false);
-      } else if (ev.key === 'Escape' && !this.docsOverlay.hidden) {
+        this.toggleDocs(!isShown(this.docsOverlay));
+      } else if (ev.key === 'Escape' && isShown(this.docsOverlay)) {
         this.toggleDocs(false);
       }
     });
+    // The Power tile is rebuilt every tick, so its hover is tracked on the stable container.
+    const track = (e: PointerEvent) => {
+      const over = !!(e.target as Element | null)?.closest?.('.env-power');
+      if (over && !this.state.showPowerLabels) playSound('ui.power_overlay');
+      this.state.showPowerLabels = over;
+    };
+    this.envView.addEventListener('pointerover', track);
+    this.envView.addEventListener('pointermove', track);
+    this.envView.addEventListener('pointerleave', () => (this.state.showPowerLabels = false));
   }
 
   setStatus(text: string): void {
@@ -122,27 +162,77 @@ export class Ui {
         lines.push(`<li class="away">${esc(player.name)} disconnected — leaves in ${seconds}s</li>`);
       }
       this.pauseView.hidden = lines.length === 0;
-      const invite = inviteUrl
-        ? `<div class="pause-invite"><input id="pause-invite-url" aria-label="Invite link" readonly value="${esc(inviteUrl)}"><button id="pause-copy" type="button">Copy link</button></div>`
-        : '';
-      this.pauseView.innerHTML = lines.length ? `<h2>Game paused</h2><ul>${lines.join('')}</ul>${invite}` : '';
-      const copy = this.pauseView.querySelector<HTMLButtonElement>('#pause-copy');
-      copy?.addEventListener('click', async () => {
-        try {
-          await navigator.clipboard.writeText(inviteUrl!);
-          copy.textContent = 'Copied';
-        } catch {
-          this.pauseView.querySelector<HTMLInputElement>('#pause-invite-url')?.select();
-          copy.textContent = 'Select link';
-        }
-      });
+      this.pauseView.innerHTML = lines.length ? `<h2>Game paused</h2><ul>${lines.join('')}</ul>${inviteHtml(inviteUrl)}` : '';
+      bindInvite(this.pauseView, inviteUrl);
     };
     render();
     if (reasons.length && deadlines.length) this.pauseTimer = window.setInterval(render, 1000);
   }
 
+  /**
+   * The waiting room: who has joined, an invite link, and (for the host) the Start button.
+   * Shown until the server reports the match has started.
+   */
+  showWaitingRoom(lobby: Extract<ServerMessage, { t: 'lobby' }>, inviteUrl: string): void {
+    const host = lobby.hostId === this.state.myId;
+    const enough = lobby.players.length >= lobby.minPlayers;
+    const rows = lobby.players
+      .map((p) => {
+        const colour = `#${ownerColour(p.id).toString(16).padStart(6, '0')}`;
+        const tags = [p.id === lobby.hostId ? 'host' : '', p.id === this.state.myId ? 'you' : ''].filter(Boolean).join(', ');
+        return `<li><span class="dot" style="background:${colour}"></span>${esc(p.name)}<span class="tag">${tags}</span></li>`;
+      })
+      .join('');
+    const hint = !enough
+      ? `Waiting for ${lobby.minPlayers - lobby.players.length} more player${lobby.minPlayers - lobby.players.length > 1 ? 's' : ''} — share the link below.`
+      : host
+        ? 'Start whenever everyone is here.'
+        : 'Waiting for the host to start the game…';
+    this.waitingView.innerHTML = `<h2>Waiting room</h2>
+      <p class="muted">${esc(lobby.mapName)} · ${lobby.players.length}/${lobby.capacity} players${lobby.mode === 'coop' ? ' · co-op against bots' : ''}</p>
+      <ul>${rows}</ul>
+      <p class="muted">${hint}</p>
+      ${inviteHtml(inviteUrl)}
+      <div class="row">${host ? `<button id="waiting-start" class="primary" type="button" data-sound="ui.confirm"${enough ? '' : ' disabled'}>Start game</button>` : ''}<button id="waiting-leave" type="button" data-sound="match.leave">Leave</button></div>`;
+    this.waitingView.hidden = false;
+    bindInvite(this.waitingView, inviteUrl);
+    this.waitingView.querySelector<HTMLButtonElement>('#waiting-start')?.addEventListener('click', () => this.actions.startGame());
+    el<HTMLButtonElement>('waiting-leave').onclick = () => this.actions.leave();
+  }
+
+  hideWaitingRoom(): void {
+    this.waitingView.hidden = true;
+    this.waitingView.innerHTML = '';
+  }
+
+  /** A player with nothing left (defeated or resigned) chooses between watching the whole map and leaving. */
+  showDefeat(): void {
+    this.defeatView.innerHTML = `<h2>You have been defeated</h2>
+      <p class="muted">The match goes on without you. Spectate to watch it with the fog of war lifted.</p>
+      <div class="row"><button id="defeat-spectate" class="primary" type="button" data-sound="match.spectate">Spectate</button><button id="defeat-leave" type="button" data-sound="match.leave">Leave to menu</button></div>`;
+    this.defeatView.hidden = false;
+    el<HTMLButtonElement>('defeat-spectate').onclick = () => this.actions.spectate();
+    el<HTMLButtonElement>('defeat-leave').onclick = () => this.actions.leave();
+  }
+
+  hideDefeat(): void {
+    this.defeatView.hidden = true;
+  }
+
+  /** Spectator mode: a badge over the map, the unusable controls hidden, and Resign becomes Leave. */
+  setSpectating(on: boolean): void {
+    this.spectatingBadge.hidden = !on;
+    document.body.classList.toggle('spectating', on);
+    if (on) this.hideDefeat();
+  }
+
   /** Final standings, shown over the map when the match has a winner; the game keeps running underneath. */
-  showStandings(winner: number, standings: readonly ScoreEntry[], reason: MatchEndReason, winners: readonly number[] = [winner]): void {
+  showStandings(
+    winner: number,
+    standings: readonly ScoreEntry[],
+    reason: MatchEndReason,
+    winners: readonly number[] = [winner],
+  ): void {
     const name = standings.filter((p) => winners.includes(p.id)).map((p) => p.name).join(' & ');
     const won = winners.includes(this.state.myId);
     const headline = won ? 'Victory!' : name ? `${esc(name)} win${winners.length > 1 ? '' : 's'}` : 'Match over';
@@ -152,10 +242,20 @@ export class Ui {
       'no-power': 'Only one player still has powered units.',
     }[reason];
     this.standings.innerHTML = `<h2>${headline}</h2><p class="muted">${why}</p><table>${this.scoreTable(standings, 'Final standings')}</table>
-      <div class="row">${won ? '<button id="standings-quit">Quit as victor</button>' : ''}<button id="standings-close">${won ? 'Keep playing' : 'Keep watching'}</button></div>`;
+      <div class="row">${won ? '<button id="standings-quit" data-sound="match.leave">Quit as victor</button>' : ''}<button id="standings-close" data-sound="ui.cancel">Keep playing</button>${
+        won ? '' : '<button id="standings-spectate" data-sound="match.spectate">Spectate</button><button id="standings-leave" data-sound="match.leave">Leave to menu</button>'
+      }</div>`;
     this.standings.hidden = false;
+    this.hideDefeat();
     el<HTMLButtonElement>('standings-close').onclick = () => (this.standings.hidden = true);
-    if (won) el<HTMLButtonElement>('standings-quit').onclick = () => (location.href = location.pathname);
+    if (won) el<HTMLButtonElement>('standings-quit').onclick = () => this.actions.leave();
+    else {
+      el<HTMLButtonElement>('standings-spectate').onclick = () => {
+        this.standings.hidden = true;
+        this.actions.spectate();
+      };
+      el<HTMLButtonElement>('standings-leave').onclick = () => this.actions.leave();
+    }
   }
 
   private scoreTable(players: readonly ScoreEntry[], title: string): string {
@@ -425,8 +525,10 @@ export class Ui {
           const label = document.createElement('span');
           label.innerHTML = `${cat}<small>${list.length} buildings ▴</small>`;
           btn.append(img, label);
+          btn.dataset.sound = 'none'; // opens or closes below, with its own sound
           btn.onclick = () => {
             this.openCategory = this.openCategory === cat ? null : cat;
+            playSound(this.openCategory ? 'build.menu_open' : 'build.menu_close');
             this.renderBuildMenu();
           };
           this.buildBar.appendChild(btn);
@@ -440,6 +542,7 @@ export class Ui {
   private buildingButton(bp: Blueprint): HTMLButtonElement {
     const btn = document.createElement('button');
     btn.dataset.blueprint = String(bp.id);
+    btn.dataset.sound = 'build.choose';
     btn.title = `${bp.name}: ${bp.stats.footprint}×${bp.stats.footprint}, costs ◆${bp.stats.cost} and ϟ${buildEnergyCost(bp.stats.footprint)} (paid as it is built). Select builders first to assign them.`;
     const img = document.createElement('img');
     img.alt = '';
@@ -464,6 +567,7 @@ export class Ui {
       document.addEventListener('pointerdown', (e) => {
         const t = e.target as Node;
         if (this.openCategory && !menu.contains(t) && !this.buildBar.contains(t)) {
+          playSound('build.menu_close');
           this.openCategory = null;
           this.renderBuildMenu();
         }
@@ -543,17 +647,20 @@ export class Ui {
     const nets = this.state.networks;
     const supply = nets.reduce((t, n) => t + n.supply, 0);
     const demand = nets.reduce((t, n) => t + n.demand, 0);
-    const balance = supply - demand;
+    // What consumers really received, not the free room in every store: a surplus is generation
+    // nobody took, a deficit is storage being drained to cover the load.
+    const delivered = nets.reduce((t, n) => t + n.delivered, 0);
+    const balance = supply - delivered;
     const tile = (cls: string, icon: string, label: string, pct: number, text: string): string =>
       `<div class="env-tile ${cls}" title="${label}"><span class="env-icon">${icon}</span>` +
       `<span class="env-value">${text}</span><span class="env-label">${label}</span>` +
       `<span class="env-bar"><i style="width:${Math.max(0, Math.min(100, pct))}%"></i></span></div>`;
-    const cover = demand > 0 ? (supply / demand) * 100 : 100;
+    const cover = demand > 0 ? (delivered / demand) * 100 : 100;
     this.envView.innerHTML =
       tile('env-sun', '☀', 'Daylight', this.state.daylight, `${this.state.daylight}%`) +
       tile('env-wind', '≋', 'Wind', this.state.wind, `${this.state.wind}%`) +
       tile(balance >= 0 ? 'env-power' : 'env-power env-deficit', 'ϟ', 'Power', cover, `${balance >= 0 ? '+' : ''}${balance}/t`);
-    this.envView.title = `Daylight and wind; your power grids: generated ${supply}/tick, wanted ${demand}/tick across ${nets.length} network(s)`;
+    this.envView.title = `Daylight and wind; your power grids: generated ${supply}/tick, delivered to consumers ${delivered}/tick (bar: share of what they could take) across ${nets.length} network(s)`;
     const unit = world.store(Unit);
     const ids = [...selection];
 
@@ -592,6 +699,7 @@ export class Ui {
       label.className = 'module';
       const box = document.createElement('input');
       box.type = 'checkbox';
+      box.dataset.sound = 'module';
       box.checked = !((mask >>> i) & 1);
       box.disabled = !SWITCHABLE.has(def.slot);
       box.onchange = () => this.actions.setModule(e, i, box.checked);
@@ -632,6 +740,7 @@ export class Ui {
         label.className = 'label';
         label.innerHTML = `${esc(bp.name)}<br>◆${bp.stats.cost} ϟ${bp.stats.buildEnergy}`;
         btn.append(img, label);
+        btn.dataset.sound = 'none';
         btn.onclick = () => this.actions.produce(b, bp.id);
         this.productionButtons.appendChild(btn);
         this.productionCosts.push({ btn, cost: bp.stats.cost });
@@ -652,7 +761,7 @@ export class Ui {
 
   private toggleDocs(show: boolean): void {
     if (show && !this.docsFrame.src.endsWith('docs.html')) this.docsFrame.src = 'docs.html';
-    this.docsOverlay.hidden = !show;
+    setShown(this.docsOverlay, show);
   }
 
   private describe(e: number): string {
