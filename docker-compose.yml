@@ -9,9 +9,12 @@ services:
       FOG: ${FOG:-on}
       PORT: "8080"
       MUSIC_DIR: /app/music
+      SOUND_DIR: /app/sound
     volumes:
       # Background music is distributed separately: a folder with music_manifest.json and the audio files.
       - ${MUSIC_PATH:-./music}:/app/music:ro
+      # Sound effects likewise: a folder with sound_manifest.json and the audio files.
+      - ${SOUND_PATH:-./sound}:/app/sound:ro
     expose:
       - "8080"
     restart: unless-stopped

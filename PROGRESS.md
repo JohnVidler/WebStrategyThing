@@ -4,6 +4,10 @@ Changes to the codebase, grouped by day (newest first).
 
 ## 2026-10-19
 
+### Sounds and music mounted from outside the image
+- `sound/` is no longer copied into the server image; `docker-compose.yml` mounts `${SOUND_PATH:-./sound}` read-only at `/app/sound` (with `SOUND_DIR`), next to the existing music mount.
+- `soundmanifest.test.ts` loads the manifest with an optional `import.meta.glob` and skips when `sound/` is absent, which fixed the ENOENT failure in the GitHub Action `verify` job.
+
 ### Terrain visuals: rounded rock, depth shading, seam fixes
 - `Renderer.layout` draws rock through a shared `fillShape` helper: convex corners (both sides facing tiles outside the shape) are rounded with radius 0.23 tile, in the fill and in the outline (edges trimmed, arc added). Concave corners stay sharp.
 - Three rock tones by depth: base `0x343b47`; depth 2 (all eight neighbours solid, map edge counts as solid) `0x414a58`; depth 3 (all neighbours depth 2, the heart of large outcrops) `0x4d5767`. Inner tiers share the rounded corners. Depth is a small per-layout pass, not per frame; layout only reruns when its key changes.
