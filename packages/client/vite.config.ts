@@ -4,7 +4,7 @@ import { defineConfig } from 'vite';
 
 /** Short git hash of the game build: GIT_HASH (Docker builds have no .git) or `git rev-parse`. */
 function gitHash(): string {
-  if (process.env.GIT_HASH) return process.env.GIT_HASH.trim().slice(0, 12);
+  if (process.env.GIT_HASH) return process.env.GIT_HASH.trim().slice(0, 7);
   try {
     return execSync('git rev-parse --short HEAD', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
   } catch {

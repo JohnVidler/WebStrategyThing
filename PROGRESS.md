@@ -4,6 +4,9 @@ Changes to the codebase, grouped by day (newest first).
 
 ## 2026-10-20
 
+### Version string in Docker images
+- The image build has no `.git` (and `.dockerignore` excludes it), so the menu version and the stamp in saved designs fell back to `unknown`. The publish workflow now passes `GIT_HASH` (`github.sha`) and `GIT_BRANCH` (`head_ref` or `ref_name`) as build args to both targets; `docker-compose.yml` forwards `GIT_HASH` / `GIT_BRANCH` to the client build (documented in `docs/deployment.md`); Vite shortens `GIT_HASH` to 7 characters, like `git rev-parse --short`. Only an image built after this change shows the real version; not tried in CI.
+
 ### Changelog starts folded
 - The main menu's "What's new" accordions are all closed at first (the newest used to be open); `changelogHtml` in `lobby.ts`.
 

@@ -39,6 +39,9 @@ services:
       target: client
       args:
         VITE_SERVER_URL: ${VITE_SERVER_URL:-}
+        # The build has no .git: set these for the version on the main menu (see docs/deployment.md).
+        GIT_HASH: ${GIT_HASH:-}
+        GIT_BRANCH: ${GIT_BRANCH:-}
     depends_on:
       server:
         condition: service_healthy

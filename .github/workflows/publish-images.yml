@@ -76,6 +76,10 @@ jobs:
           context: .
           file: ./Dockerfile
           target: ${{ matrix.target }}
+          # The image has no .git: the version shown on the main menu comes from these.
+          build-args: |
+            GIT_HASH=${{ github.sha }}
+            GIT_BRANCH=${{ github.head_ref || github.ref_name }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
