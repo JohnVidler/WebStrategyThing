@@ -1,12 +1,17 @@
-import { createVm, rebootVm, runVm } from '../vm/vm';
+import { handles } from '../flow/compile';
+import { EventId } from '../flow/events';
+import { enqueue, hasWork, raise, reboot, runFlow, tickTimers, type RunHooks } from '../flow/run';
 import { UNIT_API, VisitReason } from './api';
+import { activitySystem } from './activity';
+import { resolveSweep, sensorSweep } from './sensor';
 import { CpuState } from './components';
+import { launchMissile, shotHitsMissile } from './missile';
 import { SimEvent } from './events';
 import { TILE } from './parts';
 import { daylight, routeEnergy, share, StorageMode, wind } from './power';
 import { GENERATION_SCALE } from './parts';
 import { BUILDER_ENERGY_RESERVE, SEPARATION_RADIUS, DECAY_TICKS, MAX_TRANSMISSION_LOSS, RESOURCE_REGEN_INTERVAL_TICKS, SOLAR_GENERATION_MULTIPLIER, STORAGE_DISCHARGE_FRACTION, STORAGE_RESERVE_FRACTION, TESLA_SELF_STUN_FACTOR, TESLA_STUN_TICKS, TRANSMISSION_LOSS_PER_TILE, WIND_GENERATION_MULTIPLIER, buildEnergyCost } from './rules';
-import { CHARGE_PAD_RATE_MULTIPLIER, CHARGE_RANGE } from './rules';
+import { CHARGE_PAD_RATE_MULTIPLIER, CHARGE_RANGE, FLAK_BURST_RADIUS } from './rules';
 import type { Simulation } from './simulation';
 
 /** Energy a storage building keeps back from discharging (and refills first), so its script can always run. */
@@ -152,48 +157,65 @@ export function cheatSystem(sim: Simulation): void {
   }
 }
 
-/** Runs every unit's class program with that unit's own CPU budget, memory and energy. */
+/** How far an energy threshold must be crossed back before it can fire again (percent). */
+const ENERGY_HYSTERESIS = 5;
+/** While a unit stays below its EnergyLow level, the event repeats this often (ticks). */
+const LOW_REPEAT_TICKS = 100;
+
+/**
+ * Runs every unit's class program with that unit's own CPU: raises the events that are due
+ * (timers, sensor sweeps, energy thresholds), then lets the CPU work through its queue.
+ * Units with nothing to do are skipped with a couple of checks, so a purely reactive
+ * unit costs nothing between events.
+ */
 export function scriptSystem(sim: Simulation): void {
   const ctx = sim.scriptCtx;
   const cpu = sim.cpu;
+  const hooks: RunHooks = {
+    start(handler, args) {
+      const f = sim.flows[ctx.e]!;
+      // A visitor handler may order (and ask about) the visiting unit while it runs.
+      sim.visiting[ctx.e] = f.program.handlers[handler].event.id === EventId.Visitor && sim.world.resolve(args[1]) >= 0 ? args[1] : -1;
+    },
+    end() {
+      sim.endVisit(ctx.e);
+    },
+  };
   for (const e of sim.world.query(sim.unit.def)) {
     const bp = sim.blueprintOf(e);
     if (!bp) continue;
     const s = sim.stats(e);
     let state: number = CpuState.Running;
     let used = 0;
-    let vm = sim.vms[e];
+    let fs = sim.flows[e];
 
     if (!bp.program || s.cyclesPerTick === 0 || sim.isSite(e)) state = CpuState.Offline;
     else if (sim.tick < sim.stunUntil[e]) state = CpuState.Stunned;
-    else if (sim.tick < sim.sleepUntil[e]) state = CpuState.Sleeping;
     else if (sim.energy.f.amount[e] < 1) state = CpuState.NoPower;
     else {
-      if (!vm || vm.program !== bp.program) {
-        vm = sim.vms[e] = createVm(bp.program, s.memorySlots, s.stackDepth);
-        sim.endVisit(e);
-      }
-      if (vm.fault) {
+      fs = sim.flowFor(e)!;
+      if (fs.fault) {
         // A crashed unit spends one tick rebooting (and forgets any visitor).
-        rebootVm(vm);
+        reboot(fs, sim.tick);
         sim.endVisit(e);
       } else {
-        const passes = vm.halts;
-        ctx.e = e;
-        ctx.bp = bp;
-        ctx.stats = s;
-        used = runVm(vm, UNIT_API, ctx, s.cyclesPerTick);
-        // Finishing a pass ends any visit: buildings get one shot per visitor.
-        if (vm.halts !== passes) sim.endVisit(e);
-        // Processing costs energy in proportion to the work done (yield and sleep are free).
-        const owed = sim.cpuDebt[e] + Math.max(0, used - vm.freeCycles) * s.cpuUse;
-        const whole = Math.floor(owed / 100);
-        sim.cpuDebt[e] = owed - whole * 100;
-        sim.energy.f.amount[e] = Math.max(0, sim.energy.f.amount[e] - whole);
+        raiseDue(sim, e, fs, s);
+        if (hasWork(fs, sim.tick)) {
+          ctx.e = e;
+          ctx.bp = bp;
+          ctx.stats = s;
+          used = runFlow(fs, UNIT_API, ctx, s.cyclesPerTick, sim.tick, hooks);
+          // Processing costs energy in proportion to the work done.
+          const owed = sim.cpuDebt[e] + used * s.cpuUse;
+          const whole = Math.floor(owed / 100);
+          sim.cpuDebt[e] = owed - whole * 100;
+          sim.energy.f.amount[e] = Math.max(0, sim.energy.f.amount[e] - whole);
+        }
+        if (used === 0 && fs.running < 0) state = CpuState.Sleeping;
       }
     }
 
-    const fault = vm?.fault ?? 0;
+    const fault = fs?.fault ?? 0;
     if (cpu.f.used[e] !== used || cpu.f.fault[e] !== fault || cpu.f.state[e] !== state) {
       cpu.f.used[e] = used;
       cpu.f.fault[e] = fault;
@@ -203,11 +225,76 @@ export function scriptSystem(sim: Simulation): void {
   }
 }
 
+/** Raises this tick's timer, sensor and energy events for one unit (only for the blocks it has). */
+function raiseDue(sim: Simulation, e: number, fs: NonNullable<Simulation['flows'][number]>, s: ReturnType<Simulation['stats']>): void {
+  const tick = sim.tick;
+  tickTimers(fs, tick);
+  const p = fs.program;
+
+  // A unit with nothing to do is told so: when its work ends, and then every `repeat` ticks while it stays free.
+  const freeBlocks = p.byEvent[EventId.Free];
+  if (freeBlocks) {
+    const busy = sim.activities[e] !== undefined || (sim.tasks[e]?.count ?? 0) > 0;
+    if (busy) {
+      fs.freePending = false;
+      fs.freeAt = 0;
+    } else if (fs.running < 0 && fs.length === 0) {
+      const repeat = (p.handlers[freeBlocks[0]].config.repeat as number | undefined) ?? 0;
+      if (fs.freePending || (fs.freeAt > 0 && tick >= fs.freeAt)) {
+        fs.freePending = false;
+        fs.freeAt = repeat > 0 ? tick + repeat : 0;
+        raise(fs, EventId.Free);
+      }
+    }
+  } else {
+    fs.freePending = false;
+  }
+
+  const sensors = p.byEvent[EventId.Detected];
+  if (sensors) {
+    for (const h of sensors) {
+      if (tick < fs.nextDue[h]) continue;
+      const { sweep } = resolveSweep(p.handlers[h], s);
+      fs.nextDue[h] = tick + sweep.interval;
+      if (s.sensorTier === 0 || sweep.watch.length === 0 || sweep.limit === 0) continue;
+      // Each sweep costs the sensor's energy, found or not; a unit that cannot pay does not sweep.
+      if (!sim.spend(e, s.sensorUse)) continue;
+      const found = sensorSweep(sim, e, sweep);
+      for (let i = 0; i < found.length; i += 2) enqueue(fs, h, found[i], found[i + 1], 0, 0);
+    }
+  }
+
+  const low = p.byEvent[EventId.EnergyLow];
+  const full = p.byEvent[EventId.EnergyFull];
+  if (low || full) {
+    const pct = sim.energyView.f.pct[e];
+    if (low) {
+      const below = (p.handlers[low[0]].config.below as number | undefined) ?? 25;
+      // Fires on crossing and then again every LOW_REPEAT_TICKS while the unit is still low (a recharge that was
+      // interrupted must be tried again), until the level recovers.
+      if (pct < below && (!fs.lowFired || tick - fs.lowAt >= LOW_REPEAT_TICKS)) {
+        fs.lowFired = true;
+        fs.lowAt = tick;
+        raise(fs, EventId.EnergyLow);
+      } else if (pct >= below + ENERGY_HYSTERESIS) fs.lowFired = false;
+    }
+    if (full) {
+      const above = (p.handlers[full[0]].config.above as number | undefined) ?? 95;
+      if (pct >= above && !fs.fullFired) {
+        fs.fullFired = true;
+        raise(fs, EventId.EnergyFull);
+      } else if (pct < above - ENERGY_HYSTERESIS) fs.fullFired = false;
+    }
+  }
+}
+
 /** `how`: 1 = reached the end of the path, 2 = stopped short by a crowd near the goal. */
 function arrive(sim: Simulation, e: number, how: 1 | 2 = 1): void {
   sim.motion.f.moving[e] = 0;
   sim.motion.f.arrived[e] = how;
   sim.paths[e] = undefined;
+  const f = sim.flows[e];
+  if (f && handles(f.program, EventId.Arrived)) raise(f, EventId.Arrived);
 }
 
 /** Follows each unit's waypoints. Units that stop making progress near the goal count as arrived. */
@@ -367,7 +454,6 @@ export function resourceRegenerationSystem(sim: Simulation): void {
 
 export function combatSystem(sim: Simulation): void {
   const w = sim.weapon.f;
-  const hp = sim.health.f.hp;
   for (const e of sim.world.query(sim.weapon.def)) {
     if (w.cooldown[e] > 0) {
       w.cooldown[e]--;
@@ -376,7 +462,7 @@ export function combatSystem(sim: Simulation): void {
     if (w.target[e] < 0) continue;
     const t = sim.world.resolve(w.target[e]);
     const stats = sim.stats(e).weapon;
-    if (t < 0 || !stats || !sim.health.has(t)) {
+    if (t < 0 || !stats || !sim.health.has(t) || (stats.kind === 'flak' && !sim.missile.has(t))) {
       w.target[e] = -1;
       continue;
     }
@@ -392,10 +478,22 @@ export function combatSystem(sim: Simulation): void {
       teslaDischarge(sim, e, stats.range);
       continue;
     }
+    if (stats.kind === 'missile') {
+      launchMissile(sim, e, t, stats);
+      continue;
+    }
+    if (stats.kind === 'flak') {
+      // Air-burst: every enemy missile around the target is hit, with no roll to connect.
+      const owner = sim.unit.f.owner[e];
+      sim.spatial.forEachInRadius(sim.pos.f.x[t], sim.pos.f.y[t], FLAK_BURST_RADIUS, (o) => {
+        if (sim.missile.has(o) && !sim.allied(sim.missile.f.owner[o], owner) && sim.health.f.hp[o] > 0) sim.damage(o, stats.damage, owner);
+      });
+      continue;
+    }
+    // Small missiles are hard to hit: the shot (and its energy) is simply wasted.
+    if (sim.missile.has(t) && !shotHitsMissile(sim, t)) continue;
     const damage = stats.kind === 'laser' && stats.use > 0 ? Math.max(1, Math.round((stats.damage * shotEnergy) / stats.use)) : stats.damage;
-    hp[t] -= damage;
-    sim.lastHitBy[t] = sim.unit.f.owner[e];
-    sim.health.markChanged(t);
+    sim.damage(t, damage, sim.unit.f.owner[e]);
   }
 }
 

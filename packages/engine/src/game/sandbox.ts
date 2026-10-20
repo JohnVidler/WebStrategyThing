@@ -1,6 +1,6 @@
-import { CompileError } from '../vm/compiler';
-import type { ProgramButton } from '../vm/types';
-import { FAULT_NAMES } from '../vm/vm';
+import type { ProgramButton } from '../flow/compile';
+import { FlowError } from '../flow/ir';
+import { FAULT_NAMES } from '../flow/run';
 import { BlueprintError } from './blueprint';
 import { SCOUT_CLASS } from './content';
 import { SimEvent } from './events';
@@ -67,7 +67,7 @@ export function testRun(parts: readonly string[], source: string, options: TestR
       e = sim.spawnUnit(bp, 14 * TILE + TILE / 2, 11 * TILE + TILE / 2);
     }
   } catch (err) {
-    if (err instanceof BlueprintError || err instanceof CompileError || err instanceof CommandError) {
+    if (err instanceof BlueprintError || err instanceof FlowError || err instanceof CommandError) {
       return { error: err.message, samples: [], notes: [], buttons };
     }
     throw err;

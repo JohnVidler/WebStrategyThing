@@ -12,7 +12,7 @@ A full-screen **Connecting…** cover (`connecting.ts`) shows while a match page
 
 ## Designer and scripts
 
-Classes are designed and programmed in the **Designer** (button or F2): an overlay over the running game with a live preview, a module catalogue grouped by category (drag installed modules to reorder them), and a CodeMirror editor that highlights the script language, completes builtins and constants, shows their docs on hover, and runs the real compiler as you type. Uploads show a diff first, earlier versions can be reloaded from the history picker, classes can be retired, and **Test run** tries the unsaved design in a private sandbox simulation in the browser.
+Classes are designed and programmed in the **Designer** (button or F2): an overlay over the running game with two tabs. **Design** has the class list, a live preview with stats, the installed modules (drag to reorder) and a module catalogue grouped by category. **Code** is a full-panel program editor with a class picker above it; the footer actions (create, upload, copy, retire) are on both tabs, and the chosen tab and view are remembered for the session. A program is shown as a **node graph**, as **text** (a TypeScript subset, in CodeMirror with completion, hover docs and live diagnostics) or **both side by side**, and the two always agree because they are views of one model (`flow/FlowDocument.ts`). In the graph, nodes are coloured by kind (events red, actions orange, queries blue, runtime settings teal, logic grey, variables green, flow violet) and show their cycle cost; drag from a pin to wire (execution wires are white, value wires blue), double-click a wire to cut it, type literals into the pin defaults, use the palette to add nodes (unattached pieces are drawn dashed and are kept with the class), and undo/redo with Ctrl+Z / Ctrl+Y. If the text has a syntax error the graph shows the last valid program and is read-only until it is fixed. Uploads show a diff of the printed text first, earlier versions can be reloaded from the history picker, classes can be retired, and **Test run** tries the unsaved design in a private sandbox simulation in the browser.
 
 ## Saved designs and files
 
@@ -20,7 +20,7 @@ Your designs and scripts are **saved in the browser** and restored whenever you 
 
 ## Docs
 
-The **script API docs** open with the Docs button (or F1) as an overlay while the game keeps running, or in a new tab at `/docs.html`. They are generated from the engine's own metadata, so they always match the build.
+The **programming docs** open with the Docs button (or F1) as an overlay while the game keeps running, or in a new tab at `/docs.html`. They are generated from the engine's own metadata, so they always match the build.
 
 ## Sound effects
 

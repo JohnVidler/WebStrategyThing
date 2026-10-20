@@ -1,6 +1,7 @@
+import { isFlowSource } from '../flow/ir';
 import { compileUnitProgram } from './actions';
 import { deriveStats } from './blueprint';
-import { STARTER_CLASSES, type ClassTemplate } from './content';
+import { NEW_CLASS_PROGRAM, STARTER_CLASSES, type ClassTemplate } from './content';
 
 /*
  * Design files: a player's classes (parts + program) as plain JSON, used to keep
@@ -21,7 +22,7 @@ import { STARTER_CLASSES, type ClassTemplate } from './content';
  */
 
 export const DESIGN_FORMAT = 'wst-designs';
-export const DESIGN_VERSION = 1;
+export const DESIGN_VERSION = 2;
 export const MAX_DESIGNS = 80;
 
 export interface DesignEntry {
@@ -39,6 +40,8 @@ export interface DesignFile {
   readonly build: string;
   readonly savedAt: string;
   readonly classes: readonly DesignEntry[];
+  /** Classes whose old-language program (a version 1 file) was replaced by a default or the new-class starter. */
+  readonly migrated?: readonly string[];
 }
 
 export class DesignFileError extends Error {}
@@ -96,24 +99,33 @@ export function parseDesignFile(raw: unknown): DesignFile {
   if (typeof f !== 'object' || f === null || f.format !== DESIGN_FORMAT) throw new DesignFileError('Not a WebStrategyThing design file');
   if (typeof f.version !== 'number' || f.version > DESIGN_VERSION) throw new DesignFileError(`Unsupported design file version ${String(f.version)}`);
   if (!Array.isArray(f.classes) || f.classes.length > MAX_DESIGNS) throw new DesignFileError(`A design file holds 0-${MAX_DESIGNS} classes`);
+  const migrated: string[] = [];
   const classes = f.classes.map((c: Partial<DesignEntry>, i: number) => {
     if (typeof c?.name !== 'string' || !c.name.trim() || c.name.length > 24) throw new DesignFileError(`Class ${i + 1}: bad name`);
     if (!Array.isArray(c.parts) || !c.parts.every((p) => typeof p === 'string')) throw new DesignFileError(`${c.name}: bad parts list`);
     if (c.program !== undefined && typeof c.program !== 'string') throw new DesignFileError(`${c.name}: program must be text`);
+    let program = c.program ?? '';
+    if (f.version! < 2 && program.trim() && !isFlowSource(program)) {
+      // A program in the old text language (files from before flowcode): replace it with the
+      // default of that name, or the new-class starter. The old text is not kept in the entry.
+      migrated.push(c.name.trim());
+      program = DEFAULT_DESIGNS.get(c.name.trim())?.program ?? NEW_CLASS_PROGRAM;
+    }
     return {
       name: c.name.trim(),
       parts: [...c.parts],
-      program: c.program ?? '',
+      program,
       retired: c.retired === true,
       base: typeof c.base === 'string' ? c.base : null,
     };
   });
   return {
     format: DESIGN_FORMAT,
-    version: f.version,
+    version: DESIGN_VERSION,
     build: typeof f.build === 'string' ? f.build : '',
     savedAt: typeof f.savedAt === 'string' ? f.savedAt : '',
     classes,
+    ...(migrated.length ? { migrated } : {}),
   };
 }
 

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { prog } from './helpers';
 import {
   BUILDER_ENERGY_RESERVE,
   DECAY_TICKS,
@@ -184,7 +185,7 @@ describe('factory scripts', () => {
     const sim = newSim();
     sim.blueprints.define(1, 'Drone', ['chassis.light', 'cpu.basic', 'motor.small']);
     const fac = sim.blueprints.define(1, 'Factory', ['frame.medium', 'cpu.basic', 'factory.basic', 'silo']);
-    sim.setProgram(fac.id, 'if queueLength() == 0 { queueUnit(0) }');
+    sim.setProgram(fac.id, prog('on(Idle, () => {\n  if (queueLength() === 0) {\n    queueUnit(0);\n  }\n});'));
     const b = sim.spawnStructure(fac, 10, 10);
     sim.stockpile.f.amount[b] = 500;
     run(sim, 3);
@@ -198,7 +199,7 @@ describe('storage discharge', () => {
     const sim = newSim();
     sim.tick = 700; // night
     const storeBp = sim.blueprints.define(1, 'Store', ['frame.medium', 'cpu.basic', 'battery.bank', 'battery.bank']);
-    sim.setProgram(storeBp.id, 'storageMode(DISCHARGE)\nsleep(4)');
+    sim.setProgram(storeBp.id, prog('on(Idle, { interval: 4 }, () => {\n  config.storageMode(DISCHARGE);\n});'));
     const sink = sim.blueprints.define(1, 'Sink', ['frame.small', 'battery.bank']);
     const store = sim.spawnStructure(storeBp, 2, 2);
     const consumer = sim.spawnStructure(sink, 4, 2, 0);
@@ -219,7 +220,7 @@ describe('storage with an empty store', () => {
       sim.tick = 300; // midday
       const solar = sim.blueprints.define(1, 'Solar', ['frame.medium', ...Array(8).fill('solar.panel')]);
       const storeBp = sim.blueprints.define(1, 'Store', ['frame.medium', 'cpu.basic', 'battery.bank', 'battery.bank']);
-      sim.setProgram(storeBp.id, 'if netSupply() >= netDemand() { storageMode(CHARGE_STORE) }\nsleep(4)');
+      sim.setProgram(storeBp.id, prog('on(Idle, { interval: 4 }, () => {\n  if (netSupply() >= netDemand()) {\n    config.storageMode(CHARGE_STORE);\n  }\n});'));
       sim.spawnStructure(solar, 2, 2);
       const store = sim.spawnStructure(storeBp, 4, 2, 0);
       sim.storage.f.mode[store] = mode;

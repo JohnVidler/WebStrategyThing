@@ -1,9 +1,12 @@
 import { World } from '../ecs/world';
-import { CompileError } from '../vm/compiler';
+import { configInt, configInts, handles, type FlowProgram } from '../flow/compile';
+import { EventId, OrderPolicy } from '../flow/events';
+import { FlowError } from '../flow/ir';
+import { createFlow, raise, type FlowState } from '../flow/run';
+import type { Alert } from '../net/codec';
 import { Rng } from '../util/rng';
-import type { Program } from '../vm/types';
-import type { VmState } from '../vm/vm';
 import { COMMON_ACTION_BY_TASK, compileUnitProgram } from './actions';
+import { activitySystem, cancelActivity, type ActivityState } from './activity';
 import { VisitReason, type UnitContext } from './api';
 import { DEFAULT_DESIGNS, type DesignEntry } from './designs';
 import { BlueprintError, BlueprintRegistry, Caps, statsFor, type Blueprint, type BlueprintStats } from './blueprint';
@@ -18,6 +21,7 @@ import {
   GAME_COMPONENTS,
   Harvester,
   Health,
+  Missile,
   Modules,
   Motion,
   Position,
@@ -29,6 +33,7 @@ import {
   Unit,
   Weapon,
 } from './components';
+import { missileSystem, type MissileFlight } from './missile';
 import { PARTS, SWITCHABLE, TILE } from './parts';
 import { findPath } from './path';
 import { emptyNetwork, powerLinks, powerNetworks, powerTopology, type PowerNetwork, type PowerNode } from './power';
@@ -82,10 +87,6 @@ export class CommandError extends Error {
   }
 }
 
-/** Ticks a visit waits for the building's script to pick it up before it lapses. */
-export const VISIT_TTL = 50;
-const MAX_VISITORS = 16;
-
 /** Per-player counters for the scoreboard (server-side only). */
 export interface PlayerTally {
   createdUnits: number;
@@ -121,6 +122,95 @@ export interface RadarPulse {
   contacts: RadarContact[];
 }
 
+/**
+ * Makes a player's classes match a set of designs (restoring a saved session, an
+ * uploaded file, or the defaults). Each entry is matched by name to an own class:
+ * same parts means its program and retired flag are updated in place; different
+ * parts means a new class is defined and the old one retired (parts are fixed per
+ * class). Own classes not in the set are retired, except defaults the set doesn't
+ * mention (new in this build). Units already built carry on with their class.
+ */
+export function loadDesignsInto(
+  host: { readonly blueprints: BlueprintRegistry; setProgram(blueprintId: number, source: string): unknown },
+  owner: number,
+  entries: readonly DesignEntry[],
+  maxActive: number,
+  merge = false,
+): DesignLoadReport {
+  const report: DesignLoadReport = { changed: [], programs: [], defined: 0, updated: 0, retired: 0, errors: [] };
+  const changed = new Set<Blueprint>();
+  const used = new Set<Blueprint>();
+  const active = () => host.blueprints.ownedBy(owner).filter((b) => !b.retired).length;
+  const retire = (bp: Blueprint) => {
+    if (bp.retired) return;
+    bp.retired = true;
+    changed.add(bp);
+    report.retired++;
+  };
+  const install = (bp: Blueprint, source: string): boolean => {
+    if ((bp.program?.source ?? '') === source) return true;
+    if (!source.trim() && !bp.program) return true;
+    try {
+      host.setProgram(bp.id, source);
+      report.programs.push(bp);
+      return true;
+    } catch (err) {
+      if (!(err instanceof FlowError || err instanceof BlueprintError)) throw err;
+      report.errors.push(`${bp.name}: ${err.message}`);
+      return false;
+    }
+  };
+  const sameParts = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((p, i) => p === b[i]);
+
+  for (const entry of entries) {
+    const mine = host.blueprints.ownedBy(owner).filter((b) => b.name === entry.name && !used.has(b));
+    const match = mine.find((b) => !b.retired && sameParts(b.parts, entry.parts)) ?? mine.find((b) => sameParts(b.parts, entry.parts));
+    const retired = entry.retired === true;
+    if (match) {
+      used.add(match);
+      const before = match.program?.source ?? '';
+      if (match.retired !== retired) {
+        if (!retired && active() >= maxActive) {
+          report.errors.push(`${entry.name}: class limit (${maxActive}) reached`);
+          continue;
+        }
+        match.retired = retired;
+        changed.add(match);
+        if (retired) report.retired++;
+      }
+      if (install(match, entry.program) && before !== (match.program?.source ?? '')) report.updated++;
+      continue;
+    }
+    if (!retired && active() >= maxActive) {
+      report.errors.push(`${entry.name}: class limit (${maxActive}) reached`);
+      continue;
+    }
+    let bp: Blueprint;
+    try {
+      bp = host.blueprints.define(owner, entry.name, entry.parts);
+    } catch (err) {
+      if (!(err instanceof BlueprintError)) throw err;
+      report.errors.push(`${entry.name}: ${err.message}`);
+      continue;
+    }
+    bp.retired = retired;
+    used.add(bp);
+    changed.add(bp);
+    report.defined++;
+    install(bp, entry.program);
+    // The class it replaces (same name, different parts) steps aside.
+    for (const old of mine) if (!used.has(old)) (retire(old), used.add(old));
+  }
+  const named = new Set(entries.map((e) => e.name));
+  for (const bp of host.blueprints.ownedBy(owner)) {
+    if (used.has(bp) || bp.retired || merge) continue; // merging leaves classes the set doesn't mention alone
+    if (!named.has(bp.name) && DEFAULT_DESIGNS.has(bp.name)) continue; // a default this set predates
+    retire(bp);
+  }
+  report.changed.push(...changed);
+  return report;
+}
+
 export class Simulation {
   readonly world = new World(GAME_COMPONENTS, 1024);
   readonly blueprints = new BlueprintRegistry();
@@ -131,31 +221,37 @@ export class Simulation {
   tick = 0;
   /** Flat buffer for this tick: [type, a, b, type, a, b, ...]. */
   readonly events: number[] = [];
+  /** Speech bubbles raised this tick by `alert()`; the server replicates them, and commit() clears them. */
+  readonly alerts: Alert[] = [];
   /** Radar pulses fired this tick; the server reports them to their owners, and commit() clears them. */
   readonly radarPulses: RadarPulse[] = [];
   /** Tick at which each radar-carrying unit (by handle) may pulse again. */
   private readonly radarReady = new Map<number, number>();
 
   // Server-only per-entity side tables (never replicated).
-  readonly vms: (VmState | undefined)[] = [];
+  readonly flows: (FlowState | undefined)[] = [];
+  /** Each unit's current activity (a long job the engine carries out), and the ones put aside for later. */
+  readonly activities: (ActivityState | undefined)[] = [];
+  readonly suspended: (ActivityState[] | undefined)[] = [];
+  /** Units that have an activity, in the order they started (so ticking them is deterministic). */
+  readonly activeUnits = new Set<number>();
   readonly tasks: (TaskQueue | undefined)[] = [];
   /** Remaining waypoints in sub-tile units [x, y, ...]. */
   readonly paths: (number[] | undefined)[] = [];
   readonly stuckTicks: number[] = [];
   readonly lastDistance: number[] = [];
-  readonly sleepUntil: number[] = [];
   /** CPU energy owed, in hundredths of an energy unit (cycles × use, billed per 100). */
   readonly cpuDebt: number[] = [];
   /** Building -> handle of the unit it may currently order (-1 = none). */
   readonly visiting: number[] = [];
-  /** Building -> pending visits, flat [handle, reason, tick, ...]. */
-  private readonly visitorLog: (number[] | undefined)[] = [];
   /** Factory -> queued blueprint ids, and ticks spent on the front one. */
   readonly productionQueue: (number[] | undefined)[] = [];
   readonly productionTicks: number[] = [];
   /** Construction site -> resources invested so far. */
   readonly invested: number[] = [];
   readonly tallies = new Map<number, PlayerTally>();
+  /** Missile entity -> the parts of its flight that are not replicated (see missile.ts). */
+  readonly flights: (MissileFlight | undefined)[] = [];
   /** Entity -> owner of the last weapon that damaged it (0 = none). */
   readonly lastHitBy: number[] = [];
   /** Building -> generation left over from last tick (in 1/100 of 1/GENERATION_SCALE energy). */
@@ -197,6 +293,7 @@ export class Simulation {
   readonly construction = this.world.store(Construction);
   readonly builder = this.world.store(Builder);
   readonly repairer = this.world.store(Repairer);
+  readonly missile = this.world.store(Missile);
 
   constructor(
     readonly config: SimConfig,
@@ -218,8 +315,8 @@ export class Simulation {
 
   // --- setup -----------------------------------------------------------------
 
-  /** Compiles and installs a class program. Throws CompileError / BlueprintError. */
-  setProgram(blueprintId: number, source: string): Program {
+  /** Compiles and installs a class program. Throws FlowError / BlueprintError. */
+  setProgram(blueprintId: number, source: string): FlowProgram {
     if (!this.blueprints.get(blueprintId)) throw new BlueprintError(`No blueprint ${blueprintId}`);
     const program = compileUnitProgram(source);
     this.blueprints.setProgram(blueprintId, program);
@@ -351,78 +448,7 @@ export class Simulation {
    * mention (new in this build). Units already built carry on with their class.
    */
   loadDesigns(owner: number, entries: readonly DesignEntry[], maxActive: number, merge = false): DesignLoadReport {
-    const report: DesignLoadReport = { changed: [], programs: [], defined: 0, updated: 0, retired: 0, errors: [] };
-    const changed = new Set<Blueprint>();
-    const used = new Set<Blueprint>();
-    const active = () => this.blueprints.ownedBy(owner).filter((b) => !b.retired).length;
-    const retire = (bp: Blueprint) => {
-      if (bp.retired) return;
-      bp.retired = true;
-      changed.add(bp);
-      report.retired++;
-    };
-    const install = (bp: Blueprint, source: string): boolean => {
-      if ((bp.program?.source ?? '') === source) return true;
-      if (!source.trim() && !bp.program) return true;
-      try {
-        this.setProgram(bp.id, source);
-        report.programs.push(bp);
-        return true;
-      } catch (err) {
-        if (!(err instanceof CompileError || err instanceof BlueprintError)) throw err;
-        report.errors.push(`${bp.name}: ${err.message}`);
-        return false;
-      }
-    };
-    const sameParts = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((p, i) => p === b[i]);
-
-    for (const entry of entries) {
-      const mine = this.blueprints.ownedBy(owner).filter((b) => b.name === entry.name && !used.has(b));
-      const match = mine.find((b) => !b.retired && sameParts(b.parts, entry.parts)) ?? mine.find((b) => sameParts(b.parts, entry.parts));
-      const retired = entry.retired === true;
-      if (match) {
-        used.add(match);
-        const before = match.program?.source ?? '';
-        if (match.retired !== retired) {
-          if (!retired && active() >= maxActive) {
-            report.errors.push(`${entry.name}: class limit (${maxActive}) reached`);
-            continue;
-          }
-          match.retired = retired;
-          changed.add(match);
-          if (retired) report.retired++;
-        }
-        if (install(match, entry.program) && before !== (match.program?.source ?? '')) report.updated++;
-        continue;
-      }
-      if (!retired && active() >= maxActive) {
-        report.errors.push(`${entry.name}: class limit (${maxActive}) reached`);
-        continue;
-      }
-      let bp: Blueprint;
-      try {
-        bp = this.blueprints.define(owner, entry.name, entry.parts);
-      } catch (err) {
-        if (!(err instanceof BlueprintError)) throw err;
-        report.errors.push(`${entry.name}: ${err.message}`);
-        continue;
-      }
-      bp.retired = retired;
-      used.add(bp);
-      changed.add(bp);
-      report.defined++;
-      install(bp, entry.program);
-      // The class it replaces (same name, different parts) steps aside.
-      for (const old of mine) if (!used.has(old)) (retire(old), used.add(old));
-    }
-    const named = new Set(entries.map((e) => e.name));
-    for (const bp of this.blueprints.ownedBy(owner)) {
-      if (used.has(bp) || bp.retired || merge) continue; // merging leaves classes the set doesn't mention alone
-      if (!named.has(bp.name) && DEFAULT_DESIGNS.has(bp.name)) continue; // a default this set predates
-      retire(bp);
-    }
-    report.changed.push(...changed);
-    return report;
+    return loadDesignsInto(this, owner, entries, maxActive, merge);
   }
 
   /**
@@ -544,7 +570,6 @@ export class Simulation {
     this.genCarry[e] = 0;
     this.stunUntil[e] = 0;
     this.flatTicks[e] = 0;
-    this.sleepUntil[e] = 0;
     this.cpuDebt[e] = 0;
     return e;
   }
@@ -569,14 +594,28 @@ export class Simulation {
       this.terrain.occupy(f.x, f.y, f.size, -1);
       this.powerDirty = true;
     }
-    this.vms[e] = undefined;
+    this.flows[e] = undefined;
+    this.flights[e] = undefined;
+    this.activities[e] = undefined;
+    this.suspended[e] = undefined;
+    this.activeUnits.delete(e);
     this.tasks[e] = undefined;
     this.paths[e] = undefined;
     this.visiting[e] = -1;
-    this.visitorLog[e] = undefined;
     this.productionQueue[e] = undefined;
     this.invested[e] = 0;
     this.world.destroy(e);
+  }
+
+  /** Hurts `t` by `amount` for the player `owner` (a shot, a missile burst): raises its Damaged event and notes who to credit. */
+  damage(t: number, amount: number, owner: number): void {
+    this.health.f.hp[t] -= amount;
+    this.lastHitBy[t] = owner;
+    const victim = this.flows[t];
+    if (victim && handles(victim.program, EventId.Damaged)) {
+      raise(victim, EventId.Damaged, amount, owner, 0, 0, (h) => amount >= ((victim.program.handlers[h].config.minAmount as number | undefined) ?? 0));
+    }
+    this.health.markChanged(t);
   }
 
   emit(type: number, a: number, b: number): void {
@@ -791,6 +830,9 @@ export class Simulation {
     if (target >= 0 && target !== e && this.world.isAlive(target) && !s.structure) {
       if (this.resource.has(target)) {
         if (s.caps & Caps.Harvest) type = TaskType.Harvest;
+      } else if (this.missile.has(target)) {
+        // An enemy missile in flight: shoot it down.
+        if (s.caps & Caps.Fight && !this.allied(this.missile.f.owner[target], owner)) type = TaskType.Attack;
       } else if (this.unit.has(target)) {
         const theirs = !this.allied(this.unit.f.owner[target], owner);
         const targetCaps = this.stats(target).caps;
@@ -812,7 +854,7 @@ export class Simulation {
     x = this.clampTile(x, this.config.width);
     y = this.clampTile(y, this.config.height);
     if (type === TaskType.Move && handle < 0) [x, y] = this.freeMoveTile(e, x, y);
-    return this.tasks[e]!.push(type, x, y, handle, flags);
+    return this.pushOrder(e, type, x, y, handle, flags);
   }
 
   /**
@@ -854,7 +896,7 @@ export class Simulation {
   issueStop(owner: number, e: number, queue: boolean): boolean {
     this.ownedBlueprint(owner, e);
     const flags = TaskFlag.Player | (queue ? 0 : TaskFlag.Urgent);
-    return this.tasks[e]!.push(TaskType.Stop, 0, 0, -1, flags);
+    return this.pushOrder(e, TaskType.Stop, 0, 0, -1, flags);
   }
 
   /**
@@ -875,6 +917,7 @@ export class Simulation {
     if (task === TaskType.Attack) {
       // An enemy, or nothing: attack-move to the point.
       if (valid && this.unit.has(target) && !this.allied(this.unit.f.owner[target], owner)) goal = target;
+      else if (valid && this.missile.has(target) && !this.allied(this.missile.f.owner[target], owner)) goal = target;
     } else if (task === TaskType.Harvest) {
       goal = valid && this.resource.has(target) ? target : this.nearestResource(x, y);
       if (goal < 0) throw new CommandError('No resources left');
@@ -898,14 +941,112 @@ export class Simulation {
     x = this.clampTile(x, this.config.width);
     y = this.clampTile(y, this.config.height);
     if (task === TaskType.Move) [x, y] = this.freeMoveTile(e, x, y);
-    return this.tasks[e]!.push(task, x, y, handle, flags);
+    return this.pushOrder(e, task, x, y, handle, flags);
   }
 
   /**
-   * A class button (declared in its script with `button name "Label"`): pushes the
-   * button's task type. Aimed buttons carry the picked point/unit; others the unit's own tile.
+   * The unit's running program state, created on first use (and again when its class gets a new
+   * program, which reboots it). Undefined without a program, without a working CPU, or while a site.
    */
-  issueButton(owner: number, e: number, name: string, x: number, y: number, target: number, queue: boolean): boolean {
+  flowFor(e: number): FlowState | undefined {
+    const bp = this.blueprintOf(e);
+    if (!bp?.program || this.isSite(e)) return undefined;
+    const have = this.flows[e];
+    if (have && have.program === bp.program) return have;
+    const s = this.stats(e);
+    if (s.cyclesPerTick === 0) return undefined;
+    const f = (this.flows[e] = createFlow(bp.program, s.memorySlots, s.stackDepth, this.tick, have ? 1 : 0));
+    this.endVisit(e);
+    return f;
+  }
+
+  /**
+   * Gives the unit an order (the player or a building). Orders wait in a list; the one at the front is the
+   * order being worked on, and reaching the front raises Order. Without an Order block nothing would ever
+   * take the order, so it is not kept. An urgent order replaces the plan if an Order block asks for it
+   * (`urgent: REPLACE`): older orders go and the current activity stops.
+   */
+  pushOrder(e: number, type: number, x: number, y: number, handle: number, flags: number): boolean {
+    const q = this.tasks[e]!;
+    const f = this.flowFor(e);
+    if (!f || !handles(f.program, EventId.Order)) return true;
+    if (flags & TaskFlag.Urgent && f.program.byEvent[EventId.Order]!.some((h) => configInt(f.program.handlers[h], 'urgent') === OrderPolicy.Replace)) {
+      q.clear();
+      cancelActivity(this, e, true, true);
+    }
+    if (!q.push(type, x, y, handle, flags)) return false;
+    if (q.count === 1) this.raiseFrontOrder(e);
+    return true;
+  }
+
+  /** Raises Order for the order at the front of the list. An order no block wants is dropped and the next one tried. */
+  raiseFrontOrder(e: number): void {
+    const q = this.tasks[e];
+    const f = this.flowFor(e);
+    while (q && q.count > 0) {
+      if (!f || !handles(f.program, EventId.Order)) {
+        q.clear();
+        break;
+      }
+      const type = q.type(0);
+      const flags = q.flags(0);
+      const taken = raise(f, EventId.Order, type, q.x(0), q.y(0), q.target(0), (h) => {
+        const cfg = f.program.handlers[h];
+        const types = configInts(cfg, 'types');
+        const from = (cfg.config.from as number | undefined) ?? 0;
+        return (types.length === 0 || types.includes(type)) && (from === 0 || (from & flags) !== 0);
+      });
+      if (taken > 0) return;
+      q.remove(0);
+    }
+    if (f) f.freePending = true;
+  }
+
+  /** Finishes the order being worked on: stops its activity, drops it, and raises the next one (or Free). */
+  nextOrder(e: number): void {
+    cancelActivity(this, e);
+    this.tasks[e]?.remove(0);
+    this.raiseFrontOrder(e);
+  }
+
+  /** Replaces the order being worked on by another (or just adds one if there is none) and raises it. */
+  swapOrder(e: number, type: number, x: number, y: number, handle: number): boolean {
+    const q = this.tasks[e];
+    if (!q || !this.flowFor(e)) return false;
+    cancelActivity(this, e);
+    if (q.count > 0) q.remove(0);
+    if (!q.push(type, x, y, handle, 0)) return false;
+    q.toFront(q.count - 1);
+    this.raiseFrontOrder(e);
+    return true;
+  }
+
+  /** Drops every order and stops the current activity. */
+  clearOrders(e: number): void {
+    cancelActivity(this, e, true, true);
+    this.tasks[e]?.clear();
+    const f = this.flows[e];
+    if (f) f.freePending = true;
+  }
+
+  /**
+   * The entity index of handle `h` if unit `e` knows where it is: own units, own buildings and resources always,
+   * anything else only within its sensor range. Otherwise -1.
+   */
+  locate(e: number, h: number): number {
+    const t = this.world.resolve(h);
+    if (t < 0 || t === e) return t;
+    if (this.resource.has(t)) return t;
+    if (this.unit.has(t) && this.unit.f.owner[t] === this.unit.f.owner[e]) return t;
+    const r = this.stats(e).sensorRange;
+    return this.distSq(e, t) <= r * r ? t : -1;
+  }
+
+  /**
+   * A class button (a `Button` block in its program): raises that block's event. Aimed
+   * buttons carry the picked tile and target; others the unit's own tile.
+   */
+  issueButton(owner: number, e: number, name: string, x: number, y: number, target: number, _queue: boolean): boolean {
     const bp = this.ownedBlueprint(owner, e);
     const button = bp.program?.buttons.find((b) => b.name === name);
     if (!button) throw new CommandError(`${bp.name} has no '${name}' button`);
@@ -919,8 +1060,11 @@ export class Simulation {
       x = this.tileX(this.pos.f.x[target]);
       y = this.tileY(this.pos.f.y[target]);
     }
-    const flags = TaskFlag.Player | (queue ? 0 : TaskFlag.Urgent);
-    return this.tasks[e]!.push(button.task, this.clampTile(x, this.config.width), this.clampTile(y, this.config.height), handle, flags);
+    const f = this.flowFor(e);
+    if (!f) throw new CommandError(`${bp.name} has no CPU running`);
+    // Straight to the one handler behind this button, whatever the queue holds.
+    raise(f, EventId.Button, this.clampTile(x, this.config.width), this.clampTile(y, this.config.height), handle, 0, (h) => h === button.handler);
+    return true;
   }
 
   /** Resource field nearest to tile (x, y), or -1. */
@@ -1180,31 +1324,18 @@ export class Simulation {
 
   // --- building <-> unit visits ---------------------------------------------
   //
-  // A building's script can only give orders to a unit while it is "visiting":
-  // the unit was just produced there, or just docked there. The script takes
-  // visits one at a time with nextVisitor(); the link ends at the next
-  // nextVisitor() call or when the script finishes its pass. Holding on to the
+  // A building's program can only give orders to a unit while it is "visiting": the unit
+  // was just produced there, or just docked there. Each visit raises a Visitor event; while
+  // that handler runs, order() and the visitor queries apply to that unit. Holding on to the
   // handle grants nothing, because order() only ever targets the current visitor.
 
   addVisitor(building: number, e: number, reason: number): void {
-    let log = this.visitorLog[building];
-    if (!log) log = this.visitorLog[building] = [];
-    log.push(this.world.handle(e), reason, this.tick);
-    if (log.length > MAX_VISITORS * 3) log.splice(0, 3);
-  }
-
-  /** Makes the oldest live visit current. Returns its reason, or 0 if none. */
-  takeVisitor(building: number): number {
-    this.endVisit(building);
-    const log = this.visitorLog[building];
-    while (log && log.length) {
-      const [handle, reason, at] = log.splice(0, 3);
-      if (this.tick - at <= VISIT_TTL && this.world.resolve(handle) >= 0) {
-        this.visiting[building] = handle;
-        return reason;
-      }
-    }
-    return 0;
+    const f = this.flowFor(building);
+    if (!f || !handles(f.program, EventId.Visitor)) return;
+    raise(f, EventId.Visitor, reason, this.world.handle(e), 0, 0, (h) => {
+      const reasons = configInts(f.program.handlers[h], 'reasons');
+      return reasons.length === 0 || reasons.includes(reason);
+    });
   }
 
   endVisit(building: number): void {
@@ -1219,11 +1350,13 @@ export class Simulation {
     cheatSystem(this);
     powerSystem(this);
     scriptSystem(this);
+    activitySystem(this);
     movementSystem(this);
     separationSystem(this);
     harvestSystem(this);
     resourceRegenerationSystem(this);
     combatSystem(this);
+    missileSystem(this);
     buildSystem(this);
     repairSystem(this);
     chargingSystem(this);
@@ -1238,6 +1371,7 @@ export class Simulation {
   commit(): void {
     this.world.flush();
     this.events.length = 0;
+    this.alerts.length = 0;
     this.radarPulses.length = 0;
   }
 

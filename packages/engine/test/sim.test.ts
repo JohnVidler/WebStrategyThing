@@ -4,7 +4,6 @@ import {
   CORNERS,
   compileUnitProgram,
   CpuState,
-  CUSTOM_TASK_BASE,
   createMatch,
   createMapTerrain,
   defineClass,
@@ -31,6 +30,7 @@ import {
   testRun,
   type ComponentDef,
 } from '../src';
+import { prog } from './helpers';
 
 const at = (tiles: number) => tiles * TILE + TILE / 2;
 const tileOf = (sim: Simulation, e: number) => [Math.floor(sim.pos.f.x[e] / TILE), Math.floor(sim.pos.f.y[e] / TILE)];
@@ -49,9 +49,9 @@ function walledSim(): Simulation {
   return new Simulation({ width: 24, height: 24, seed: 3 }, terrain);
 }
 
-const MOVER = `var t = 0
-t = taskType(0)
-if t == MOVE { if goTo(taskX(0), taskY(0)) { taskDrop(0) } }`;
+const MOVER = prog(`on(Order, { types: [MOVE], urgent: REPLACE }, (type, tx, ty) => {
+  goTo(tx, ty);
+});`);
 
 /** Nearest free 1×1 spot well beyond any building's link reach (so it stays unlinked). */
 function freeSpot(sim: Simulation, x: number, y: number): [number, number] {
@@ -258,7 +258,13 @@ describe('energy and power', () => {
     const sim = new Simulation({ width: 20, height: 20, seed: 1 });
     sim.tick = 700; // night: no solar
     const storeBp = sim.blueprints.define(1, 'Store', ['frame.medium', 'cpu.basic', 'battery.bank', 'battery.bank']);
-    sim.setProgram(storeBp.id, 'if netSupply() >= netDemand() { storageMode(CHARGE_STORE) } else { storageMode(DISCHARGE) }');
+    sim.setProgram(storeBp.id, prog(`on(Idle, () => {
+  if (netSupply() >= netDemand()) {
+    config.storageMode(CHARGE_STORE);
+  } else {
+    config.storageMode(DISCHARGE);
+  }
+});`));
     const sink = sim.blueprints.define(1, 'Sink', ['frame.small', 'battery.cell']);
     const store = sim.spawnStructure(storeBp, 2, 2, 0.5);
     const consumer = sim.spawnStructure(sink, 4, 2, 0);
@@ -289,20 +295,22 @@ describe('energy and power', () => {
     expect([sim.energy.f.amount[giver], sim.energy.f.amount[near]]).toEqual([40, 60]);
   });
 
-  it('CPU energy follows the work done; yield and sleep are free', () => {
+  it('CPU energy follows the work done; a unit with nothing to do costs nothing', () => {
     const sim = new Simulation({ width: 20, height: 20, seed: 1 });
     const busy = sim.blueprints.define(1, 'Busy', ['chassis.light', 'cpu.fast']);
     const lazy = sim.blueprints.define(1, 'Lazy', ['chassis.light', 'cpu.fast']);
     const idle = sim.blueprints.define(1, 'Idle', ['chassis.light', 'cpu.fast']);
-    sim.setProgram(busy.id, 'var i = 0\nwhile 1 { i = i + 1 }');
-    sim.setProgram(lazy.id, 'sleep(600)');
-    sim.setProgram(idle.id, 'while 1 { yield }');
+    // Busy always has a handler running; Lazy rests after one pass; Idle has no handler for anything that happens.
+    sim.setProgram(busy.id, prog('let i = 0;\non(Idle, () => {\n  i = 0;\n  while (i < 300) {\n    i = i + 1;\n  }\n});'));
+    sim.setProgram(lazy.id, prog('on(Idle, () => {\n  config.rest(600);\n});'));
+    sim.setProgram(idle.id, prog('on(Order, () => {});'));
     const [b, l, y] = [busy, lazy, idle].map((bp, i) => sim.spawnUnit(bp, at(2 + i * 3), at(2)));
     run(sim, 100);
     const full = busy.stats.energyCapacity;
-    expect(full - sim.energy.f.amount[b]).toBe(60); // 60 cycles/tick × 100 ticks / 100
-    expect(sim.energy.f.amount[l]).toBe(full);
-    expect(full - sim.energy.f.amount[y]).toBeLessThan(5); // only the loop around yield costs anything
+    expect(full - sim.energy.f.amount[b]).toBeGreaterThanOrEqual(55); // about 60 cycles/tick × 100 ticks / 100
+    expect(full - sim.energy.f.amount[b]).toBeLessThanOrEqual(62);
+    expect(sim.energy.f.amount[l]).toBe(full); // one short pass, then it rests
+    expect(sim.energy.f.amount[y]).toBe(full); // events nobody handles cost nothing
   });
 
   it('a group ordered to one point spreads over free tiles near it', () => {
@@ -335,7 +343,7 @@ describe('energy and power', () => {
   it('modules can be switched off by scripts and players, with limits', () => {
     const sim = new Simulation({ width: 20, height: 20, seed: 1 });
     const bot = sim.blueprints.define(1, 'Bot', ['chassis.light', 'cpu.basic', 'motor.small', 'armor.plate']);
-    sim.setProgram(bot.id, 'setModule(2, 0)\nsetModule(1, 0)\nsetModule(3, 0)\nsleep(600)');
+    sim.setProgram(bot.id, prog('on(Spawned, () => {\n  config.setModule(2, 0);\n  config.setModule(1, 0);\n  config.setModule(3, 0);\n});'));
     const e = sim.spawnUnit(bot, at(3), at(3));
     run(sim, 2);
     expect(sim.stats(e).speed).toBe(0); // motor off
@@ -347,7 +355,7 @@ describe('energy and power', () => {
 });
 
 describe('orders, buildings and the economy', () => {
-  it('right-click queues context tasks; unqueued orders replace the plan (script policy)', () => {
+  it('right-click queues context tasks; unqueued (urgent) orders replace the plan when the class asks for it', () => {
     const { sim, own } = makeMatch();
     const [s] = own(1, 'Scout');
     const [enemy] = own(2, 'Scout');
@@ -358,7 +366,8 @@ describe('orders, buildings and the economy', () => {
     run(sim, 6);
     expect(sim.tasks[s]!.count).toBe(1);
     expect(sim.tasks[s]!.x(0)).toBe(14);
-    expect(sim.tasks[s]!.flags(0)).toBe(TaskFlag.Player); // acknowledged by the script
+    expect(sim.tasks[s]!.flags(0)).toBe(TaskFlag.Player | TaskFlag.Urgent);
+    expect(sim.activities[s]?.kind).toBe(1); // already walking to the new goal
     expect(() => sim.issueOrder(1, enemy, 0, 0, -1, false)).toThrow(/Not your unit/);
   });
 
@@ -378,28 +387,24 @@ describe('orders, buildings and the economy', () => {
     sim.issueCommand(1, h, TaskType.Charge, 0, 0, -1, true);
     expect(sim.tasks[h]!.type(sim.tasks[h]!.count - 1)).toBe(TaskType.Charge);
     // Class buttons: the storage's "Hold charge" button puts it into HOLD.
-    expect(() => sim.issueButton(1, h, 'reserve', 0, 0, -1, false)).toThrow(/no 'reserve' button/);
-    sim.issueButton(1, storage, 'reserve', 0, 0, -1, false);
+    expect(() => sim.issueButton(1, h, 'hold_charge', 0, 0, -1, false)).toThrow(/no 'hold_charge' button/);
+    sim.issueButton(1, storage, 'hold_charge', 0, 0, -1, false);
     run(sim, 10);
     expect(sim.storage.f.mode[storage]).toBe(StorageMode.Hold);
-    sim.issueButton(1, storage, 'release', 0, 0, -1, false);
+    sim.issueButton(1, storage, 'automatic', 0, 0, -1, false);
     run(sim, 10);
     expect(sim.storage.f.mode[storage]).not.toBe(StorageMode.Hold);
   });
 
-  it('compiles button declarations into constants and UI metadata', () => {
-    const p = compileUnitProgram(`button boost "Boost" key "b"
-button mine "Lay mine" aim
-var t = 0
-t = boost + mine`);
+  it('Button blocks become UI metadata, and their hotkeys may not clash with the common actions', () => {
+    const p = compileUnitProgram(prog(`on(Button, { label: 'Boost', key: 'B' }, () => {});
+on(Button, { label: 'Lay mine', aim: true }, () => {});`));
     expect(p.buttons).toEqual([
-      { name: 'boost', label: 'Boost', key: 'B', aim: false, task: CUSTOM_TASK_BASE },
-      { name: 'mine', label: 'Lay mine', key: '', aim: true, task: CUSTOM_TASK_BASE + 1 },
+      { name: 'boost', label: 'Boost', key: 'B', aim: false, handler: 0 },
+      { name: 'lay_mine', label: 'Lay mine', key: '', aim: true, handler: 1 },
     ]);
-    expect(() => compileUnitProgram('button go "Go" key "A"')).toThrow(/reserved for Attack/);
-    expect(() => compileUnitProgram('if 1 { button go "Go" }')).toThrow(/top level/);
-    expect(() => compileUnitProgram(`var t = 0
-t = "hi"`)).toThrow(/button declarations/);
+    expect(() => compileUnitProgram(prog(`on(Button, { label: 'Go', key: 'A' }, () => {});`))).toThrow(/taken by Attack/);
+    expect(() => compileUnitProgram(prog(`on(Button, { label: 'Go' }, () => {});\non(Button, { label: 'go' }, () => {});`))).toThrow(/Two Button blocks/);
   });
 
   it('harvesters fill the silos and the base stays powered', () => {
@@ -471,17 +476,21 @@ t = "hi"`)).toThrow(/button declarations/);
     const factory = defineClass(sim, 1, {
       name: 'Greedy',
       parts: ['frame.medium', 'cpu.fast', 'factory.basic', 'battery.bank', 'silo'],
-      // Tries to order every pass; also keeps the visitor's handle and re-uses it later.
-      program: 'var v = -1\nif nextVisitor() != 0 { v = visitor() }\norder(MOVE, 1, 1, v)',
+      // Orders the visitor during the visit; also tries to order every 5 ticks with a handle it kept.
+      program: prog('let kept = -1;\non(Visitor, (reason, who) => {\n  kept = who;\n  order(MOVE, 1, 1, who);\n});\non(Every, { ticks: 5 }, () => {\n  order(STOP, 0, 0, kept);\n});'),
     });
-    const idle = sim.blueprints.define(1, 'Idle', ['chassis.light', 'motor.small']); // no CPU: never runs a script
+    const idle = sim.blueprints.define(1, 'Idle', ['chassis.light', 'cpu.basic', 'motor.small']);
+    sim.setProgram(idle.id, MOVER);
     const f = sim.spawnStructure(factory, 10, 10);
     sim.addStock(f, 1000);
     sim.enqueueProduction(1, f, idle.id);
-    run(sim, idle.stats.buildTime + 100);
+    run(sim, idle.stats.buildTime + 3);
     const made = sim.unit.dense.find((e) => sim.unit.f.blueprint[e] === idle.id)!;
-    expect(sim.tasks[made]!.count).toBe(1);
+    expect(sim.tasks[made]!.count).toBe(1); // the visit's order reached the unit and it is on its way
+    expect(sim.tasks[made]!.type(0)).toBe(TaskType.Move);
     expect(sim.tasks[made]!.flags(0)).toBe(TaskFlag.Building);
+    run(sim, 100); // the unit has long left; the factory's repeated order with the kept handle goes nowhere
+    expect(sim.tasks[made]!.count).toBe(0); // it finished the trip, and no STOP ever arrived (or it would have been taken)
   });
 });
 
@@ -616,9 +625,13 @@ describe('construction and resources', () => {
     expect(run1.error).toBeUndefined();
     expect(run1.samples.length).toBeGreaterThan(3);
     expect(run1.notes.join(' ')).toMatch(/Fired \d+ shot/);
-    expect(run1.buttons.map((b) => b.name)).toEqual(['holdfire']);
-    expect(testRun(fighter, 'var k = 1\nk = 1 / (k - 1)', { ticks: 20 }).notes.join(' ')).toMatch(/Faulted.*division by zero/);
-    expect(testRun(fighter, 'nonsense(', {}).error).toMatch(/line 1/);
+    expect(run1.buttons.map((b) => b.name)).toEqual(['hold_fire']);
+    expect(testRun(fighter, prog('let k = 1;\non(Idle, () => {\n  k = 1 / (k - 1);\n});'), { ticks: 20 }).notes.join(' ')).toMatch(/Faulted.*division by zero/);
+    expect(testRun(fighter, 'nonsense(', {}).error).toMatch(/not valid JSON/);
+    expect(() => prog('on(Idle, () => {\n  if (fire(1)) {\n    stop();\n  }\n});')).toThrow(/fire\(\) is an action/);
+    // A program the design cannot hold is rejected by the sandbox with the memory it needs.
+    const big = prog(`on(Every, { ticks: 9 }, () => {\n${Array.from({ length: 30 }, (_, i) => `  moveTo(${i + 5}, 1);`).join('\n')}\n});`);
+    expect(testRun(['chassis.light', 'cpu.basic'], big, {}).error).toMatch(/needs \d+ memory slots/);
     expect(testRun(['frame.small', 'motor.small'], '', {}).error).toBeDefined();
   });
 
@@ -638,7 +651,9 @@ describe('construction and resources', () => {
     const [scout] = own(1, 'Scout');
     const [tx, ty] = tileOf(sim, scout);
     const silo = sim.spawnStructure(cls(1, 'Resource Silo'), tx + 5, ty);
-    const passiveHarvester = sim.blueprints.define(1, 'Passive Harvester', ['chassis.light', 'motor.small', 'cargo.bay']);
+    const passiveHarvester = sim.blueprints.define(1, 'Passive Harvester', ['chassis.light', 'cpu.basic', 'motor.small', 'cargo.bay']);
+    // It only follows orders: the silo's visit sends it to a field.
+    sim.setProgram(passiveHarvester.id, prog('on(Order, { types: [HARVEST] }, (type, tx, ty, field) => {\n  harvest(field);\n});'));
     const nearest = sim.resource.dense
       .filter((e) => sim.resource.f.amount[e] >= 10)
       .sort((p, q) => Math.hypot(sim.pos.f.x[p] - sim.pos.f.x[silo], sim.pos.f.y[p] - sim.pos.f.y[silo]) - Math.hypot(sim.pos.f.x[q] - sim.pos.f.x[silo], sim.pos.f.y[q] - sim.pos.f.y[silo]))
@@ -661,7 +676,7 @@ describe('construction and resources', () => {
   it('a harvester with nothing to do goes back to a storage building, and swaps a spent field for another', () => {
     const { sim, own } = makeMatch();
     const [harvester] = own(1, 'Harvester');
-    sim.tasks[harvester]!.clear();
+    sim.clearOrders(harvester);
     const hq = own(1, 'HQ')[0];
     run(sim, 600);
     // It found work again (or is at the HQ getting it): never left stalled and idle.
@@ -670,10 +685,10 @@ describe('construction and resources', () => {
 
     const spent = sim.resource.dense.find((e) => sim.resource.f.amount[e] > 0)!;
     const hv = own(1, 'Harvester')[1] ?? harvester;
-    sim.tasks[hv]!.clear();
+    sim.clearOrders(hv);
     sim.cargo.f.amount[hv] = 0; // a full harvester would deliver first rather than swap
     sim.resource.f.amount[spent] = 2;
-    sim.tasks[hv]!.push(TaskType.Harvest, 0, 0, sim.world.handle(spent), 0);
+    sim.pushOrder(hv, TaskType.Harvest, 0, 0, sim.world.handle(spent), 0);
     run(sim, 10);
     const q = sim.tasks[hv]!;
     expect(q.count).toBeGreaterThan(0);
@@ -744,6 +759,7 @@ describe('simulation', () => {
     expect(mirror.store(Resource).dense.length).toBe(sim.resource.dense.length); // the map is known
     const [ex, ey] = tileOf(sim, enemyHq);
     sim.issueOrder(1, scout, ex, ey + 4, -1, false);
+    sim.health.f.hp[scout] = 50000; // the enemy's defenders must not end the walk before the base comes into view
     let sawHq = false;
     for (let t = 0; t < 600; t++) {
       sim.step();

@@ -1,7 +1,7 @@
 import {
   BlueprintError,
   CommandError,
-  CompileError,
+  FlowError,
   CORNERS,
   createMatch,
   mapById,
@@ -365,7 +365,7 @@ export class Match {
       this.sim.step();
     }
     // Without fog: one encode, broadcast to everyone. With fog: one per client, filtered to what it sees.
-    const shared = this.fog ? undefined : encodeTick(this.sim.world, this.sim.tick, this.sim.events, false);
+    const shared = this.fog ? undefined : encodeTick(this.sim.world, this.sim.tick, this.sim.events, false, undefined, this.sim.alerts);
     // Spectators see everything, fog or not.
     let unfiltered = shared;
     const tasks = this.collectTaskUpdates();
@@ -375,10 +375,10 @@ export class Match {
     }
     for (const p of this.players.values()) {
       if (p.socket.readyState !== WebSocket.OPEN) continue;
-      if (p.spectating) unfiltered ??= encodeTick(this.sim.world, this.sim.tick, this.sim.events, false);
+      if (p.spectating) unfiltered ??= encodeTick(this.sim.world, this.sim.tick, this.sim.events, false, undefined, this.sim.alerts);
       p.socket.send(
         (p.spectating ? unfiltered : shared) ??
-          encodeTick(this.sim.world, this.sim.tick, this.sim.events, false, p.interest.update(this.visibleTo(p), this.sim.world.despawned)),
+          encodeTick(this.sim.world, this.sim.tick, this.sim.events, false, p.interest.update(this.visibleTo(p), this.sim.world.despawned), this.sim.alerts),
       );
       const amount = this.sim.pool(p.id);
       const capacity = this.sim.poolCapacity(p.id);
@@ -665,7 +665,7 @@ export class Match {
         try {
           this.handle(player, cmd.msg);
         } catch (err) {
-          if (err instanceof BlueprintError || err instanceof CompileError || err instanceof CommandError) {
+          if (err instanceof BlueprintError || err instanceof FlowError || err instanceof CommandError) {
             this.send(player, { t: 'error', message: err.message });
           } else {
             throw err;
@@ -741,7 +741,7 @@ export class Match {
           this.send(player, { t: 'programResult', blueprint: msg.blueprint, ok: true });
           this.send(player, { t: 'program', blueprint: msg.blueprint, source: msg.source });
         } catch (err) {
-          if (!(err instanceof CompileError || err instanceof BlueprintError)) throw err;
+          if (!(err instanceof FlowError || err instanceof BlueprintError)) throw err;
           this.send(player, { t: 'programResult', blueprint: msg.blueprint, ok: false, error: err.message });
         }
         return;

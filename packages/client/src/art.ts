@@ -24,7 +24,7 @@ export interface Look {
   readonly size: number;
   readonly flying: boolean;
   readonly motor: 'none' | 'small' | 'large' | 'rotor';
-  readonly weapon: 'none' | 'gun' | 'cannon' | 'laser' | 'tesla';
+  readonly weapon: 'none' | 'gun' | 'cannon' | 'laser' | 'tesla' | 'missile' | 'flak';
   readonly armour: number;
   readonly cargo: number;
   readonly builders: number;
@@ -117,6 +117,10 @@ export function hullOutline(l: Look): number[] | null {
   if (l.weapon === 'cannon') {
     // Squat tank: broad, blunt front.
     return [-0.8, -0.95, 0.8, -0.95, 1, -0.55, 1, 0.9, -1, 0.9, -1, -0.55];
+  }
+  if (l.weapon === 'missile') {
+    // Launcher truck: a boxy bed behind a short cab.
+    return [-0.6, -0.95, 0.6, -0.95, 0.6, -0.6, 1, -0.6, 1, 0.95, -1, 0.95, -1, -0.6, -0.6, -0.6];
   }
   if (l.weapon === 'laser') {
     // Swept-wing dart.
@@ -248,6 +252,21 @@ function weaponTurret(g: Graphics, kind: Look['weapon'], r: number): void {
       g.rect(-r * 0.16, -r * 1.2, r * 0.32, r * 1.2).fill(STEEL).stroke({ width: 1, color: DARK });
       g.rect(-r * 0.24, -r * 1.2, r * 0.48, r * 0.2).fill(WARN);
       break;
+    case 'missile':
+      // Two warheads on a rack, nose up.
+      g.rect(-r * 0.55, -r * 0.35, r * 1.1, r * 0.9).fill(DARK).stroke({ width: 1.5, color: WARN });
+      for (const x of [-r * 0.28, r * 0.28]) {
+        g.rect(x - r * 0.12, -r * 0.95, r * 0.24, r * 0.9).fill(0xdfe5ee);
+        g.poly([x - r * 0.12, -r * 0.95, x + r * 0.12, -r * 0.95, x, -r * 1.25]).fill(WARN);
+      }
+      break;
+    case 'flak':
+      // Twin short barrels splayed upward on a round mount.
+      g.circle(0, 0, r * 0.4).fill(DARK).stroke({ width: 1.5, color: STEEL });
+      for (const a of [-0.28, 0.28]) {
+        g.moveTo(Math.sin(a) * r * 0.2, -Math.cos(a) * r * 0.2).lineTo(Math.sin(a) * r * 1.15, -Math.cos(a) * r * 1.15).stroke({ width: 3, color: STEEL });
+      }
+      break;
     case 'laser':
       g.circle(0, 0, r * 0.3).fill(DARK).stroke({ width: 1.5, color: LASER });
       g.poly([0, -r * 1.2, r * 0.18, -r * 0.3, -r * 0.18, -r * 0.3]).fill(LASER);
@@ -296,8 +315,13 @@ function glyphs(l: Look): Glyph[] {
   const out: Glyph[] = [];
   if (l.weapon !== 'none') {
     out.push((g, cx, cy, s) => {
-      g.circle(cx, cy, s * 0.55).fill(DARK).stroke({ width: 1.5, color: l.weapon === 'laser' ? LASER : l.weapon === 'tesla' ? TESLA : l.weapon === 'cannon' ? WARN : STEEL });
-      if (l.weapon === 'tesla') {
+      g.circle(cx, cy, s * 0.55).fill(DARK).stroke({ width: 1.5, color: l.weapon === 'laser' ? LASER : l.weapon === 'tesla' ? TESLA : l.weapon === 'cannon' || l.weapon === 'missile' ? WARN : STEEL });
+      if (l.weapon === 'missile') {
+        for (const x of [-s * 0.25, s * 0.25]) {
+          g.rect(cx + x - s * 0.1, cy - s * 0.85, s * 0.2, s * 0.8).fill(0xdfe5ee);
+          g.poly([cx + x - s * 0.1, cy - s * 0.85, cx + x + s * 0.1, cy - s * 0.85, cx + x, cy - s * 1.1]).fill(WARN);
+        }
+      } else if (l.weapon === 'tesla') {
         for (const a of [0, 2.1, 4.2]) g.moveTo(cx, cy).lineTo(cx + Math.sin(a) * s, cy - Math.cos(a) * s).stroke({ width: 1.5, color: TESLA });
       } else {
         const len = l.weapon === 'cannon' ? s * 1.1 : s * 0.9;

@@ -25,6 +25,13 @@ export const Stockpile = defineComponent('Stockpile', { amount: 'i32' }, { netwo
 /** Present while a building is still being constructed. `progress` is percent. */
 export const Construction = defineComponent('Construction', { progress: 'u8' }, { networked: true });
 
+/**
+ * A missile in flight (also has Position and Health, so weapons can shoot it down). `size` is the
+ * matter it cost (drives the art), `heading` the direction it points in 256ths of a turn from
+ * east, `blast` the burst radius in tenths of a tile.
+ */
+export const Missile = defineComponent('Missile', { owner: 'u8', size: 'u8', heading: 'u8', blast: 'u8' }, { networked: true });
+
 // Server-only.
 /** `arrived`: 1 = reached the end of the path to (tx, ty); 2 = stopped short by a crowd. */
 export const Motion = defineComponent('Motion', { tx: 'i32', ty: 'i32', moving: 'u8', arrived: 'u8' });
@@ -74,4 +81,5 @@ export const GAME_COMPONENTS = [
   Builder,
   ResourcePatch,
   Repairer,
+  Missile,
 ] as const;

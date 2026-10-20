@@ -1,6 +1,6 @@
 import type { World } from '../ecs/world';
 import type { BlueprintStats } from './blueprint';
-import { Position, Resource, Unit } from './components';
+import { Missile, Position, Resource, Unit } from './components';
 import { BUILDING_VISION, TILE, UNIT_VISION } from './rules';
 
 /*
@@ -49,12 +49,14 @@ export function inVision(viewers: readonly Viewer[], x: number, y: number): bool
 /** Every entity `owner` can see this tick. */
 export function visibleTo(world: World, owner: number | ReadonlySet<number>, stats: (e: number) => BlueprintStats | undefined): Set<number> {
   const unit = world.store(Unit);
+  const missiles = world.store(Missile);
   const pos = world.store(Position);
   const viewers = viewersOf(world, owner, stats);
   const seen = new Set<number>(world.store(Resource).dense);
   for (const e of pos.dense) {
     if (seen.has(e)) continue;
-    if (unit.has(e) && isOwner(owner, unit.f.owner[e])) {
+    // Your own missiles stay in view however far they fly.
+    if ((unit.has(e) && isOwner(owner, unit.f.owner[e])) || (missiles.has(e) && isOwner(owner, missiles.f.owner[e]))) {
       seen.add(e);
       continue;
     }

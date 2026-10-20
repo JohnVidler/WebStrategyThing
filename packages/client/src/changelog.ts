@@ -11,6 +11,16 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: readonly ChangelogEntry[] = [
   {
+    date: '2026-10-20',
+    changes: [
+      'Flak: a new anti-missile weapon that bursts every enemy missile near its target and never misses, with a Flak Truck and a Flak Turret. You can now also order any armed unit to shoot a missile down by right-clicking it.',
+      'Fast units and a lightning discharge: a Turbo motor, the Dart and Pathfinder light units that are twice as quick as a Scout, and a visible tesla discharge.',
+      'The designer opened from the main menu now has Download, Upload and Reset-to-defaults buttons for your saved designs, like the in-game menu.',
+      'Missiles: three launcher sizes fire slow, homing missiles that fly in wide arcs and burst on their own at the end of their flight. Damage grows with the matter each costs; bigger ones are slower, turn wider and are easier to shoot down. Each has a shadow under it so you can see it is flying.',
+      'New starter units so every weapon gets played: Tank (cannon), Lancer (laser), Stormer (tesla coil) and Rocket Truck (missiles). Tanks and Rocket Trucks fetch more matter from a silo when they run low.',
+    ],
+  },
+  {
     date: '2026-10-19',
     changes: [
       'Rock on the map now has rounded outer corners and gets lighter towards the middle of big outcrops, the grid no longer shows through it, and thin lines in the fog of war are gone.',

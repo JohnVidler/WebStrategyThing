@@ -6,20 +6,22 @@ import {
   BUILD_RANGE,
   BUILDING_BUILD_RANGE,
   BUILDING_VISION,
-  DEMOLISH_REFUND,
-  UNIT_VISION,
-  BUILDING_TRANSFER_RANGE,
-  CHARGE_RANGE,
   COMMON_ACTIONS,
-  CUSTOM_TASK_BASE,
+  COST,
+  DAY_LENGTH,
+  DEMOLISH_REFUND,
+  DOCK_RANGE,
+  EVENTS,
+  FLOW_HOST,
+  FREE_LITERALS,
+  HARVEST_RANGE,
   MAX_BUTTON_LABEL,
   MAX_BUTTONS,
-  DAY_LENGTH,
-  DOCK_RANGE,
-  HARVEST_RANGE,
   MAX_PARTS,
-  MAX_TASKS,
+  MAX_TEXT,
+  parseDoc,
   PART_LIST,
+  printText,
   RESOURCE_REGEN_INTERVAL_TICKS,
   SCRIPT_CONSTANT_DOCS,
   SOLAR_GENERATION_MULTIPLIER,
@@ -29,13 +31,15 @@ import {
   TILE,
   UNIT_API,
   UNIT_TRANSFER_RANGE,
-  VISIT_TTL,
+  UNIT_VISION,
   WIND_GENERATION_MULTIPLIER,
+  BUILDING_TRANSFER_RANGE,
+  CHARGE_RANGE,
 } from '@wst/engine';
 
 /*
- * Script documentation. Reference pages are generated from the engine's own
- * metadata (UNIT_API, constants, part catalogue, starter scripts), so they
+ * Program documentation. Reference pages are generated from the engine's own
+ * metadata (UNIT_API, events, constants, part catalogue, starter programs), so they
  * always match the build being played. Guide pages are hand-written below.
  */
 
@@ -45,8 +49,12 @@ const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-');
 const tiles = (sub: number) => sub / TILE;
 const fnLink = (name: string) => {
   const b = UNIT_API.find((f) => f.name === name);
-  return b ? `<a href="#/api/${slug(b.group ?? '')}#${name}"><code>${name}()</code></a>` : `<code>${name}</code>`;
+  return b ? `<a href="#/api/${slug(b.group ?? '')}#${name}"><code>${b.kind === 'config' ? 'config.' : ''}${name}()</code></a>` : `<code>${name}</code>`;
 };
+const KIND_LABEL = { query: 'query', action: 'action', config: 'runtime setting' } as const;
+const callName = (b: { name: string; kind: string }) => (b.kind === 'config' ? `config.${b.name}` : b.name);
+const configText = (f: { name: string; type: string; default: unknown }) =>
+  `<code>${f.name}</code> <span class="note">(${f.type === 'ints' ? 'list' : f.type}${Array.isArray(f.default) ? '' : `, default ${f.default === '' ? "''" : String(f.default)}`})</span>`;
 
 interface Page {
   id: string;
@@ -63,40 +71,43 @@ const guides: Page[] = [
     render: () => `
       <h1>Getting started</h1>
       <p>You command units the usual way — select with the mouse, right-click to give orders — but every
-      order only lands in the unit's <a href="#/tasks">task queue</a>. What the unit actually does is decided
-      by the <b>program of its class</b>: one script, shared by every unit of that class, running on each
+      order is only an <i>event</i> for the unit, see <a href="#/orders">Orders &amp; activities</a>. What the unit actually does is decided
+      by the <b>program of its class</b>: one program, shared by every unit of that class, running on each
       unit's own CPU with its own memory.</p>
-      <h2>The loop</h2>
+      <h2>Programs are event blocks</h2>
+      <p>A program is a set of <b>event blocks</b>. Each block says <i>when</i> it runs (an <a href="#/events">event</a>:
+      the unit was told something, saw something, has nothing to do, ...) and holds the code for it. A unit does
+      nothing, and <b>pays nothing</b>, until an event that it has a block for arrives — and events nobody handles are
+      never even queued.</p>
       <ul>
         <li>The simulation runs at ${TICK_RATE} ticks per second.</li>
-        <li>Each tick, each unit's CPU gets its cycle budget (from its CPU modules) and runs its program from where it left off.</li>
-        <li>Every instruction costs 1 cycle; builtin functions cost extra (listed on each one).</li>
-        <li>Reaching the end of the program ends the tick; the next tick starts again at the top.</li>
-        <li>Running out of cycles pauses mid-program; it resumes next tick. Slow CPUs run the same code, just with slower reactions.</li>
-        <li>Variables live in the unit's memory and <b>persist between ticks</b>.</li>
+        <li>Each tick a unit's CPU gets its cycle budget (from its CPU modules) and works through its queued events, one handler at a time.</li>
+        <li>What a handler costs is counted in <b>nodes executed and wires followed</b> — see <a href="#/cost">CPU cost &amp; memory</a>.</li>
+        <li>Running out of cycles pauses a handler between statements; it resumes next tick. Slow CPUs run the same code, just with slower reactions.</li>
+        <li><code>let</code> variables live in the unit's memory and <b>persist between events</b>.</li>
       </ul>
       <h2>A minimal class</h2>
       ${code(`
-var t = 0
+// Obey MOVE orders: walk there. The walk itself runs without the program, and costs it nothing.
+on(Order, { types: [MOVE] }, (type, tx, ty) => {
+  goTo(tx, ty);
+});
 
-t = taskType(0)
-if t == MOVE {
-  if goTo(taskX(0), taskY(0)) { taskDrop(0) }
-} else if t != 0 {
-  taskDrop(0)    # can't do anything else: discard it
-} else {
-  sleep(5)       # idle: save energy
-}`)}
-      <p>Open the <b>Designer</b> (button in the side panel, or F2), pick a class, edit its program and press
-      <b>Upload program</b>: every unit of that class reboots into the new code at once. The editor highlights the
-      language, completes builtins and constants (Ctrl+Space), shows their docs on hover, and runs the real compiler
-      as you type. New designs are assembled there too, from modules grouped by category.</p>
+// Say something when the unit has nothing left to do.
+on(Free, { repeat: 50 }, () => {
+  // look for work here
+});`)}
+      <p>Open the <b>Designer</b> (button in the side panel, or F2), pick a class and switch to the <b>Code</b> tab to
+      edit its program, then press <b>Upload program</b>: every unit of that class reboots into the new code at once.
+      The program can be edited as text (a strict subset of TypeScript) or as a node graph, and the two always agree:
+      see <a href="#/language">Language</a>. The designer's <b>Design</b> tab assembles new classes from modules.</p>
       <h2>Where next</h2>
       <ul>
-        <li><a href="#/language">Language</a> — syntax and operators.</li>
-        <li><a href="#/tasks">Tasks &amp; orders</a> — how player orders reach your scripts.</li>
-        <li><a href="#/energy">Energy &amp; power</a> — why units need to recharge.</li>
-        <li><a href="#/examples">Starter scripts</a> — the programs your starting classes run.</li>
+        <li><a href="#/language">Language</a> — the text and graph forms, and the kinds of call.</li>
+        <li><a href="#/events">Events</a> — what starts a block, and how to configure the sensor.</li>
+        <li><a href="#/cost">CPU cost &amp; memory</a> — what programs cost to run and to store.</li>
+        <li><a href="#/orders">Orders &amp; activities</a> — how player orders reach your programs, and how jobs run.</li>
+        <li><a href="#/examples">Starter programs</a> — the programs your starting classes run.</li>
       </ul>`,
   },
   {
@@ -105,70 +116,156 @@ if t == MOVE {
     section: 'Guide',
     render: () => `
       <h1>Language</h1>
-      <p>A deliberately small language: 32-bit integers only, no functions of your own (yet).</p>
+      <p>One program, two views. The <b>text</b> is a strict subset of TypeScript; the <b>graph</b> shows the same program as
+      blocks and wires. Edit either: the other follows. 32-bit integers only; <code>true</code> and <code>false</code> are 1 and 0.</p>
       ${code(`
-var target = -1          # declares a memory slot; the initial value is applied once at boot
-target = scan()          # assignment
-if target >= 0 && fire(target) == 0 {
-  approach(target, 3)
-} else if moving() == 0 {
-  move(rand(5) - 2, rand(5) - 2)
-}
-while taskCount() > 1 { taskDrop(1) }
-yield                    # end this tick's run here (resume after it next tick)`)}
-      <h2>Statements</h2>
+let target = -1;                       // a variable: one memory slot, starts at this value
+
+// An event block: its settings sit in the object, its parameters in the arrow function.
+on(Detected, { watch: [ENEMY], range: 6, interval: 5 }, (kind, h) => {
+  target = h;
+  const near = dist(h);                // bind a call's result with const
+  if (near <= 3) {
+    fire(h);
+  } else {
+    approach(h, 3);
+  }
+});`)}
+      <h2>What can be written</h2>
       <table>
-        <tr><th>Form</th><th>Meaning</th></tr>
-        <tr><td><code>var name</code>, <code>var name = 5</code></td><td>Declare a variable. Initial values must be literals and are applied once, at boot.</td></tr>
-        <tr><td><code>name = expr</code></td><td>Assign.</td></tr>
-        <tr><td><code>if expr { } else if expr { } else { }</code></td><td>Conditional (0 is false, anything else true).</td></tr>
-        <tr><td><code>while expr { }</code></td><td>Loop. Long loops simply continue next tick when cycles run out.</td></tr>
-        <tr><td><code>yield</code></td><td>Stop for this tick.</td></tr>
-        <tr><td><code>button name "Label" key "K" aim</code></td><td>Declare a player action button (top level; <code>key</code> and <code>aim</code> optional). See <a href="#/buttons">Action buttons</a>.</td></tr>
-        <tr><td><code>expr</code></td><td>Evaluate and discard (usually a function call).</td></tr>
+        <tr><th>Text</th><th>Graph</th></tr>
+        <tr><td><code>on(Event, { settings }, (a, b) =&gt; { ... });</code></td><td>An event block: the settings are fields on the block, the parameters are its data outputs.</td></tr>
+        <tr><td><code>let name = 5;</code> (top level)</td><td>A variable declaration.</td></tr>
+        <tr><td><code>name = expr;</code></td><td>Set Variable.</td></tr>
+        <tr><td><code>call(args);</code>, <code>const r = call(args);</code></td><td>A call node on the execution line; <code>const</code> binds its result.</td></tr>
+        <tr><td><code>if (c) { } else if (c) { } else { }</code></td><td>Branch.</td></tr>
+        <tr><td><code>while (c) { }</code></td><td>While loop (a handler that runs too long crashes, see <a href="#/cost">CPU cost</a>).</td></tr>
+        <tr><td><code>a + b</code>, <code>a === b</code>, <code>a &amp;&amp; b</code>, <code>c ? a : b</code>, <code>-x</code>, <code>!x</code></td><td>Maths, comparison and logic nodes.</td></tr>
+        <tr><td><code>// note</code></td><td>A comment, kept in both views.</td></tr>
       </table>
-      <h2>Operators (loosest first)</h2>
+      <p>Operators follow JavaScript's precedence: <code>||</code> <code>&amp;&amp;</code> <code>|</code> <code>&amp;</code> <code>== !=</code> <code>&lt; &lt;= &gt; &gt;=</code>
+      <code>+ -</code> <code>* / %</code>. <code>&amp;&amp;</code> and <code>||</code> stop early. Division truncates and dividing by zero crashes the handler.
+      Both <code>==</code> and <code>===</code> are accepted (the formatter writes <code>===</code>). Nothing else from TypeScript exists: no classes, closures, loops other
+      than <code>while</code>, or other statements.</p>
+      <h2>Four kinds of call</h2>
+      <p>Every call belongs to one kind, and the editors colour them differently so you never mistake "set up how I behave" for "do something now":</p>
       <table>
-        <tr><th>Operators</th><th>Notes</th></tr>
-        <tr><td><code>||</code></td><td>Short-circuit or (result 0/1)</td></tr>
-        <tr><td><code>&amp;&amp;</code></td><td>Short-circuit and (result 0/1)</td></tr>
-        <tr><td><code>== !=</code></td><td></td></tr>
-        <tr><td><code>&lt; &lt;= &gt; &gt;=</code></td><td></td></tr>
-        <tr><td><code>|</code></td><td>Bitwise or</td></tr>
-        <tr><td><code>&amp;</code></td><td>Bitwise and — binds tighter than comparisons, so <code>taskFlags(0) &amp; URGENT</code> needs no brackets</td></tr>
-        <tr><td><code>+ -</code></td><td>32-bit wrap-around</td></tr>
-        <tr><td><code>* / %</code></td><td>Division truncates; dividing by zero is a fault</td></tr>
-        <tr><td><code>-x !x</code></td><td>Negate, logical not</td></tr>
+        <tr><th>Kind</th><th>Meaning</th><th>Where</th><th>Examples</th></tr>
+        <tr><td><b>Query</b></td><td>Reads state; no effect (a few spend energy, such as a scan).</td><td>Anywhere, inside expressions.</td><td><code>hp()</code> <code>orderCount()</code> <code>dist(h)</code> <code>scan()</code></td></tr>
+        <tr><td><b>Action</b></td><td>A one-shot effect on the world now.</td><td>A statement. Its result can be bound with <code>const</code>.</td><td><code>moveTo(x, y)</code> <code>fire(h)</code> <code>nextOrder()</code> <code>stop()</code></td></tr>
+        <tr><td><b>Runtime setting</b></td><td>Changes a standing setting of a module or the CPU while the program runs.</td><td>A statement, written in the <code>config</code> namespace.</td><td><code>config.rest(5)</code> <code>config.laserPower(12)</code> <code>config.setModule(2, 0)</code> <code>config.storageMode(HOLD)</code></td></tr>
+        <tr><td><b>Event source settings</b></td><td>How an event's source behaves: the sensor sweep, filters, intervals, a button's label. Fixed when you upload; costs nothing to run.</td><td>The settings object of an event block.</td><td><code>{ watch: [ENEMY], range: 6 }</code> <code>{ types: [MOVE] }</code> <code>{ interval: 4 }</code></td></tr>
       </table>
-      <h2>Comments</h2><p><code># …</code> or <code>// …</code> to the end of the line.</p>
+      <p class="note">An action inside an expression, such as <code>if (fire(h))</code>, is an error: write <code>const hit = fire(h); if (hit) { ... }</code>.</p>
+      <p>The one place text exists is where a function takes it, such as <code>alert('Enemy!', 2000)</code>, a speech bubble over the unit
+      for 2 seconds (up to ${MAX_TEXT} characters; each distinct text takes one memory slot). In the graph, type the text straight into the input.</p>
+      <h2>Names</h2>
+      <p>Variables, event parameters and bound results cannot reuse a built-in name (so no variable called <code>x</code> or <code>hp</code>), and
+      <code>const</code> results only live inside the block they are written in. Constants such as <code>MOVE</code> or <code>URGENT</code> are built in — see <a href="#/constants">Constants</a>.</p>
       <h2>Faults</h2>
-      <p>Division by zero or a stack overflow crashes the unit's program. The unit spends one tick rebooting
-      (memory reset to its initial values) and starts again; the client tints faulted units red.</p>
-      <h2>Limits</h2>
-      <ul>
-        <li>Memory: the number of variables is limited by the class's memory (CPU and memory modules). A program needing more is rejected.</li>
-        <li>Stack depth comes from CPU modules; deeply nested expressions use more.</li>
-        <li>Constants such as <code>MOVE</code> or <code>URGENT</code> are built in — see <a href="#/constants">Constants</a>.</li>
-      </ul>`,
+      <p>Division by zero, or a handler that runs more than ${COST.HANDLER_LIMIT} cycles, crashes the unit's program. The unit spends one tick rebooting
+      (memory reset to its start values, queued events lost, a <code>Spawned</code> event with reason 1) and starts again; the client tints faulted units red.</p>`,
   },
   {
-    id: 'tasks',
-    title: 'Tasks & orders',
+    id: 'events',
+    title: 'Events',
     section: 'Guide',
     render: () => `
-      <h1>Tasks &amp; orders</h1>
-      <p>Every unit and building has a task queue of up to ${MAX_TASKS} entries. A task is
-      <code>(type, x, y, target, flags)</code>; index 0 is the front.</p>
-      <h2>Where tasks come from</h2>
+      <h1>Events</h1>
+      <p>Events are the only way a block runs. Each block has the event's <b>settings</b> in an object after its name, and receives the event's
+      <b>parameters</b>. An event with no block for it costs nothing: it is dropped before it is queued. Filters in the settings (such as
+      <code>types</code> on <code>Order</code>) drop events for free too.</p>
+      <div class="table-wrap"><table>
+        <tr><th>Event</th><th>Parameters</th><th>Settings</th><th>Raised when</th></tr>
+        ${EVENTS.map(
+          (e) => `<tr id="${e.name}"><td><code>${e.name}</code>${e.multi ? '<br><span class="note">several blocks allowed</span>' : ''}</td>
+            <td>${e.params.map((p) => `<code>${p}</code>`).join(', ') || '—'}</td>
+            <td>${e.config.map(configText).join('<br>') || '—'}</td><td>${esc(e.doc)}</td></tr>`,
+        ).join('')}
+      </table></div>
+      <h2>Free: nothing left to do</h2>
+      <p><code>Free</code> fires when the unit has no job and no order: it was just built, a job ended with nothing attached to it, or the order list ran out.
+      It fires once, then again every <code>repeat</code> ticks while the unit stays free, so a free unit can look for work without a polling loop.
+      A unit that is busy is never free, so it pays nothing. (<code>Idle</code> still exists as a CPU heartbeat, but hooking only <code>Idle</code> is a sign
+      the program should be built from events instead.)</p>
+      <h2>Detected: the sensor</h2>
+      <p>A <code>Detected</code> block <i>is</i> the sensor setup. The sensor sweeps on its own schedule, paying its normal energy per sweep (even when nothing is found),
+      and raises one event per thing found, only when something is. Better sensors allow more:</p>
       <table>
-        <tr><th>Source</th><th>How</th><th>Flags</th></tr>
-        <tr><td>Player</td><td>Right-click (the server picks the type from what was clicked)</td><td><code>FROM_PLAYER</code>, plus <code>URGENT</code> unless the queue modifier (Ctrl, or Shift outside Firefox) was held</td></tr>
-        <tr><td>Building</td><td><code>order()</code> while the unit is visiting (see <a href="#/buildings">Buildings</a>)</td><td><code>FROM_BUILDING</code></td></tr>
-        <tr><td>The unit itself</td><td>${fnLink('taskPush')}</td><td>none</td></tr>
+        <tr><th>Setting</th><th>Short sensor</th><th>Long sensor</th></tr>
+        <tr><td><code>watch</code> (kinds, in priority order: <code>ENEMY</code>, <code>RESOURCE</code>, <code>DAMAGED_ALLY</code>)</td><td>1 kind</td><td>up to 3 kinds</td></tr>
+        <tr><td><code>sort</code> (which candidate comes first)</td><td><code>NEAREST</code></td><td>also <code>WEAKEST</code>, <code>STRONGEST</code>, <code>MOST_DAMAGED</code></td></tr>
+        <tr><td><code>limit</code> (reports per sweep)</td><td>1</td><td>up to 3</td></tr>
+        <tr><td><code>range</code></td><td colspan="2">up to the sensor's own range</td></tr>
+        <tr><td><code>interval</code></td><td colspan="2">at least 1 tick between sweeps</td></tr>
       </table>
+      <p>Anything the installed sensor cannot do is reduced to what it can, and the editor says so where it is written. A class needs a sensor module for <code>Detected</code> to ever fire.
+      Nothing senses further or cheaper than the explicit ${fnLink('scan')} did: a sweep costs the sensor's energy, like one scan.</p>
+      ${code(`
+// Shoot what comes into range, strongest first; no code runs while nothing is there.
+on(Detected, { watch: [ENEMY, RESOURCE], range: 14, interval: 4, sort: STRONGEST, limit: 2 }, (kind, h) => {
+  if (kind === ENEMY) {
+    fire(h);
+  }
+});`)}
+      <h2>Order, Button, Visitor</h2>
+      <p><code>Order</code> blocks run when an order reaches the front of the unit's order list (see <a href="#/orders">Orders &amp; activities</a>). <code>Button</code> blocks
+      <i>are</i> the class's action buttons, see <a href="#/buttons">Action buttons</a>. <code>Visitor</code> blocks are how buildings talk to units, see <a href="#/buildings">Buildings &amp; visitors</a>.</p>`,
+  },
+  {
+    id: 'cost',
+    title: 'CPU cost & memory',
+    section: 'Guide',
+    render: () => `
+      <h1>CPU cost &amp; memory</h1>
+      <h2>What running costs</h2>
+      <p>A handler is charged for the <b>nodes it executes and the wires it follows</b> — the same price whether you wrote text or drew a graph:</p>
+      <table>
+        <tr><th>What</th><th>Cycles</th></tr>
+        <tr><td>A statement that runs (its node, plus the execution wire into it)</td><td>${COST.NODE + COST.ARC}</td></tr>
+        <tr><td>An operator or a query inside an expression (its node, plus the wire out of it)</td><td>${COST.NODE + COST.ARC}</td></tr>
+        <tr><td>Reading a variable (a Get node on a wire)</td><td>${COST.NODE + COST.ARC}</td></tr>
+        <tr><td>Reading an event parameter or a <code>const</code> result (just the wire)</td><td>${COST.ARC}</td></tr>
+        <tr><td>A number written inline, or a named constant</td><td>free</td></tr>
+        <tr><td>A call's own cost, on top (a scan costs more than a comparison)</td><td>listed per function</td></tr>
+        <tr><td>A branch that is not taken, a block with no events, a filtered-out event</td><td>nothing</td></tr>
+      </table>
+      <p>Each tick a unit's CPU receives its <code>cycles per tick</code>. It runs statements until the balance is spent, <b>pauses</b> the handler and resumes it next tick.
+      A statement is never split: one that costs more than the budget still runs, overdrawing the balance, and the CPU then pays it off over the next ticks. Unspent cycles are not
+      banked. Energy is billed from the cycles actually run, per 100 (see the CPU module). A handler that runs more than ${COST.HANDLER_LIMIT} cycles crashes.</p>
+      <h2>What a program occupies</h2>
+      <p>Memory never costs energy, but a program has to fit the class's memory slots (CPU and memory modules provide them). One slot for each:</p>
+      <ul>
+        <li>variable (<code>let</code>);</li>
+        <li><b>distinct</b> number written in the code, other than ${[...FREE_LITERALS].join(', ')} (a number used ten times takes one slot; named constants like <code>MOVE</code> are free);</li>
+        <li>event parameter or <code>const</code> result — for the biggest block, since only one runs at a time.</li>
+      </ul>
+      <p>Event settings are not memory. The editor shows <i>Memory used/available</i> as you type, and an upload that does not fit is rejected with what it needs.
+      Sharing one <code>let range = 6;</code> is cheaper than writing several different numbers.</p>
+      <h2>The event queue</h2>
+      <p>Each unit buffers a few events (its CPU's stack size). When the queue is full, the oldest periodic event (<code>Every</code>, <code>Timer</code>, <code>Detected</code>)
+      makes room, otherwise the new event is dropped.</p>`,
+  },
+  {
+    id: 'orders',
+    title: 'Orders & activities',
+    section: 'Guide',
+    render: () => `
+      <h1>Orders &amp; activities</h1>
+      <p>Orders are events, and jobs are <b>activities</b> that the game runs for you. Your program says <i>what</i> to do when an order arrives; the walking,
+      gathering and fighting happen outside the program, so a busy unit costs almost no CPU.</p>
+      <h2>Where orders come from</h2>
+      <table>
+        <tr><th>Source</th><th>How</th><th>Setting to match</th></tr>
+        <tr><td>Player</td><td>Right-click (the server picks the type from what was clicked), or an action button</td><td><code>from: FROM_PLAYER</code></td></tr>
+        <tr><td>Building</td><td>${fnLink('order')} while the unit is visiting (see <a href="#/buildings">Buildings</a>)</td><td><code>from: FROM_BUILDING</code></td></tr>
+      </table>
+      <p>An order that no <code>Order</code> block wants is dropped at once, for free. Wanted orders wait in the unit's order list; the front one is raised as an
+      <code>Order</code> event with <code>(type, tx, ty, target)</code>. Player orders given with the queue modifier (Ctrl, or Shift outside Firefox) wait behind the current one;
+      without it the order is <i>urgent</i>, and an <code>Order</code> block with <code>urgent: REPLACE</code> lets it cancel the current job and the rest of the list.</p>
       <h2>Right-click resolution</h2>
       <table>
-        <tr><th>Clicked</th><th>Task</th></tr>
+        <tr><th>Clicked</th><th>Order</th></tr>
         <tr><td>Enemy unit or building (and you can fight)</td><td><code>ATTACK</code></td></tr>
         <tr><td>Resource (and you have a cargo bay)</td><td><code>HARVEST</code></td></tr>
         <tr><td>Own depot (and you have a cargo bay)</td><td><code>DOCK</code></td></tr>
@@ -179,21 +276,40 @@ yield                    # end this tick's run here (resume after it next tick)`
         <tr><td>With a building selected</td><td><code>MOVE</code> on the building (starter HQ uses it as a rally point)</td></tr>
         <tr><td><kbd>S</kbd></td><td><code>STOP</code></td></tr>
       </table>
-      <h2>Your script decides</h2>
-      <p>Orders are always <b>appended</b>. Nothing happens unless the program acts on them. The starter
-      classes use this policy: an URGENT order replaces the whole plan.</p>
+      <h2>Activities and their outcomes</h2>
+      <p>A call such as ${fnLink('goTo')}, ${fnLink('harvest')} or ${fnLink('build')} <b>starts an activity</b> and returns at once. When the activity ends it ends in one
+      of a few named ways, and you attach what to do next to each way. The graph shows these as extra exec pins on the node.</p>
       ${code(`
-n = taskCount()
-if n > 1 && taskFlags(n - 1) & URGENT {
-  taskFirst(n - 1)                       # newest order to the front
-  while taskCount() > 1 { taskDrop(1) }  # forget the rest
-}
-taskAck(0)                               # in hand: clear its URGENT flag`)}
-      <p class="note">Acknowledge orders with ${fnLink('taskAck')}. Otherwise an old URGENT task that ends up
-      last in the queue again (say, after the unit pushes a CHARGE task in front of it) looks like a brand-new order.</p>
-      <p>Change it to make a class stubborn (finish the current job first), obedient only outside combat, or
-      to refuse player orders while recharging. The client draws the planned route through every queued task
-      for your selected units.</p>`,
+on(Order, { types: [HARVEST], urgent: REPLACE }, (type, tx, ty, field) => {
+  harvest(field, {
+    full: () => {
+      const depot = nearestDepot();
+      dock(depot);
+    },
+    empty: () => {
+      nextOrder();
+    },
+  });
+});`)}
+      <p>The chain runs later, in the frame of the call: it sees the same names the call did (here <code>field</code>), not what the call returned. An activity started
+      while handling an order <b>finishes that order</b> when it ends without a chain; if there is one, it is up to the chain
+      (use ${fnLink('nextOrder')} to move on, ${fnLink('swapOrder')} to hand the job on, ${fnLink('clearOrders')} to drop everything).</p>
+      <h2>Interrupting a job</h2>
+      <p>${fnLink('suspendActivity')} puts the current job aside and stops the unit; ${fnLink('resumeActivity')} brings it back where it was.
+      That is how a unit recharges mid-job: <code>EnergyLow</code> suspends, charges, and resumes. ${fnLink('stop')} cancels the job outright, and
+      ${fnLink('activity')} tells you which kind is under way.</p>
+      ${code(`
+on(EnergyLow, { below: 25 }, () => {
+  suspendActivity();
+  const pad = nearestCharger();
+  charge(pad, {
+    charged: () => {
+      resumeActivity();
+    },
+  });
+});`)}
+      <p class="note"><code>EnergyLow</code> repeats while the store stays low, so a recharge that was cut short is tried again. The client draws the route of a unit's
+      current job for your selected units.</p>`,
   },
   {
     id: 'fog',
@@ -207,7 +323,7 @@ taskAck(0)                               # in hand: clear its URGENT flag`)}
       switches outside your vision never reach your browser.</p>
       <p>The map is shaded where you can't see: lightly where you have looked before, darker where you never have.
       Things that leave your vision disappear until you see them again.</p>
-      <p class="note">Scripts are limited separately, by their own sensors: ${fnLink('scan')} only finds what the unit's
+      <p class="note">Programs are limited separately, by their own sensors: ${fnLink('scan')} and <code>Detected</code> only find what the unit's
       sensor reaches, whatever the player can see.</p>`,
   },
   {
@@ -216,39 +332,36 @@ taskAck(0)                               # in hand: clear its URGENT flag`)}
     section: 'Guide',
     render: () => `
       <h1>Action buttons</h1>
-      <p>With units selected, the side panel shows a grid of action buttons. Pressing a button (or its key) only
-      <b>queues a task</b>, like a right-click. The unit's script still decides what happens.</p>
+      <p>With units selected, the side panel shows a grid of action buttons.</p>
       <h2>Common actions</h2>
-      <p>These are always shown. Each is greyed out unless at least one selected unit has the modules for it,
-      and it only reaches the units that do. Aimed actions wait for a left-click on the map (right-click or Esc cancels).</p>
+      <p>These are always shown. Pressing one (or its key) gives the unit an <b>order</b>, like a right-click, and the unit's program decides what happens.
+      Each is greyed out unless at least one selected unit has the modules for it, and it only reaches the units that do. Aimed actions wait for a
+      left-click on the map (right-click or Esc cancels).</p>
       <table>
-        <tr><th>Button</th><th>Key</th><th>Task</th><th>What it does</th></tr>
+        <tr><th>Button</th><th>Key</th><th>Order</th><th>What it does</th></tr>
         ${COMMON_ACTIONS.map((a) => `<tr><td>${a.icon} ${a.label}</td><td><kbd>${a.key}</kbd></td><td><code>${SCRIPT_CONSTANT_DOCS.find(([, v]) => v === a.task)?.[0] ?? a.task}</code>${a.aim ? ' (aimed)' : ''}</td><td>${esc(a.doc)}</td></tr>`).join('')}
       </table>
       <h2>Your own buttons</h2>
-      <p>A class declares buttons in its program, at the top level:</p>
+      <p>A class declares a button with a <code>Button</code> block. The block <i>is</i> the button, and its code runs when the button is pressed:</p>
       ${code(`
-button boost "Overdrive" key "O"   # key is optional
-button mine "Lay mine" aim         # aim: the player then clicks a point or unit
-var t = 0
+let boosted = 0;
 
-t = taskType(0)
-if t == boost {
-  setModule(3, 1)
-  taskDrop(0)
-} else if t == mine {
-  if goTo(taskX(0), taskY(0)) { taskDrop(0) }
-}`)}
+on(Button, { label: 'Overdrive', key: 'O' }, () => {
+  config.setModule(3, 1);
+  boosted = 1;
+});
+
+on(Button, { label: 'Lay mine', aim: true }, (px, py, target) => {
+  const arrived = goTo(px, py);
+});`)}
       <ul>
-        <li>The button's name (<code>boost</code>) becomes a constant: the task type pushed onto the queue
-        (${CUSTOM_TASK_BASE}, ${CUSTOM_TASK_BASE + 1}, … in declaration order). Declare buttons before using their names.</li>
-        <li>Aimed buttons carry the picked tile in <code>taskX/taskY</code> and the unit under the cursor (if any) in
-        <code>taskTarget</code>. Other buttons carry the unit's own tile and no target.</li>
+        <li>Settings: <code>label</code> (up to ${MAX_BUTTON_LABEL} characters), <code>key</code> (one upper-case letter, optional), <code>aim</code> (the player then clicks a point or unit) and <code>name</code> (defaults to the label).</li>
+        <li>The block receives <code>(tx, ty, target)</code> (tile x and y): the picked tile and the unit under the cursor (-1 if none) for aimed buttons, otherwise the unit's own tile.</li>
+        <li>A button raises its event directly; it does not go through the order list.</li>
         <li>With several classes selected, the grid shows every button of every class. Buttons with the same name
-        are merged, and each press only reaches units whose class declares that button.</li>
-        <li>Up to ${MAX_BUTTONS} buttons per class, labels up to ${MAX_BUTTON_LABEL} characters. Keys are single letters;
+        are merged, and each press only reaches units whose class has that button.</li>
+        <li>Up to ${MAX_BUTTONS} buttons per class. Keys are single letters;
         ${COMMON_ACTIONS.map((a) => `<kbd>${a.key}</kbd>`).join(' ')} belong to the common actions.</li>
-        <li>As with right-clicks, the task is <code>URGENT</code> unless the queue modifier is held.</li>
       </ul>
       <p class="note">The starter fighters have a <b>Hold fire</b> toggle (<kbd>F</kbd>), and the energy storage has
       <b>Hold charge</b> / <b>Automatic</b> (<kbd>K</kbd>/<kbd>U</kbd>).</p>`,
@@ -267,18 +380,20 @@ if t == boost {
         <li><code>PRODUCED</code> — the unit was just built by this factory;</li>
         <li><code>DOCKED</code> — the unit just called ${fnLink('dock')} here.</li>
       </ul>
-      <p>The building takes visits one at a time with ${fnLink('nextVisitor')}, may inspect the visitor
-      (${fnLink('visitorCaps')}, ${fnLink('visitorLastHarvest')}, ${fnLink('visitorEnergy')}) and gives it tasks
-      with ${fnLink('order')}. The visit ends at the next <code>nextVisitor()</code> call or when the building's
-      program finishes its pass. Unclaimed visits lapse after ${VISIT_TTL} ticks.</p>
+      <p>Each visit raises a <code>Visitor</code> event with the reason and the visitor's handle. While that handler runs, the building may inspect the visitor
+      (${fnLink('visitorCaps')}, ${fnLink('visitorLastHarvest')}, ${fnLink('visitorEnergy')}) and give it orders
+      with ${fnLink('order')}. The link ends when the handler does.</p>
       <p class="note">Keeping a visitor's handle in a variable grants nothing: <code>order()</code> only ever
       targets the current visitor. Once a unit leaves, the building has no control over it until it visits again.</p>
       ${code(`
-r = nextVisitor()
-if r != 0 && visitorCaps() & CAN_HARVEST {
-  res = randomResource(4, 10)
-  if res >= 0 { order(HARVEST, 0, 0, res) }
-}`)}
+on(Visitor, { reasons: [DOCKED] }, (reason, who) => {
+  if (visitorCaps() & CAN_HARVEST) {
+    const field = randomResource(4, 10);
+    if (field >= 0) {
+      order(HARVEST, 0, 0, field);
+    }
+  }
+});`)}
       <h2>Ranges</h2>
       <p>Interaction ranges are measured from a building's edge: docking within ${tiles(DOCK_RANGE)} tiles,
       charging within ${tiles(CHARGE_RANGE)} tiles; harvesting needs the unit within ${tiles(HARVEST_RANGE)} tiles
@@ -294,15 +409,16 @@ if r != 0 && visitorCaps() & CAN_HARVEST {
       <p>Its chassis provides a small buffer; battery modules add more. Modules use energy when used:</p>
       <table>
         <tr><th>Module</th><th>Energy use</th></tr>
-        <tr><td>CPU</td><td>per 100 cycles actually executed — <code>yield</code> and ${fnLink('sleep')} are free, and a sleeping CPU uses nothing</td></tr>
+        <tr><td>CPU</td><td>per 100 cycles actually run — a CPU with nothing to do uses nothing</td></tr>
         <tr><td>Motor / rotor</td><td>per tick moving</td></tr>
-        <tr><td>Sensor</td><td>per scan (${fnLink('scan')}, ${fnLink('scanAlly')}, ${fnLink('scanResource')})</td></tr>
+        <tr><td>Sensor</td><td>per scan (${fnLink('scan')}, ${fnLink('scanAlly')}, ${fnLink('scanResource')}) and per <code>Detected</code> sweep</td></tr>
         <tr><td>Weapon</td><td>per shot</td></tr>
         <tr><td>Cargo bay</td><td>per tick harvesting</td></tr>
         <tr><td>Factory</td><td>per tick producing</td></tr>
       </table>
       <p>Without enough energy the action simply doesn't happen: the CPU stops (state "NO POWER", unit greyed
-      out), motors stall, weapons don't fire. Exact costs are in the <a href="#/parts">parts catalogue</a>.</p>
+      out), motors stall, weapons don't fire. Exact costs are in the <a href="#/parts">parts catalogue</a>. The <code>EnergyLow</code> and
+      <code>EnergyFull</code> events fire as the store crosses a threshold.</p>
       <h2>Moving energy around</h2>
       <p>Energy moves between your own units and buildings by <b>transfer</b>, with one rule for everyone:</p>
       <ul>
@@ -311,21 +427,16 @@ if r != 0 && visitorCaps() & CAN_HARVEST {
             ${tiles(BUILDING_TRANSFER_RANGE)} tiles from their edge.</li>
       </ul>
       <p><b>Charging pads</b> are buildings that transfer automatically, every tick, to each nearby own unit (topped up from
-      the grid). Scripts transfer with ${fnLink('giveEnergy')} and check others with ${fnLink('energyOf')}. The starter scripts
-      push a <code>CHARGE</code> task to the front of the queue below 25%.</p>
+      the grid). Programs transfer with ${fnLink('giveEnergy')} and check others with ${fnLink('energyOf')}. The starter programs
+      suspend their job and go to a charging pad below 25%.</p>
       <h2>Reviving flat units</h2>
       <p>A unit with no energy can't think or move. Select a healthy unit and right-click the flat one: it gets a
-      <code>SUPPLY</code> task, and the starter scripts walk over and hand across 10% of their own capacity per pass until the
+      <code>SUPPLY</code> order, and the starter programs walk over and hand across 10% of their own capacity per pass until the
       flat unit reaches 50% (stopping if the helper would drop below half itself).</p>
       ${code(`
-} else if t == SUPPLY {
-  h = taskTarget(0)
-  if energyOf(h) < 0 || energyOf(h) >= 50 || energy() * 2 < energyMax() {
-    taskDrop(0)
-  } else if approach(h, 1) == 1 {
-    giveEnergy(h, energyMax() / 10)
-  }
-}`)}
+on(Order, { types: [SUPPLY] }, (type, tx, ty, flat) => {
+  supply(flat);
+});`)}
       <h2>Power networks</h2>
       <p>Buildings link automatically to other own buildings within reach (edge to edge, in tiles):
       ${BASE_LINK_RANGE} tile by default, more with an <b>energy antenna</b> module (3, 6 or 12 tiles; the larger
@@ -342,8 +453,13 @@ if r != 0 && visitorCaps() & CAN_HARVEST {
       <h2>Energy storage</h2>
       <p>A storage building is a pile of battery banks with a small CPU choosing the mode:</p>
       ${code(`
-if netSupply() >= netDemand() { storageMode(CHARGE_STORE) } else { storageMode(DISCHARGE) }
-sleep(4)`)}
+on(Every, { ticks: 4 }, () => {
+  if (netSupply() >= netDemand()) {
+    config.storageMode(CHARGE_STORE);
+  } else {
+    config.storageMode(DISCHARGE);
+  }
+});`)}
       <p>See also ${fnLink('netStored')}, ${fnLink('netCapacity')}, ${fnLink('daylight')}, ${fnLink('wind')}.</p>`,
   },
   {
@@ -365,7 +481,7 @@ sleep(4)`)}
       </ul>
       <h2>Placing buildings</h2>
       <p>Pick a building class in the <b>build bar</b> under the map, then left-click the map to place its blueprint
-      (Ctrl/Shift-click to place several). Any selected units with a <b>build arm</b> get a <code>BUILD</code> task for it;
+      (Ctrl/Shift-click to place several). Any selected units with a <b>build arm</b> get a <code>BUILD</code> order for it;
       right-clicking a site with builders selected does the same. Sites block their tiles and can be attacked.
       Blueprints can only be placed inside your vision (the centre of the building must be in view of your units or
       buildings); the ghost turns red outside it.</p>
@@ -378,15 +494,21 @@ sleep(4)`)}
         <li>from the common pool — but only if the site is <b>supplied</b>: linked by the power grid (directly, or through
         pylons) to a finished building with silos. Check with ${fnLink('siteSupplied')}.</li>
       </ol>
-      <p>Remote sites therefore need resources carried to them — the starter Builder script does this
+      <p>Remote sites therefore need resources carried to them — the starter Builder program does this
       automatically — or a chain of pylons to bring them into the grid.</p>
       ${code(`
-if siteSupplied(h) == 0 && cargo() == 0 {
-  d = nearestStock()
-  if approach(d, 1) == 1 { take(d, cargoMax()) }
-} else if approach(h, 1) == 1 {
-  build(h)
-}`)}
+on(Order, { types: [BUILD] }, (type, tx, ty, site) => {
+  build(site, {
+    starved: () => {
+      const depot = nearestStock();
+      take(depot, cargoMax(), {
+        taken: () => {
+          build(site);
+        },
+      });
+    },
+  });
+});`)}
       <p>A finished building starts with empty energy and fills up from its power network.</p>
       <h2>Construction towers</h2>
       <p>Buildings can carry a <b>build crane</b>, which reaches ${tiles(BUILDING_BUILD_RANGE)} tiles from the building's edge.
@@ -414,10 +536,12 @@ if siteSupplied(h) == 0 && cargo() == 0 {
       batteries and depots are passive and always on. A program may not switch off its own last running CPU
       (the player can).</p>
       ${code(`
-# Save energy: only power the sensor every other pass.
-if moduleKind(3) == M_SENSOR {
-  setModule(3, !moduleOn(3))
-}`)}
+// Save energy: switch the sensor (module 3) on only while something is near.
+on(EnergyLow, { below: 30 }, () => {
+  if (moduleKind(3) === M_SENSOR) {
+    config.setModule(3, 0);
+  }
+});`)}
       <p>Module indices match the order of parts in the class (the chassis is index 0). Use
       ${fnLink('moduleCount')} and ${fnLink('moduleKind')} to find them.</p>`,
   },
@@ -434,9 +558,9 @@ if moduleKind(3) == M_SENSOR {
         <li>Flying units (a working <b>rotor</b>) fly straight over anything, but only land on tiles that are
             passable and free; if told to stop over rock they drift to the nearest landing spot.</li>
         <li>Units push apart rather than overlap (ground and air separately).</li>
-        <li>${fnLink('goTo')} returns 1 on arrival — including "as close as possible" when crowded or blocked —
-            so <code>if goTo(x, y) { taskDrop(0) }</code> always finishes.</li>
-        <li>${fnLink('passable')} lets scripts check terrain themselves.</li>
+        <li>${fnLink('goTo')} is an activity: it ends <code>arrived</code> — including "as close as possible" when crowded — or <code>blocked</code>.
+            The <code>Arrived</code> event fires when a trip ends.</li>
+        <li>${fnLink('passable')} lets programs check terrain themselves.</li>
       </ul>`,
   },
 ];
@@ -450,8 +574,8 @@ const apiPages: Page[] = API_GROUPS.map((group) => ({
     return `<h1>${esc(group)}</h1>${fns
       .map(
         (b) => `<div class="fn" id="${b.name}">
-          <span class="meta">${1 + b.cost} cycle${b.cost ? 's' : ''}</span>
-          <div class="sig">${b.name}(${(b.args ?? []).join(', ')})</div>
+          <span class="meta">${KIND_LABEL[b.kind]}${b.cost ? ` · +${b.cost} cycles` : ''}</span>
+          <div class="sig">${callName(b)}(${(b.args ?? []).join(', ')})</div>
           <p>${esc(b.doc ?? '')}</p>
         </div>`,
       )
@@ -465,11 +589,11 @@ const reference: Page[] = [
     title: 'All functions',
     section: 'API reference',
     render: () => `<h1>All functions</h1><div class="table-wrap"><table>
-      <tr><th>Function</th><th>Cycles</th><th>Group</th><th>Description</th></tr>
+      <tr><th>Function</th><th>Kind</th><th>Extra cycles</th><th>Group</th><th>Description</th></tr>
       ${[...UNIT_API]
         .sort((a, b) => a.name.localeCompare(b.name))
-        .map((b) => `<tr><td><a href="#/api/${slug(b.group ?? '')}#${b.name}"><code>${b.name}(${(b.args ?? []).join(', ')})</code></a></td>
-          <td>${1 + b.cost}</td><td>${esc(b.group ?? '')}</td><td>${esc(b.doc ?? '')}</td></tr>`)
+        .map((b) => `<tr><td><a href="#/api/${slug(b.group ?? '')}#${b.name}"><code>${callName(b)}(${(b.args ?? []).join(', ')})</code></a></td>
+          <td>${KIND_LABEL[b.kind]}</td><td>${b.cost}</td><td>${esc(b.group ?? '')}</td><td>${esc(b.doc ?? '')}</td></tr>`)
         .join('')}
     </table></div>`,
   },
@@ -478,7 +602,7 @@ const reference: Page[] = [
     id: 'constants',
     title: 'Constants',
     section: 'Reference',
-    render: () => `<h1>Constants</h1><p>Built-in names, usable anywhere an integer is.</p><div class="table-wrap"><table>
+    render: () => `<h1>Constants</h1><p>Built-in names, usable anywhere an integer is (and in event settings).</p><div class="table-wrap"><table>
       <tr><th>Name</th><th>Value</th><th>Meaning</th></tr>
       ${SCRIPT_CONSTANT_DOCS.map(([n, v, d]) => `<tr><td><code>${n}</code></td><td>${v}</td><td>${esc(d)}</td></tr>`).join('')}
     </table></div>`,
@@ -499,12 +623,18 @@ const reference: Page[] = [
   },
   {
     id: 'examples',
-    title: 'Starter scripts',
+    title: 'Starter programs',
     section: 'Reference',
-    render: () => `<h1>Starter scripts</h1><p>The programs your starting classes run. Copy, change, upload.</p>
-      ${STARTER_CLASSES.map(
-        (c) => `<h2>${esc(c.name)}</h2><p><code>${c.parts.join(', ')}</code></p>${c.program ? code(c.program) : '<p class="note">No CPU: this building just provides its modules.</p>'}`,
-      ).join('')}`,
+    render: () => `<h1>Starter programs</h1><p>The programs your starting classes run. Copy, change, upload.</p>
+      ${STARTER_CLASSES.map((c) => {
+        let text = '';
+        try {
+          text = c.program ? printText(parseDoc(c.program), FLOW_HOST) : '';
+        } catch {
+          text = '';
+        }
+        return `<h2>${esc(c.name)}</h2><p><code>${c.parts.join(', ')}</code></p>${text ? code(text) : '<p class="note">No CPU: this building just provides its modules.</p>'}`;
+      }).join('')}`,
   },
 ];
 
@@ -516,9 +646,9 @@ function renderNav(active: string, filter: string): void {
   const matches = filter
     ? UNIT_API.filter((b) => b.name.toLowerCase().includes(filter) || (b.doc ?? '').toLowerCase().includes(filter))
     : [];
-  nav.innerHTML = `<h1>Script API</h1>
+  nav.innerHTML = `<h1>Programming</h1>
     <input id="search" type="search" placeholder="Search functions…" value="${esc(filter)}">
-    ${filter ? `<h2>Matches</h2>${matches.map((b) => `<a href="#/api/${slug(b.group ?? '')}#${b.name}">${b.name}()</a>`).join('') || '<p class="note">None</p>'}` : ''}
+    ${filter ? `<h2>Matches</h2>${matches.map((b) => `<a href="#/api/${slug(b.group ?? '')}#${b.name}">${callName(b)}()</a>`).join('') || '<p class="note">None</p>'}` : ''}
     ${sections
       .map(
         (s) => `<h2>${s}</h2>${pages
@@ -541,7 +671,7 @@ function route(): void {
   const [path, anchor] = location.hash.replace(/^#\/?/, '').split('#');
   const page = pages.find((p) => p.id === path) ?? pages[0];
   document.getElementById('page')!.innerHTML = page.render();
-  document.title = `${page.title} — WebStrategyThing Script API`;
+  document.title = `${page.title} — WebStrategyThing programming`;
   renderNav(page.id, '');
   if (anchor) document.getElementById(anchor)?.scrollIntoView();
   else window.scrollTo(0, 0);

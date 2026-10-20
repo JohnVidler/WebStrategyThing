@@ -1,7 +1,7 @@
-import type { Program } from '../vm/types';
+import type { FlowProgram } from '../flow/compile';
 import { PARTS, SWITCHABLE, type PartDef, type WeaponKind } from './parts';
 import { ANTENNA_THROUGHPUT_PER_TILE, BASE_LINK_RANGE, BASE_STACK, BUILD_TIME_BASE, BUILD_TIME_PER_MASS, COST_PER_MASS, CYCLE_COST, PRODUCTION_ENERGY_BY_SLOT, PRODUCTION_ENERGY_PER_MODULE, REPAIR_ARMOR_MULTIPLIER, REPAIR_MATTER_PER_HP, SPEED_FACTOR, TILE } from './rules';
-import { TESLA_COOLDOWN, TESLA_RANGE } from './rules';
+import { TESLA_COOLDOWN, TESLA_RANGE, type MissileTuning } from './rules';
 
 /** Converts total thrust / mass into sub-tile units per tick. */
 /** Module on/off state is a 32-bit mask, one bit per part. */
@@ -47,6 +47,8 @@ export interface BlueprintStats {
   readonly flying: boolean;
   /** Sub-tile units. */
   readonly sensorRange: number;
+  /** Sensor tier (0 = no sensor): how much a Detected block may configure. */
+  readonly sensorTier: number;
   readonly weapon: {
     readonly range: number;
     readonly damage: number;
@@ -54,6 +56,8 @@ export interface BlueprintStats {
     readonly use: number;
     readonly kind: WeaponKind;
     readonly matter: number;
+    /** Missile launchers only. */
+    readonly missile: MissileTuning | null;
   } | null;
   readonly cargo: number;
   readonly harvestRate: number;
@@ -119,7 +123,7 @@ export interface Blueprint extends BlueprintInfo {
   /** Memoised stats per module-off mask. */
   readonly variants: Map<number, BlueprintStats>;
   /** Server-only. Swapping it hot-reloads every unit of the class. */
-  program: Program | null;
+  program: FlowProgram | null;
   retired: boolean;
 }
 
@@ -159,7 +163,7 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
 
   let hp = 0, mass = 0, memory = 0, stack = BASE_STACK, energy = 0, fullCycles = 0;
   let cycles = 0, cpuUse = 0, thrust = 0, motorUse = 0, flying = false;
-  let sensor = 0, sensorUse = 0, cargo = 0, rate = 0, cargoUse = 0;
+  let sensor = 0, sensorUse = 0, sensorTier = 0, cargo = 0, rate = 0, cargoUse = 0;
   let factory = false, factoryUse = 0, silo = 0, charge = 0, solar = 0, wind = 0, antenna = 0, antennas = 0, banks = 0;
   let buildRate = 0, builderUse = 0, radarMax = 0, buildEnergy = 0, repairRate = 0, repairUse = 0, armorHp = 0;
   let weapon: BlueprintStats['weapon'] = null;
@@ -192,6 +196,7 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
         if ((d.sensorRange ?? 0) > sensor) {
           sensor = d.sensorRange ?? 0;
           sensorUse = d.use ?? 0;
+          sensorTier = d.sensorTier ?? 1;
         }
         break;
       case 'weapon':
@@ -202,6 +207,7 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
           use: d.use ?? 0,
           kind: d.weapon!.kind ?? 'gun',
           matter: d.weapon!.matter ?? 0,
+          missile: d.weapon!.missile ?? null,
         });
         break;
       case 'cargo':
@@ -264,6 +270,7 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
     speed,
     flying: flying && speed > 0,
     sensorRange: sensor * TILE,
+    sensorTier,
     weapon,
     cargo,
     harvestRate: rate,
@@ -355,12 +362,12 @@ export class BlueprintRegistry {
     return bp;
   }
 
-  setProgram(id: number, program: Program): void {
+  setProgram(id: number, program: FlowProgram): void {
     const bp = this.list[id];
     if (!bp) throw new BlueprintError(`No blueprint ${id}`);
     if (program.slots > bp.stats.memorySlots) {
       throw new BlueprintError(
-        `Program uses ${program.slots} variables but '${bp.name}' only has ${bp.stats.memorySlots} memory slots`,
+        `Program needs ${program.slots} memory slots (${program.memory.vars} variables, ${program.memory.literals} numbers, ${program.memory.locals} locals) but '${bp.name}' only has ${bp.stats.memorySlots}`,
       );
     }
     bp.program = program;

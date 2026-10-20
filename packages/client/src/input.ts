@@ -1,4 +1,4 @@
-import { Caps, Position, Resource, TaskType, TILE, Unit, type Blueprint, type ClientMessage } from '@wst/engine';
+import { Caps, Missile, Position, Resource, TaskType, TILE, Unit, type Blueprint, type ClientMessage } from '@wst/engine';
 import { actionsFor, type ActionButton } from './actions';
 import type { Placement, Renderer, ViewState } from './renderer';
 import { playSound } from './sound';
@@ -365,10 +365,10 @@ export class Input implements ViewState {
     // Re-read the action: the selection may have changed (e.g. a control group) since it was pressed.
     const action = this.actions().find((a) => a.id === this.aiming!.id);
     if (!action?.units.length) return this.cancelAiming();
-    const target = this.renderer.pick(sx, sy);
+    const target = this.renderer.pick(sx, sy, true);
     const tile = this.renderer.screenToTile(sx, sy);
     this.sendAction(action, Math.floor(tile.x), Math.floor(tile.y), target, queue);
-    const hostile = target >= 0 && this.state.world.store(Unit).has(target) && !this.isMine(target);
+    const hostile = target >= 0 && (this.state.world.store(Missile).has(target) || this.state.world.store(Unit).has(target)) && !this.isMine(target);
     this.pings.push({ x: sx, y: sy, born: performance.now(), colour: action.custom ? 0xc792ea : hostile ? 0xff6b5b : 0x5bd68a });
     if (!queue) this.cancelAiming();
   }
@@ -379,10 +379,10 @@ export class Input implements ViewState {
       playSound('order.invalid');
       return;
     }
-    const target = this.renderer.pick(sx, sy);
+    const target = this.renderer.pick(sx, sy, true);
     const tile = this.renderer.screenToTile(sx, sy);
     this.send({ t: 'order', units, x: Math.floor(tile.x), y: Math.floor(tile.y), target, queue });
-    const hostile = target >= 0 && this.state.world.store(Unit).has(target) && !this.isMine(target);
+    const hostile = target >= 0 && (this.state.world.store(Missile).has(target) || this.state.world.store(Unit).has(target)) && !this.isMine(target);
     playSound(queue ? 'order.queue' : target < 0 ? 'order.move' : hostile ? 'order.attack' : this.state.world.store(Resource).has(target) ? 'order.harvest' : 'order.acknowledge');
     this.pings.push({ x: sx, y: sy, born: performance.now(), colour: hostile ? 0xff6b5b : 0x5bd68a });
   }

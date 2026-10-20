@@ -1,4 +1,8 @@
-import type { Builtin, HostApi } from '../vm/types';
+import { FLOW_CONSTANT_DOCS } from '../flow/events';
+import { MAX_TEXT } from '../flow/check';
+import { addTimer, running } from '../flow/run';
+import { ACTIVITY_OUTCOMES, ActivityKind, cancelActivity, resumeActivity, startActivity, suspendActivity } from './activity';
+import type { Builtin, CallKind, HostApi } from '../flow/host';
 import { Caps, type Blueprint, type BlueprintStats } from './blueprint';
 import { PARTS, SLOT_CODES, TILE } from './parts';
 import { daylight, StorageMode, wind } from './power';
@@ -17,6 +21,12 @@ export interface UnitContext {
   stats: BlueprintStats;
 }
 
+/** Shortest and longest time a speech bubble can stay up, in milliseconds. */
+export const MIN_ALERT_MS = 100;
+export const MAX_ALERT_MS = 30000;
+/** Milliseconds per simulation tick (10 ticks per second; protocol.ts cannot be imported here without a cycle). */
+const MS_PER_TICK = 100;
+
 /** Visit reasons returned by nextVisitor(). */
 export const VisitReason = {
   Produced: 1,
@@ -26,9 +36,10 @@ export const VisitReason = {
 /** Documentation groups, in display order. */
 export const API_GROUPS = [
   'Self',
-  'Tasks',
+  'Orders',
   'Sensing',
   'Movement',
+  'Activities',
   'Actions',
   'Construction & resources',
   'Energy & modules',
@@ -50,6 +61,17 @@ export const SCRIPT_CONSTANT_DOCS: readonly (readonly [string, number, string])[
   ['FROM_PLAYER', TaskFlag.Player, 'Task flag: issued by the player'],
   ['FROM_BUILDING', TaskFlag.Building, 'Task flag: issued by a building script'],
   ['URGENT', TaskFlag.Urgent, 'Task flag: the player did not hold the queue modifier'],
+  ['A_NONE', ActivityKind.None, 'Activity kind: nothing under way'],
+  ['A_GOTO', ActivityKind.GoTo, 'Activity kind: goTo'],
+  ['A_APPROACH', ActivityKind.Approach, 'Activity kind: approach'],
+  ['A_HARVEST', ActivityKind.Harvest, 'Activity kind: harvest'],
+  ['A_DOCK', ActivityKind.Dock, 'Activity kind: dock'],
+  ['A_TAKE', ActivityKind.Take, 'Activity kind: take'],
+  ['A_BUILD', ActivityKind.Build, 'Activity kind: build'],
+  ['A_REPAIR', ActivityKind.Repair, 'Activity kind: repair'],
+  ['A_CHARGE', ActivityKind.Charge, 'Activity kind: charge'],
+  ['A_SUPPLY', ActivityKind.Supply, 'Activity kind: supply'],
+  ['A_ENGAGE', ActivityKind.Engage, 'Activity kind: engage'],
   ['PRODUCED', VisitReason.Produced, 'Visit reason: just built here'],
   ['DOCKED', VisitReason.Docked, 'Visit reason: just docked here'],
   ['CAN_MOVE', Caps.Move, 'Capability: has a working motor'],
@@ -72,6 +94,7 @@ export const SCRIPT_CONSTANT_DOCS: readonly (readonly [string, number, string])[
   ...Object.entries(SLOT_CODES).map(
     ([slot, code]) => [`M_${slot.toUpperCase()}`, code, `Module kind: ${slot}`] as const,
   ),
+  ...FLOW_CONSTANT_DOCS,
 ];
 
 export const SCRIPT_CONSTANTS: ReadonlyMap<string, number> = new Map(
@@ -87,13 +110,7 @@ const tileCentre = (t: number) => t * TILE + TILE / 2;
  * must be within range of a working sensor.
  */
 function locate(c: UnitContext, h: number): number {
-  const { sim, e } = c;
-  const t = sim.world.resolve(h);
-  if (t < 0 || t === e) return t;
-  if (sim.resource.has(t)) return t;
-  if (sim.unit.has(t) && sim.unit.f.owner[t] === sim.unit.f.owner[e]) return t;
-  const r = c.stats.sensorRange;
-  return sim.distSq(e, t) <= r * r ? t : -1;
+  return c.sim.locate(c.e, h);
 }
 
 /** Charges the sensor's energy cost; false if there is no working, powered sensor. */
@@ -115,8 +132,6 @@ function scanUnits(c: UnitContext, enemy: boolean): number {
   return t < 0 ? -1 : sim.world.handle(t);
 }
 
-const queue = (c: UnitContext) => c.sim.tasks[c.e]!;
-
 /** The unit this building may currently order, or -1. */
 function currentVisitor(c: UnitContext): number {
   return c.sim.world.resolve(c.sim.visiting[c.e] ?? -1);
@@ -133,19 +148,28 @@ function api(
   cost: number,
   doc: string,
   fn: Fn,
-  opts: { free?: boolean } = {},
+  opts: { free?: boolean; outcomes?: readonly string[]; text?: readonly number[] } = {},
 ): Builtin<UnitContext> {
   const m = /^(\w+)\((.*)\)$/.exec(sig);
   if (!m) throw new Error(`Bad signature ${sig}`);
   const args = m[2] ? m[2].split(',').map((s) => s.trim()) : [];
-  return { name: m[1], argc: args.length, cost, doc, group, args, fn, free: opts.free };
+  return { name: m[1], argc: args.length, cost, doc, group, args, fn, free: opts.free, outcomes: opts.outcomes, text: opts.text, kind: kindOf(m[1]) };
 }
 
+/** Calls that change the world now (statements). Everything else is a query unless it is a runtime setting. */
+const ACTIONS: ReadonlySet<string> = new Set([
+  'after', 'alert', 'radarPulse', 'moveTo', 'move', 'stop', 'fire', 'giveEnergy', 'order', 'queueUnit',
+  'goTo', 'approach', 'harvest', 'dock', 'take', 'build', 'repair', 'charge', 'supply', 'engage', 'suspendActivity', 'resumeActivity',
+  'nextOrder', 'swapOrder', 'clearOrders',
+]);
+/** Runtime settings: persistent standing settings of a module or the CPU, written config.name(...). */
+const SETTINGS: ReadonlySet<string> = new Set(['rest', 'laserPower', 'setModule', 'storageMode']);
+const kindOf = (name: string): CallKind => (SETTINGS.has(name) ? 'config' : ACTIONS.has(name) ? 'action' : 'query');
+
 /**
- * Everything a script can do. Index in this array is the builtin id baked
- * into bytecode: append only, or recompile all programs.
- * `cost` is CPU cycles charged on top of the 1-cycle CALL. Energy costs come
- * from the module used and are noted in each description.
+ * Everything a program can call. `cost` is CPU cycles charged when the call runs, on top
+ * of its node and wire costs (see flow/cost.ts). Energy costs come from the module used
+ * and are noted in each description.
  */
 export const UNIT_API: HostApi<UnitContext> = [
   // --- Self -------------------------------------------------------------------
@@ -158,24 +182,29 @@ export const UNIT_API: HostApi<UnitContext> = [
   api('Self', 'tick()', 0, 'Current simulation tick (10 per second).', (c) => c.sim.tick),
   api('Self', 'rand(n)', 1, 'Random integer 0..n-1 (deterministic).', (c, a) => c.sim.rng.int(a[0])),
   api('Self', 'credits()', 0, "Owner's common pool: resources held in all their silos.", (c) => c.sim.pool(c.sim.unit.f.owner[c.e])),
-  api('Self', 'sleep(n)', 0,
-    'Skip the next n ticks (max 600): the CPU uses no energy while asleep, and calling sleep() is free. Takes effect after the current tick.',
-    (c, a) => ((c.sim.sleepUntil[c.e] = c.sim.tick + 1 + Math.max(0, Math.min(600, a[0]))), 1),
-    { free: true }),
+  api('Self', 'rest(n)', 0,
+    'Pause the Idle event for the next n ticks (max 600). Other events still arrive, and a unit with nothing to do while resting uses no energy. Replaces sleep().',
+    (c, a) => {
+      const f = c.sim.flows[c.e];
+      if (f) f.restUntil = c.sim.tick + 1 + Math.max(0, Math.min(600, a[0]));
+      return 1;
+    }),
+  api('Self', 'after(ticks, id)', 1,
+    'Start a one-shot timer: a Timer event with this id is raised in `ticks` ticks (at most 8 timers pending). Returns 1 if set.',
+    (c, a) => {
+      const f = c.sim.flows[c.e];
+      return f && addTimer(f, c.sim.tick + Math.max(1, a[0]), a[1]) ? 1 : 0;
+    }),
 
-  // --- Tasks ------------------------------------------------------------------
-  api('Tasks', 'taskCount()', 0, 'Number of queued tasks.', (c) => queue(c).count),
-  api('Tasks', 'taskType(i)', 0, 'Type of task i (0 = none). Index 0 is the front.', (c, a) => queue(c).type(a[0])),
-  api('Tasks', 'taskX(i)', 0, 'Tile x of task i.', (c, a) => queue(c).x(a[0])),
-  api('Tasks', 'taskY(i)', 0, 'Tile y of task i.', (c, a) => queue(c).y(a[0])),
-  api('Tasks', 'taskTarget(i)', 0, 'Target handle of task i, or -1.', (c, a) => queue(c).target(a[0])),
-  api('Tasks', 'taskFlags(i)', 0, 'FROM_PLAYER / FROM_BUILDING / URGENT bits of task i.', (c, a) => queue(c).flags(a[0])),
-  api('Tasks', 'taskDrop(i)', 1, 'Remove task i. Returns 1 if it existed.', (c, a) => (queue(c).remove(a[0]) ? 1 : 0)),
-  api('Tasks', 'taskFirst(i)', 1, 'Move task i to the front. Returns 1 if it existed.', (c, a) => (queue(c).toFront(a[0]) ? 1 : 0)),
-  api('Tasks', 'taskAck(i)', 0, 'Acknowledge task i: clears its URGENT flag, so it is no longer mistaken for a new order.',
-    (c, a) => (queue(c).clearFlags(a[0], TaskFlag.Urgent) ? 1 : 0)),
-  api('Tasks', 'taskPush(type, x, y, target)', 1, 'Append a task to your own queue (no flags). Returns 1 if there was room.',
-    (c, a) => (queue(c).push(a[0], a[1], a[2], a[3], 0) ? 1 : 0)),
+  // --- Orders -----------------------------------------------------------------
+  api('Orders', 'orderCount()', 0, 'Orders waiting. The front one is the order being worked on.', (c) => c.sim.tasks[c.e]?.count ?? 0),
+  api('Orders', 'nextOrder()', 2,
+    'Finish the current order: cancels the activity working on it, drops the order and raises Order for the next one (or marks the unit Free when there is none).',
+    (c) => (c.sim.nextOrder(c.e), 1)),
+  api('Orders', 'swapOrder(type, x, y, target)', 2,
+    'Replace the order being worked on by another one (or add it if there is none) and raise Order for it. The way a job hands itself on: a harvester whose field is spent swaps in a harvest order for another field.',
+    (c, a) => (c.sim.swapOrder(c.e, a[0], a[1], a[2], a[3]) ? 1 : 0)),
+  api('Orders', 'clearOrders()', 1, 'Drop every order and cancel the current activity.', (c) => (c.sim.clearOrders(c.e), 1)),
 
   // --- Sensing ----------------------------------------------------------------
   api('Sensing', 'scan()', 8, 'Nearest enemy in sensor range, or -1. Energy: sensor use.', (c) => scanUnits(c, true)),
@@ -233,45 +262,54 @@ export const UNIT_API: HostApi<UnitContext> = [
     (c, a) => c.sim.setDestination(c.e, tileCentre(a[0]), tileCentre(a[1]))),
   api('Movement', 'move(dx, dy)', 1, 'Travel by (dx, dy) tiles.',
     (c, a) => c.sim.setDestination(c.e, c.sim.pos.f.x[c.e] + a[0] * TILE, c.sim.pos.f.y[c.e] + a[1] * TILE)),
-  api('Movement', 'goTo(x, y)', 1,
-    '1 once at tile (x, y) — or as close as it can get — 0 while travelling, -1 if it cannot move.',
-    (c, a) => {
-      const { sim, e } = c;
-      const tx = tileCentre(a[0]);
-      const ty = tileCentre(a[1]);
-      const dx = tx - sim.pos.f.x[e];
-      const dy = ty - sim.pos.f.y[e];
-      if (dx * dx + dy * dy <= (TILE / 2) ** 2) {
-        if (sim.motion.f.moving[e]) sim.halt(e);
-        return 1;
-      }
-      const m = sim.motion.f;
-      if (sim.motion.has(e) && m.arrived[e] && m.tx[e] === tx && m.ty[e] === ty) return 1;
-      return sim.setDestination(e, tx, ty) < 0 ? -1 : 0;
-    }),
-  api('Movement', 'approach(h, r)', 2,
-    "1 once within r tiles of a known unit (a building's edge), 0 while travelling, -1 if unknown or unreachable.",
-    (c, a) => {
-      const { sim, e } = c;
-      const t = locate(c, a[0]);
-      if (t < 0) return -1;
-      if (sim.edgeDistance(e, t) <= a[1] * TILE) {
-        if (sim.motion.has(e) && sim.motion.f.moving[e]) sim.halt(e);
-        return 1;
-      }
-      const m = sim.motion.f;
-      const tx = sim.pos.f.x[t];
-      const ty = sim.pos.f.y[t];
-      if (sim.motion.has(e) && m.arrived[e] && m.tx[e] === tx && m.ty[e] === ty) {
-        // End of the path but still out of range: unreachable. Stopped by a crowd: try again.
-        if (m.arrived[e] === 1) return -1;
-        m.arrived[e] = 0;
-      }
-      return sim.setDestination(e, tx, ty) < 0 ? -1 : 0;
-    }),
-  api('Movement', 'stop()', 0, 'Stop travelling (flying units still drift to a cell they can land on).', (c) => (c.sim.halt(c.e), 0)),
+  api('Movement', 'stop()', 0, 'Cancel the current activity and stop travelling (flying units still drift to a cell they can land on).',
+    (c) => (cancelActivity(c.sim, c.e, true), 0)),
+
+  // --- Activities ---------------------------------------------------------------
+  // Long jobs: the engine carries them out every tick and the program only runs again when one ends.
+  // Starting a job cancels the current one. Attach chains to the outcomes: harvest(f, { full: () => { ... } }).
+  api('Activities', 'goTo(x, y)', 1, 'Walk to tile (x, y), pathing around obstacles, until there (or as close as it can get). Energy: motor use per tick moving.',
+    (c, a) => startActivity(c.sim, c.e, ActivityKind.GoTo, -1, a[0], a[1], 0), { outcomes: ACTIVITY_OUTCOMES.goTo }),
+  api('Activities', 'approach(h, r)', 2, "Walk until within r tiles of a known unit (a building's edge). Ends `lost` if the target is gone or not known, `blocked` if it cannot be reached.",
+    (c, a) => startActivity(c.sim, c.e, ActivityKind.Approach, a[0], 0, 0, a[1]), { outcomes: ACTIVITY_OUTCOMES.approach }),
+  api('Activities', 'harvest(h)', 2, 'Walk to a resource field and gather from it until the cargo bay is full (`full`), the field is nearly spent (`empty`) or gone (`lost`). Energy: cargo bay use per tick gathering.',
+    (c, a) => startActivity(c.sim, c.e, ActivityKind.Harvest, a[0], 0, 0, 0), { outcomes: ACTIVITY_OUTCOMES.harvest }),
+  api('Activities', 'dock(h)', 2, "Walk to an own depot and unload as much cargo as its silos have room for, becoming its visitor. Ends `docked` (all unloaded) or `noRoom` (some cargo left).",
+    (c, a) => startActivity(c.sim, c.e, ActivityKind.Dock, a[0], 0, 0, 0), { outcomes: ACTIVITY_OUTCOMES.dock }),
+  api('Activities', 'take(h, n)', 2, 'Walk to an own depot and load up to n resources from its silos into the cargo bay.',
+    (c, a) => startActivity(c.sim, c.e, ActivityKind.Take, a[0], 0, 0, a[1]), { outcomes: ACTIVITY_OUTCOMES.take }),
+  api('Activities', 'build(h)', 2,
+    "Walk to an own construction site (1 tile; a building's crane reaches 4) and work on it until it is finished (`built`). Pays from cargo first, then the common pool if the site is supplied; ends `starved` when it is neither. Energy: build-arm use per tick.",
+    (c, a) => startActivity(c.sim, c.e, ActivityKind.Build, a[0], 0, 0, 0), { outcomes: ACTIVITY_OUTCOMES.build }),
+  api('Activities', 'repair(h)', 2,
+    "Walk to a damaged own unit or building and mend it until it is whole (`repaired`). Costs energy plus matter per hit point mended (more for armour): from the cargo bay on a unit (`starved` when it runs out), from the silos on a building.",
+    (c, a) => startActivity(c.sim, c.e, ActivityKind.Repair, a[0], 0, 0, 0), { outcomes: ACTIVITY_OUTCOMES.repair }),
+  api('Activities', 'charge(h)', 2, 'Walk to an own charging pad and wait beside it until the energy store is at least 95% (`charged`).',
+    (c, a) => startActivity(c.sim, c.e, ActivityKind.Charge, a[0], 0, 0, 0), { outcomes: ACTIVITY_OUTCOMES.charge }),
+  api('Activities', 'supply(h)', 2, 'Walk to a flat or low own unit and hand it energy (10% of your capacity every other tick) until it is at 50% (`revived`); ends `refused` if that would leave you under half.',
+    (c, a) => startActivity(c.sim, c.e, ActivityKind.Supply, a[0], 0, 0, 0), { outcomes: ACTIVITY_OUTCOMES.supply }),
+  api('Activities', 'engage(h)', 2, 'Lock the weapon on a unit and close in until it is in range (within 3 tiles if it is not), until it is `destroyed` or out of sensor range (`lost`). Energy: weapon use per shot.',
+    (c, a) => startActivity(c.sim, c.e, ActivityKind.Engage, a[0], 0, 0, 0), { outcomes: ACTIVITY_OUTCOMES.engage }),
+  api('Activities', 'activity()', 0, 'The kind of activity under way, as an A_* constant (A_NONE when there is none).', (c) => c.sim.activities[c.e]?.kind ?? 0),
+  api('Activities', 'suspendActivity()', 1, 'Put the current activity aside and stop moving, to be brought back by resumeActivity(). Returns 1 if there was one.',
+    (c) => (suspendActivity(c.sim, c.e) ? 1 : 0)),
+  api('Activities', 'resumeActivity()', 1, 'Bring back the activity put aside by suspendActivity(). Returns 1 if there was one.',
+    (c) => (resumeActivity(c.sim, c.e) ? 1 : 0)),
 
   // --- Actions ----------------------------------------------------------------
+  api('Actions', 'alert(text, duration_ms)', 2,
+    `Show a speech bubble with text (in quotes, up to ${MAX_TEXT} characters) over the unit for duration_ms milliseconds (100 to ${MAX_ALERT_MS}). A newer alert replaces the unit's current one. Everyone who can see the unit sees it.`,
+    (c, a) => {
+      const text = running.strings[a[0]] ?? '';
+      const ticks = Math.min(MAX_ALERT_MS, Math.max(MIN_ALERT_MS, a[1])) / MS_PER_TICK;
+      const { alerts } = c.sim;
+      const at = alerts.findIndex((x) => x.e === c.e);
+      const alert = { e: c.e, ticks: Math.ceil(ticks), text };
+      if (at >= 0) alerts[at] = alert;
+      else alerts.push(alert);
+      return 1;
+    },
+    { text: [0] }),
   api('Actions', 'fire(h)', 2, 'Lock the weapon on a unit; returns 1 if in range. The weapon fires automatically. Energy: weapon use per shot.',
     (c, a) => {
       const { sim, e } = c;
@@ -297,29 +335,7 @@ export const UNIT_API: HostApi<UnitContext> = [
     }),
   api('Actions', 'cargo()', 0, 'Resources carried.', (c) => (c.sim.cargo.has(c.e) ? c.sim.cargo.f.amount[c.e] : 0)),
   api('Actions', 'cargoMax()', 0, 'Cargo capacity (0 if the cargo bay is off).', (c) => c.stats.cargo),
-  api('Actions', 'harvest(h)', 1, 'Gather from an adjacent resource each tick until full; 1 if gathering. Energy: cargo bay use per tick.',
-    (c, a) => {
-      const { sim, e } = c;
-      if (!sim.harvester.has(e)) return 0;
-      sim.harvester.f.target[e] = a[0];
-      return sim.canHarvest(e) ? 1 : 0;
-    }),
-  api('Actions', 'dock(h)', 2, "Unload cargo into an adjacent own depot's silos (as much as fits) and become its visitor; 1 on success.", (c, a) => {
-    const t = c.sim.world.resolve(a[0]);
-    return t >= 0 && c.sim.dock(c.e, t) ? 1 : 0;
-  }),
-
   // --- Construction & resources ---------------------------------------------------
-  api('Construction & resources', 'build(h)', 1,
-    'Work on an own construction site every tick until it is finished; 1 if in range (1.5 tiles for build arms, 4 for a building\'s build crane). Pays from cargo first, then the common pool if the site is supplied. Energy: build-arm use per tick.',
-    (c, a) => {
-      const { sim, e } = c;
-      if (!sim.builder.has(e) || c.stats.buildRate <= 0) return 0;
-      const t = sim.world.resolve(a[0]);
-      if (t < 0 || !sim.isSite(t) || sim.unit.f.owner[t] !== sim.unit.f.owner[e]) return 0;
-      sim.builder.f.target[e] = a[0];
-      return sim.edgeDistance(e, t) <= sim.buildRange(e) ? 1 : 0;
-    }),
   api('Construction & resources', 'nearestSite()', 4, 'Nearest own construction site, or -1. A construction tower can pass it straight to build().',
     (c) => handleOf(c, c.sim.nearestSite(c.e))),
   api('Construction & resources', 'buildProgress(h)', 0, 'Percent built of a construction site; 100 if finished, -1 if gone.',
@@ -331,8 +347,6 @@ export const UNIT_API: HostApi<UnitContext> = [
   api('Construction & resources', 'siteSupplied(h)', 1,
     "1 if a construction site is linked (via the power grid) to a silo, so builders can draw from the common pool; 0 means resources must be carried there.",
     (c, a) => { const t = c.sim.world.resolve(a[0]); return t >= 0 && c.sim.isSite(t) && c.sim.siteSupplied(t) ? 1 : 0; }),
-  api('Construction & resources', 'take(h, n)', 2, 'Load up to n resources from an adjacent own depot into your cargo bay; returns the amount taken.',
-    (c, a) => { const t = c.sim.world.resolve(a[0]); return t < 0 ? 0 : c.sim.take(c.e, t, a[1]); }),
   api('Construction & resources', 'stock(h)', 0, "Resources held in an own building's silos (-1 if not an own depot).",
     (c, a) => {
       const t = c.sim.world.resolve(a[0]);
@@ -380,8 +394,6 @@ export const UNIT_API: HostApi<UnitContext> = [
     }),
 
   // --- Buildings ------------------------------------------------------------------
-  api('Buildings', 'nextVisitor()', 2, 'Take the next visiting unit: returns PRODUCED, DOCKED or 0. Ends any previous visit.',
-    (c) => c.sim.takeVisitor(c.e)),
   api('Buildings', 'visitor()', 0, 'Handle of the current visitor, or -1.', (c) => (currentVisitor(c) < 0 ? -1 : c.sim.visiting[c.e])),
   api('Buildings', 'visitorCaps()', 0, "Current visitor's CAN_* / IS_* bits.",
     (c) => { const v = currentVisitor(c); return v < 0 ? 0 : c.sim.stats(v).caps; }),
@@ -395,7 +407,7 @@ export const UNIT_API: HostApi<UnitContext> = [
     (c, a) => {
       const v = currentVisitor(c);
       if (v < 0 || a[0] <= TaskType.None || a[0] > TaskType.Repair) return 0;
-      return c.sim.tasks[v]!.push(a[0], a[1], a[2], a[3], TaskFlag.Building) ? 1 : 0;
+      return c.sim.pushOrder(v, a[0], a[1], a[2], a[3], TaskFlag.Building) ? 1 : 0;
     }),
   api('Buildings', 'unitClassCount()', 0, 'Number of your own unit classes (not retired, not buildings) a factory can produce, in the order they were defined.',
     (c) => unitClasses(c).length),
@@ -406,17 +418,6 @@ export const UNIT_API: HostApi<UnitContext> = [
     }),
   api('Buildings', 'queueLength()', 0, "Units waiting in this factory's production queue.", (c) => c.sim.productionQueue[c.e]?.length ?? 0),
 
-  // --- Repair ---------------------------------------------------------------------
-  api('Actions', 'repair(h)', 1,
-    "Mend an own damaged unit or building every tick until it is whole; 1 if it is in reach (1.5 tiles from a unit, 4 from a building's edge) and needs repair. Units can mend buildings and buildings units. Energy: repair module use per tick, plus matter per hit point mended (more for armour): from the cargo bay on a unit, from the silos on a building; nothing happens without it.",
-    (c, a) => {
-      const { sim, e } = c;
-      if (!sim.repairer.has(e) || c.stats.repairRate <= 0) return 0;
-      const t = sim.world.resolve(a[0]);
-      if (t < 0 || t === e || !sim.health.has(t) || sim.isSite(t) || sim.unit.f.owner[t] !== sim.unit.f.owner[e]) return 0;
-      sim.repairer.f.target[e] = a[0];
-      return sim.edgeDistance(e, t) <= sim.buildRange(e) && sim.health.f.hp[t] < sim.stats(t).hp ? 1 : 0;
-    }),
   api('Sensing', 'nearestDamaged()', 6, 'Nearest other own unit or building that is missing hit points (finished buildings only), or -1.',
     (c) => handleOf(c, c.sim.nearestOwn(c.e, 0, (b) => c.sim.health.has(b) && c.sim.health.f.hp[b] < c.sim.stats(b).hp))),
   api('Sensing', 'hpOf(h)', 0, 'Health percentage of an own unit or building, or -1.', (c, a) => {

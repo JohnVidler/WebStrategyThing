@@ -155,7 +155,7 @@ export interface NetworkInfo {
 export const LIMITS = {
   nameLength: 24,
   partsPerClass: 32,
-  sourceLength: 8000,
+  sourceLength: 32000,
   unitsPerOrder: 200,
 } as const;
 

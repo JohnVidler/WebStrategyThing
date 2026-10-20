@@ -23,6 +23,7 @@ import type { ClientState } from './state';
  */
 
 const STORAGE_KEY = 'wst-designs';
+const LEGACY_BACKUP_KEY = 'wst-designs-before-flowcode';
 const SAVE_DELAY_MS = 800;
 const RESTORE_DELAY_MS = 300;
 
@@ -245,6 +246,19 @@ export class DesignStore {
       this.host.notify('Your saved designs could not be read; starting from the defaults.', false);
       this.ready = true;
       return; // keep the unreadable copy until the next change overwrites it
+    }
+    if (saved.migrated?.length) {
+      // Saved with the old text language: keep a copy of the file and say what was replaced.
+      try {
+        localStorage.setItem(LEGACY_BACKUP_KEY, text);
+      } catch {
+        // no room for a backup: the notice still tells the player
+      }
+      const names = saved.migrated.slice(0, 6).join(', ') + (saved.migrated.length > 6 ? ', …' : '');
+      this.host.notify(
+        `Programs are now event blocks, so the old text programs of ${saved.migrated.length} saved class(es) (${names}) were replaced by the current default program. The old designs file is kept in this browser under "${LEGACY_BACKUP_KEY}".`,
+        true,
+      );
     }
     // An earlier save made before the programs had arrived left default classes with empty
     // programs, which would switch every unit of the class off: use the default instead.

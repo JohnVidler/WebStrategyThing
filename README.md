@@ -1,6 +1,6 @@
 # WebStrategyThing
 
-A browser RTS where the player gives the orders and **scripts decide the behaviour**. You select units and right-click as in StarCraft or Total Annihilation, but each order only lands in the unit's **task queue**: the program written for that unit's **class** decides how (and whether) to carry it out. Units and buildings are designed from the same modules: compute (cycles per tick), memory, sensors, motors, batteries, generators and more. Every module costs energy to use, units recharge at charging pads (or from each other), buildings share power through automatically linked networks, and resources live in silos that builders draw on to construct new buildings.
+A browser RTS where the player gives the orders and **programs decide the behaviour**. You select units and right-click as in StarCraft or Total Annihilation, but each order only lands in the unit's **task queue**: the program written for that unit's **class** decides how (and whether) to carry it out. Units and buildings are designed from the same modules: compute (cycles per tick), memory, sensors, motors, batteries, generators and more. Every module costs energy to use, units recharge at charging pads (or from each other), buildings share power through automatically linked networks, and resources live in silos that builders draw on to construct new buildings.
 
 ## Documentation
 
@@ -14,7 +14,7 @@ A browser RTS where the player gives the orders and **scripts decide the behavio
 ```sh
 npm install
 npm run dev        # client on http://localhost:5173; /api/v1/* proxies to the server on port 8080
-npm test           # engine + client tests (VM, pathing, energy, construction, orders, buttons, fog, sandbox,
+npm test           # engine + client tests (program language and runtime, pathing, energy, construction, orders, buttons, fog, sandbox,
                    # design files, docs, diff, sparklines, turrets)
 npm run typecheck
 ```
@@ -27,9 +27,9 @@ See [deployment](docs/deployment.md) for Docker, and open the client in two brow
 |------------|--------|-----|
 | Rendering  | **PixiJS v8** (WebGL/WebGPU 2D) | Fast sprite batching, TypeScript-first, and only a renderer. The simulation must run headless on the server, so a full engine (Phaser and similar) would give us little we could use. |
 | Simulation | Custom SoA ECS in TypeScript (`@wst/engine`) | Runs the same code on Node and in the browser, uses no per-entity objects, and its schemas double as the wire format. |
-| Unit code  | Custom bytecode VM + tiny language | Exact, deterministic cycle metering, so compute is a game resource. Programs are shared per class (flyweight). |
+| Unit code  | Event-block programs: one IR, shown as a node graph or TypeScript-subset text, compiled to a flat resumable instruction list | Exact, deterministic cost (nodes executed + wires followed), so compute is a game resource; unhandled events cost nothing. Programs are shared per class (flyweight). |
 | Transport  | `ws` (server) / native WebSocket (client) | Binary frames for tick deltas, JSON text frames for rare control messages. |
-| Code editor | CodeMirror 6 | Modular and TypeScript-native; a small custom language mode plus autocomplete, hover docs and lint driven by the game's own compiler. |
+| Code editor | CodeMirror 6 (text) and Rete.js + Lit components (graph) | Both are views of the one program model; completion, hover docs and diagnostics come from the game's own API and checker. |
 | Tooling    | npm workspaces, Vite, tsx, Vitest | |
 
 ## Layout
@@ -38,21 +38,21 @@ See [deployment](docs/deployment.md) for Docker, and open the client in two brow
 packages/
   engine/   headless, deterministic core shared by server + client
     ecs/      component schemas, SoA stores, World (entities, handles, queries, change tracking)
-    vm/       compiler (source -> bytecode), VM (metered interpreter), Program/HostApi types
+    flow/     program model (IR), TypeScript-subset parser/printer, checker, compiler, resumable runtime, events, cost
     game/     parts, blueprints, components, terrain + A*, power networks, unit API, action buttons,
               vision, systems, map setup, Simulation, designer sandbox, design files
     net/      binary tick codec, JSON protocol + validation
   server/   authoritative match loop: command queue -> step -> broadcast delta
   client/   mirror World + PixiJS renderer + DOM play UI (action grid, info bar, fog, charging zones,
             selection sparklines, saved designs); designer overlay
-            with a CodeMirror script editor, upload diffs and sandbox test runs (loaded on demand);
-            docs.html = generated script API docs
+            with a node-graph and a text editor over one program model, upload diffs and sandbox test runs (loaded on demand);
+            docs.html = generated programming docs
 ```
 
 ## Extension points / next steps
 
 - **Fog follow-ups:** remembered enemy buildings in explored areas, and a spatial-grid visibility pass if unit counts grow.
-- **Script-driven buttons:** let scripts enable, disable or relabel their buttons at runtime.
+- **Runtime button changes:** let programs enable, disable or relabel their buttons at runtime.
 - **Design sets:** several named loadouts per browser.
 - **Scaling the sim:** cached or archetype queries in `World.query`, and moving each match into a `worker_thread`.
 - **Language:** `break`/`continue`, user functions, and per-unit messaging (`send(handle, value)`) as builtins with costs.

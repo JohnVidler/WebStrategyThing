@@ -110,7 +110,7 @@ Naming: `group.event`. Falling back to a parent tag is automatic (see below), so
 | Tag | Trigger | Source |
 |---|---|---|
 | `combat.shot` | Generic weapon fire (`SimEvent.Shot`) | sim |
-| `combat.shot.gun` / `combat.shot.cannon` / `combat.shot.laser` | Per weapon kind (a tesla discharge uses `combat.tesla`) | sim (kind from the shooter's class) |
+| `combat.shot.gun` / `combat.shot.cannon` / `combat.shot.laser` / `combat.shot.missile` / `combat.shot.flak` | Per weapon kind (a tesla discharge uses `combat.tesla`; the missile tag plays at the launch, the burst is a normal death) | sim (kind from the shooter's class) |
 | `combat.tesla` | Tesla discharge (`SimEvent.Pulse`) | sim |
 | `combat.repair` | Repair beam running (`SimEvent.Repair`, every 2 ticks: loop or throttle) | sim |
 | `combat.hit` | Projectile impact on a unit | new |

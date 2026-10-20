@@ -1,9 +1,11 @@
 import {
   BlueprintError,
   classifyDesigns,
-  CompileError,
+  FlowError,
   compileUnitProgram,
   defaultDesigns,
+  loadDesignsInto,
+  MAX_CLASSES_PER_PLAYER,
   parseDesignFile,
   resolveDesigns,
   type DesignEntry,
@@ -11,7 +13,7 @@ import {
 import { Application } from 'pixi.js';
 import { renderClassImage } from './artstudio';
 import type { Designer } from './designer';
-import { readStorage, snapshotDesigns, writeStorage } from './designs';
+import { DesignStore, readStorage, snapshotDesigns, writeStorage } from './designs';
 import { ownerColour } from './renderer';
 import { ClientState } from './state';
 
@@ -53,10 +55,37 @@ export class LocalDesigns {
           this.state.programs.set(bp.id, e.program);
         }
       } catch (err) {
-        if (!(err instanceof BlueprintError || err instanceof CompileError)) throw err;
+        if (!(err instanceof BlueprintError || err instanceof FlowError)) throw err;
       }
     }
   }
+
+  /**
+   * Download / upload / reset, shared with the in-game menu. Its "send to the server" is applied
+   * right here, with the same rules the server uses, and the result is reported back to it.
+   */
+  private readonly files = new DesignStore(this.state, {
+    send: (msg) => {
+      if (msg.t !== 'loadDesigns') return;
+      const report = loadDesignsInto(
+        {
+          blueprints: this.state.blueprints,
+          setProgram: (id, source) => {
+            this.state.blueprints.setProgram(id, compileUnitProgram(source));
+            this.state.programs.set(id, source);
+          },
+        },
+        ME,
+        msg.classes,
+        MAX_CLASSES_PER_PLAYER,
+        msg.merge === true,
+      );
+      this.save();
+      this.designer?.reloadAll();
+      this.files.onLoaded({ t: 'designsLoaded', reason: msg.reason, defined: report.defined, updated: report.updated, retired: report.retired, errors: report.errors });
+    },
+    notify: (text, ok) => this.designer?.showResult(text, ok),
+  });
 
   private save(): void {
     writeStorage(JSON.stringify(snapshotDesigns(this.state)));
@@ -92,7 +121,7 @@ export class LocalDesigns {
           try {
             this.state.blueprints.setProgram(blueprint, compileUnitProgram(source));
           } catch (err) {
-            if (!(err instanceof CompileError || err instanceof BlueprintError)) throw err;
+            if (!(err instanceof FlowError || err instanceof BlueprintError)) throw err;
             this.designer?.showResult(err.message, false);
             return;
           }
@@ -108,6 +137,7 @@ export class LocalDesigns {
           this.designer?.updateClasses();
           this.save();
         },
+        designFiles: { download: () => this.files.download(), upload: (file) => void this.files.upload(file), reset: () => void this.files.reset() },
         preview: (parts, pxPerTile, rival) => renderClassImage(studio.renderer, parts, ownerColour(rival ? ME + 1 : ME), () => pxPerTile / 32),
         iconFor: (blueprint) => {
           const bp = this.state.blueprints.get(blueprint)!;

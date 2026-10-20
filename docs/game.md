@@ -2,7 +2,7 @@
 
 [← Back to the README](../README.md)
 
-How the simulation works: classes, scripts, energy, construction and combat. Server-side match handling is in [server.md](server.md); the browser side is in [client.md](client.md).
+How the simulation works: classes, programs, energy, construction and combat. Server-side match handling is in [server.md](server.md); the browser side is in [client.md](client.md).
 
 ## Flyweight: classes vs. units
 - **Intrinsic (shared, per class):** a `Blueprint` holds the part ids, derived `BlueprintStats`, and the compiled `Program`. The part catalogue is code, so it is never transmitted. A blueprint goes over the wire once, as `{id, owner, name, parts}`, and clients re-derive stats from the shared catalogue.
@@ -29,12 +29,12 @@ How the simulation works: classes, scripts, energy, construction and combat. Ser
 
 ## Action buttons
 - The side panel's action grid has the **common actions** (`game/actions.ts`: move, attack, stop, harvest, unload, recharge) plus Demolish. Each is enabled when at least one selected unit has the modules for it, and the server re-checks per unit (`Simulation.issueCommand`), so a mixed selection only commands the units that can comply.
-- Class scripts declare their own buttons: `button boost "Overdrive" key "O"` (add `aim` for buttons that take a map target). The name becomes a compile-time constant, the task type pushed when the button is pressed (`CUSTOM_TASK_BASE` + index), so the script handles it like any task: `if taskType(0) == boost { ... }`. The client compiles the owner's program sources itself to learn the buttons, so no extra metadata crosses the wire.
-- A button press is still only a task: the script decides what it does.
+- A class declares its own buttons with `Button` event blocks: `on(Button, { label: 'Overdrive', key: 'O' }, () => { ... })` (add `aim: true` for buttons that take a map target). The block *is* the button and its code runs when it is pressed: the server raises that one handler (`Simulation.issueButton`) with the picked tile and target, with no task involved. The client compiles the owner's program sources itself to learn the buttons, so program sources are only ever sent to their owner.
+- Common actions (move, attack, ...) are still only tasks: the program decides what they do, and an `Order` block can react the moment one arrives.
 
 ## Buildings talk to units only while they visit
-- A unit **visits** a building when it is produced there or docks there (`dock()`). The building's script takes visits one at a time with `nextVisitor()` (which returns `PRODUCED` or `DOCKED`), can inspect the visitor (`visitorCaps()`, `visitorLastHarvest()`), and gives it tasks with `order(type, x, y, target)`.
-- The link lasts until the next `nextVisitor()` call or the end of the building's current pass, whichever comes first. `order()` only ever targets the current visitor, so storing a unit's handle gives a building no lasting control over it.
+- A unit **visits** a building when it is produced there or docks there (`dock()`). Each visit raises a `Visitor` event (reason `PRODUCED` or `DOCKED`, and the visitor's handle) on the building. While that handler runs the building can inspect the visitor (`visitorCaps()`, `visitorLastHarvest()`) and give it tasks with `order(type, x, y, target)`.
+- The link lasts until the handler finishes. `order()` only ever targets the current visitor, so storing a unit's handle gives a building no lasting control over it.
 - The harvest loop is built from this: the HQ sends a new harvester to a field, the harvester's script gathers until full and docks, and docking hands it back to the HQ's script for the next job. A factory script can also queue units itself with `unitClassCount()`, `queueUnit(i)` and `queueLength()`.
 
 ## Terrain and movement
@@ -43,7 +43,7 @@ How the simulation works: classes, scripts, energy, construction and combat. Ser
 - Units push apart each tick (ground and air separately). Crowded arrivals count as "arrived", and jammed units re-plan.
 
 ## Energy, modules and power
-- Every unit and building stores energy (chassis buffer + batteries). Modules use energy when used: the CPU per 100 cycles actually executed (`yield` and `sleep()` are free), motors per tick moving, sensors per scan, weapons per shot, cargo bays per tick harvesting, build arms per tick building, factories per tick producing. Without energy the action doesn't happen.
+- Every unit and building stores energy (chassis buffer + batteries). Modules use energy when used: the CPU per 100 cycles actually run (a CPU with nothing to do uses nothing), motors per tick moving, sensors per scan, weapons per shot, cargo bays per tick harvesting, build arms per tick building, factories per tick producing. Without energy the action doesn't happen.
 - Energy moves by **transfer** (`Simulation.transferEnergy`), with one rule: the giver must hold at least the amount offered, and reach depends on the giver's scale (units 1 tile; buildings 3 tiles from their edge). **Charging pads** are buildings that transfer to nearby own units automatically every tick; scripts use `giveEnergy()`. The starter scripts push a `CHARGE` task below 25%, and a `SUPPLY` order sends a healthy unit to revive a flat one.
 - Buildings link into **power networks** (`game/power.ts`) when their edges are within reach: 1 tile by default, more with energy antenna modules (3/6/12). Only the shortest links that keep a network connected are kept (a minimum spanning forest), so links re-route when a building is lost; links up to 1 tile are uncapped, but a longer antenna link carries at most `ANTENNA_THROUGHPUT_PER_TILE` (`rules.ts`) per tick per antenna times the host building's footprint, shared by everything crossing it, in total over both directions (`routeEnergy` in `power.ts`; the clusters, bridges and routes are built once per rebuild by `powerTopology`; because the links are a spanning forest the bridges form a tree, and a cluster is served its proportional share first, then takes any energy still idle from its own cluster and the nearest others); unfinished construction sites hang off one finished building and never bridge others. Each tick, solar (day/night cycle) and wind (drifting) generation (deliberately small: `SOLAR_PANEL_OUTPUT`, `WIND_TURBINE_OUTPUT` in `game/parts.ts`) goes first to normal buildings, then to storage in `CHARGE_STORE` mode. Storage in `DISCHARGE` mode covers shortfalls (at most 2% of its capacity per tick, `STORAGE_DISCHARGE_FRACTION`). Storage buildings choose their mode in script. Each owner is sent their networks' totals (`networks` message), shown in the info bar and header, with the selected building's network highlighted. The report also gives the energy each building took from or gave to its network. The client routes that back to the sources to find the load on each link, and the dots moving along a link go faster the more energy it carries.
 - Modules can be switched on/off per unit (`setModule()` from scripts, or from the side panel). Stats for each on/off mask are derived once and shared by every unit with that mask (`statsFor`), so the flyweight survives per-unit switches.
@@ -59,33 +59,50 @@ How the simulation works: classes, scripts, energy, construction and combat. Ser
 
 ## Weapons
 - Each weapon kind pays differently (`game/parts.ts`): the **light gun** is free, the **cannon** uses matter (from the cargo bay on a vehicle, from the silos on a building), and the **laser** uses a lot of energy per shot (its damage scales with the energy spent, which a script can set with `laserPower(energy)`; 8 damage at the full 20). The **tesla coil** stuns the CPU of every unit and building around it, friend or foe, then recharges slowly; on a vehicle it stuns the vehicle too, for half as long. Tesla range, stun length and cooldown are constants in `game/rules.ts`.
+- **Missile launchers** (small, medium, large; `game/missile.ts`) do not hit instantly: each shot spends matter (like the cannon) and spawns a missile, an entity of its own with a `Missile` component, `Position` and `Health`. Its warhead does `matter × MISSILE_DAMAGE_PER_MATTER` damage (12 per matter: 48 / 144 / 360), so damage is proportional to what the missile costs. It homes on the target at a limited turn rate (7 / 4.5 / 2.5 degrees per tick), so it flies wide arcs and can be outrun, and a fresh missile leaves up to `MISSILE_LAUNCH_SPREAD` off the line to the target so the arc shows. Bigger missiles are slower (5 / 3.5 / 2.2 tiles per second), last longer and burst bigger (blast 1 / 1.5 / 2.2 tiles, damage falling to `MISSILE_EDGE_DAMAGE` at the edge). It bursts when within `MISSILE_FUSE_RADIUS` of an enemy, when its flight time (40 / 60 / 90 ticks) runs out, or at the map edge; the burst hurts enemies only. If the target dies it flies straight on. Tuning lives in `PART_TUNING` (`MissileTuning`).
+- Any hit-scan weapon (gun, cannon, laser) can shoot a missile down: it has hit points (4 / 20 / 60) and a `Detected` sweep for `ENEMY` reports it like any enemy. A shot at a missile only connects with its `hitChance` (30% / 60% / 100%), so small missiles are hard to hit and big ones are big, slow targets. A missile that is shot down does not burst. Your own missiles are always visible to you; other players' only inside vision. You can order units to shoot one down yourself: right-click an enemy missile (or Attack, then click it). The **flak cannon** (`flak.cannon`) is the dedicated answer: an air-burst that hits every enemy missile within 1.5 tiles of its target for 12 damage, with no chance to miss, and does nothing to units or buildings; a `Detected` block can watch for `MISSILE` alone. Starters: Flak Truck (mobile) and Flak Turret (building).
 - Buildings can carry weapons (the starter **Laser Turret**); a building's weapon is activated when construction finishes.
+- **One starter unit per weapon**, to play-test each: Scout and Hawk (light gun), **Tank** (cannon, one cargo bay), **Lancer** (laser, two battery cells), **Stormer** (tesla coil: only stuns, so it needs friends) and **Rocket Truck** (medium missiles, two cargo bays, long sensor). They all run the fighter program; Tank and Rocket Truck add a resupply handler that walks to the nearest stocked silo when the cargo bay runs low, then carries on. The HQ and Resource Silo no longer send a unit with a weapon harvesting.
 
 ## Saved designs
 - A design file (`game/designs.ts`) is plain JSON: `{format, version, build, savedAt, classes: [{name, parts, program, retired, base}]}`. `build` fingerprints the default class set, and `base` is the hash of the default a class was saved against. Together they separate "the player edited this default" from "the default changed upstream since".
 - The client autosaves the player's classes to `localStorage` and restores them on join; downloads and uploads use the same format. The server applies a whole set with one `loadDesigns` message (`Simulation.loadDesigns`). Classes are matched by name: same parts means the program is updated in place; different parts means a new class, with the old one retired. Units already built keep their class.
 
 ## Radar
-- The `radar.pulse` module (slot `radar`, `M_RADAR`, capability `HAS_RADAR`) is a one-shot scan, not a continuous one. A script calls `radarPulse(energy)`: it spends that energy (capped by the module's `radarMaxEnergy`), range is `RADAR_ENERGY_PER_TILE` energy per tile, and the module rests `RADAR_COOLDOWN_TICKS` afterwards (`radarCooldown()`). It returns the contact count, or -1 on failure.
+- The `radar.pulse` module (slot `radar`, `M_RADAR`, capability `HAS_RADAR`) is a one-shot scan, not a continuous one. A program calls `radarPulse(energy)`: it spends that energy (capped by the module's `radarMaxEnergy`), range is `RADAR_ENERGY_PER_TILE` energy per tile, and the module rests `RADAR_COOLDOWN_TICKS` afterwards (`radarCooldown()`). It returns the contact count, or -1 on failure.
 - Contacts (every non-allied unit and building in range) are not entities: `Simulation.radarPulse` records a `RadarPulse`, the server sends it to the owner and allies as a `radar` message, and the client draws fading blips (`RADAR_FADE_TICKS`) above the fog. Pulses are cleared in `commit()`.
 
 ## Co-op bots
 - Single-player and co-op matches add bots (`game/bot.ts`). A bot owns a fortified base of assemblers and turrets and never mines (`Simulation.cheaters` keeps its energy and silos full).
 - Bots build **waves on demand**: only as many units as the next wave needs, then they wait. A wave leaves once it is both fully staged and due; the first wave is `BOT_WAVE_BASE_SIZE` units and each later wave adds `BOT_WAVE_GROWTH`, with at least `BOT_WAVE_INTERVAL_TICKS` between waves. Survivors that finish a push press on to the next target. All constants are in `game/rules.ts`.
 
-## Language quick reference
+## Programs: event blocks, one model, two views
 
-```
-var target = -1            # memory slot, initial value applied once at boot
-target = scan()            # nearest enemy handle, or -1
-if target >= 0 && fire(target) == 0 {
-  moveTo(posx(target), posy(target))
-} else if moving() == 0 {
-  move(rand(11) - 5, rand(11) - 5)
-}
-while cond { ... }
-yield                      # end this tick here
-button boost "Boost" key "B"   # a player UI button; `boost` is its task type
+Class behaviour is a **program of event blocks** (`flow/`), run by each unit's own CPU. Nothing runs, and nothing is paid, until an event the class has a block for arrives; an event with no block is dropped before it is queued.
+
+```ts
+let target = -1;
+
+on(Detected, { watch: [ENEMY], range: 6, interval: 5 }, (kind, h) => {   // the sensor, configured on its block
+  target = h;
+  const hit = fire(h);        // actions are statements; queries may sit inside expressions
+  if (hit === 0) {
+    approach(h, 3);
+  }
+});
+
+on(Idle, () => {              // fires when the CPU has nothing else to do
+  config.rest(5);             // runtime settings live in the config namespace
+});
 ```
 
-32-bit integers only. Operators, loosest first: `||`, `&&`, `== !=`, `< <= > >=`, `|`, `&`, `+ -`, `* / %`, unary `- !`. `&&` and `||` short-circuit, and `|`/`&` are bitwise and bind tighter than comparisons (as in Python), so `taskFlags(0) & URGENT` works without brackets. Game constants (`MOVE`, `URGENT`, `CAN_HARVEST`, ...) are built in. Reaching the end of the program ends the tick and restarts from the top. The full builtin list is `UNIT_API` in `packages/engine/src/game/api.ts`, documented in the in-game docs.
+- **One model, two views.** The **Flow IR** (`flow/ir.ts`: handlers with settings and parameters, statements, expressions) is the program. The TypeScript-subset **text** (`flow/text.ts`, parsed with Lezer) is its deterministic pretty-print, and the **node graph** (client) is another projection of it. `parseText` and `printText` round-trip exactly, so editing either view updates the other; statements keep their ids across text edits so graph layout survives. The stored form is the canonical JSON of the IR (`wst-flow`), plus editor-only `views` (node positions and the loose pieces of an unfinished graph) that the game never reads.
+- **Events** (`flow/events.ts`): `Spawned`, `Idle`, `Every`, `Timer`, `Order`, `Arrived`, `Damaged`, `Detected`, `Visitor`, `Button`, `EnergyLow`, `EnergyFull`. Each block carries the **settings** of whatever raises it (sensor `watch`/`range`/`interval`/`sort`/`limit`, `Order` `types`, timer intervals, a button's label and key): constants only, filtered by the engine before an event is queued, so they cost nothing to run. Better sensors unlock more of the `Detected` options (`game/sensor.ts`).
+- **Kinds of call** (`game/api.ts`): queries (inside expressions), actions (statements), and runtime settings (`config.rest(n)`, `config.laserPower`, `config.setModule`, `config.storageMode`). The compiler and the editors enforce the kinds.
+- **Cost = nodes executed + wires followed** (`flow/cost.ts`), the same for text and graph: a statement costs 2, an operator or query on a wire 2, a variable read 2, an event parameter or call result 1, inline numbers and constants nothing, plus each call's own cost. A branch not taken costs nothing.
+- **Running** (`flow/run.ts`): the program compiles (`flow/compile.ts`) to a flat instruction list. Each tick a unit's CPU gets its `cyclesPerTick`, runs queued events one at a time, and may **pause between statements** when the cycles are spent (a statement can overdraw the balance; the overdraft is repaid over the next ticks). Per-unit state is one `FlowState`; a unit with an empty queue, no timers and no `Idle` block is skipped with one check, so 1024 units tick in about 1-2 ms. A handler running over `COST.HANDLER_LIMIT` cycles crashes the unit's program (it reboots).
+- **Memory** (`flow/check.ts`): a program occupies one slot per variable, per distinct number written in it (other than -1, 0, 1) and per event parameter or `const` result of its biggest block, against the class's `memorySlots`. Settings do not count.
+- **Events come from the simulation:** `Order` and `Button` from the command handlers, `Visitor` from `addVisitor`, `Arrived` from the movement system, `Damaged` from combat, timers, sensor sweeps and energy thresholds from `scriptSystem`.
+- The old text-script VM no longer exists on this branch (it is on `main`). Saved design files from before it (`version` 1) have their old programs replaced by the current default of that name, or the new-class starter.
+
+The `docs.html` pages generated from this metadata (events, call kinds, cost, memory, constants) are the language reference.

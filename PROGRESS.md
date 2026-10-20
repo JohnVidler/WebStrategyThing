@@ -2,7 +2,68 @@
 
 Changes to the codebase, grouped by day (newest first).
 
+## 2026-10-20
+
+### Flak, shooting missiles by order, designer file buttons
+- **Gap found**: only sentries could target missiles. `issueOrder`/`issueCommand(Attack)` required a `Unit` target and the client `pick` ignored missiles, so a player could not click one. Now an enemy missile is a valid Attack target (engine) and `Renderer.pick(sx, sy, true)` returns enemy missiles (drawn lifted above the shadow) for right-click and aimed actions; own missiles are never picked.
+- **Flak**: `flak.cannon` (mass 3, range 10, 12 damage, cooldown 3, 2 energy): `combatSystem` bursts every enemy missile within `FLAK_BURST_RADIUS` (1.5 tiles) of its target, no hit roll; it only locks on missiles (clears any other target before spending). New `DetectKind.Missile` / `MISSILE` constant for `Detected`. Starters **Flak Truck** (medium, motor.small, short sensor, one cell) and **Flak Turret** (small frame, battery bank). Art: twin-barrel turret; sound tag `combat.shot.flak`.
+- **Designer**: `loadDesigns` body extracted to `loadDesignsInto(host, ...)` (simulation.ts; the method delegates). `LocalDesigns` reuses `DesignStore` with it, and `Designer` shows Download / Upload / Reset buttons when `actions.designFiles` is given (menu designer only; in a match they stay on the menu).
+- Tests: shoot-down order, own-missile refusal, flak kills a 30% missile surely and spares units, flak refuses ground targets (`missile.test.ts`).
+
+### Fast light units and a visible tesla discharge
+- **Engine**: `motor.turbo` (mass 2, thrust 150, 2 energy/tick); starters **Dart** (turbo, short sensor, light gun; fighter program) and **Pathfinder** (turbo, long sensor, no weapon; move/stop/charge only). A light chassis with turbo is about 2.1x the Scout's speed (514 vs 240 sub-tiles/tick).
+- **Client**: tesla discharge (`drawTesla` in `renderer.ts`): a ring that eases out to the weapon's range with 11 jagged, crackling lightning arcs (re-rolled every 55 ms) and sparks at the tips; replaces the faint ring. Tune `PULSE_MS`, `TESLA_*`.
+- Test: speed comparison in `missile.test.ts`.
+
+### Missiles, and a starter unit for every weapon
+- **Engine**: `game/missile.ts` (new). A launcher (`missile.small/medium/large`, `WeaponKind` `'missile'`) spawns a missile entity (`Missile` component: owner, size = matter, heading, blast; plus `Position`, `Health`) instead of dealing damage. `missileSystem` runs after `combatSystem`: turn-limited homing, straight flight when the target is gone, burst on proximity fuse / end of flight / map edge, splash on enemies only with linear falloff. Damage = matter x `MISSILE_DAMAGE_PER_MATTER` (12). Numbers in `rules.ts` (`MissileTuning`, `missileLauncher`). Shots at a missile connect with its `hitChance` (`shotHitsMissile`, from the sim rng). New `Simulation.damage()` replaces the inline damage code in `combatSystem`; `Simulation.flights` holds the non-replicated flight state.
+- **Visibility/sensors**: `visibleTo` always includes the viewer's own missiles; `Detected` with `ENEMY` reports enemy missiles.
+- **Content**: starter classes Tank (cannon), Lancer (laser), Stormer (tesla), Rocket Truck (medium missile); `resupply()` handler (fetch matter from the nearest stocked silo when low); HQ and Resource Silo no longer send armed units harvesting (`CAN_FIGHT`).
+- **Client**: missiles are drawn from the `Missile` component, not as sprites (so they can't be selected): rocket with flame, owner-coloured nose, trail of the last 14 positions, ground shadow offset below the body, launch flash; burst uses the normal explosion at the missile's blast size; art for the missile launcher on vehicles and buildings; `combat.shot.missile` sound tag.
+- **Tests**: `missile.test.ts` (11): damage per matter, speed ordering, turn limit, burst and allies, shoot-down odds, sentry targeting, fog visibility, wire round trip, Rocket Truck resupply. 223 tests pass; typecheck clean.
+
+### alert(text, duration_ms): speech bubbles over units
+- Language: text in quotes (`{ k: 'str' }` in the IR) is allowed only as an argument a built-in declares as text (`BuiltinSig.text`); anywhere else it is an error. Up to 40 characters, no control characters, each distinct text takes one memory slot. Compiled to an index into `FlowProgram.strings`.
+- `alert(text, duration_ms)` (Actions group, 2 cycles): 100 ms to 30 s, converted to ticks; a newer alert replaces the unit's current one. `Simulation.alerts` is replicated by `encodeTick` (new trailing section, only for units the client can see) and arrives as `TickInfo.alerts`; the server passes it on.
+- Client: the renderer draws a white speech bubble above the unit (fades in the last 250 ms); graph text inputs accept the text (quoted or not); docs mention it.
+- Tests: `alert.test.ts` (round trip, errors, memory, tick conversion, network round trip); 212 tests pass.
+
+
+### flowcode phase 2: activities, outcome pins, event-first starters
+- **Engine**: durable activities (`game/activity.ts`: goTo, approach, harvest, dock, take, build, repair, charge, supply, engage) that run outside the program and end in named outcomes; outcome chains (`outcomes` in the IR, `name: () => {}` object argument in text, continuation ops in the compiler and interpreter with a saved frame); `Free` event (repeat setting); `Order { urgent: QUEUE|REPLACE }`; order list calls `nextOrder`, `swapOrder`, `clearOrders`, `orderCount`; `activity`, `suspendActivity`, `resumeActivity`; `EnergyLow` repeats while low. The task API (`taskCount`, `taskType`, ...) is gone.
+- **Behaviour changes**: orders no block wants are dropped; fighters shoot whenever not on Hold fire; the HQ rally point is its single order; starters use no `Idle`.
+- **Measured**: silo stock after 600 ticks unchanged (980); Harvester 0.17 cycles/tick average (16.8 before), 98% of ticks asleep; Scout 0.00.
+- **Client**: outcome pins on call nodes (`out:<name>` exec outputs), `outcome` ExecRef in `graphOps` (find, chain, ids, scope, delete, empty-chain pruning); `docs.ts` rewritten for events and activities (new "Orders & activities" page, samples parse); client tests ported off the removed task calls, plus a new outcome-pin test.
+- **Checks**: typecheck clean; 208 tests pass (27 files).
+
 ## 2026-10-19
+
+### flowcode M2-M5: event-block programs replace the old language (text and graph views)
+- **Language (`packages/engine/src/flow/`)**: Flow IR (`ir.ts`), events with settings schemas (`events.ts`, `config.ts`), TypeScript-subset parser and printer on Lezer (`text.ts`), checker with memory accounting (`check.ts`), flat compiler (`compile.ts`), resumable interpreter with per-unit event queue, timers and `Idle` (`run.ts`), cost constants (`cost.ts`). Events: Spawned, Idle, Every, Timer, Order, Arrived, Damaged, Detected, Visitor, Button, EnergyLow, EnergyFull.
+- **Game side**: `UNIT_API` calls are queries, actions or runtime settings (`config.`); `sleep` became `config.rest`, `after` added, `nextVisitor` removed; `game/sensor.ts` (sweep rules, sensor tiers 1 and 2, clamping notes); `scriptSystem` rewritten (timers, sweeps, energy thresholds, CPU billing from cycles run); events raised from orders, buttons, visits, arrivals and damage; memory raised on CPUs and memory banks.
+- **Old language removed**: `vm/` (compiler, VM, opcodes, types) deleted. Starter classes, `NEW_CLASS_TEXT`, the wanderer and the bot fighters are written as text in `content.ts` and stored as JSON. Design files are version 2: old programs are replaced by the default of that name (or the new-class starter), and the old file is kept in `localStorage` as `wst-designs-before-flowcode`.
+- **Tests**: 180 engine+server tests (new `flow.test.ts`: text round trips, errors, exact cost table, suspension and overdraft, timers, queue overflow, faults; `events.test.ts`: Order/Button/Visitor/Arrived/Damaged/EnergyLow, rest, Detected tiers, sweeps, a 1024-unit benchmark at about 1.3 ms per tick) and 15 more client tests (`flowdocument`, `graph`, editor, docs: every program shown in the guide parses). The old sim and bot tests were ported; one bot test now runs long enough for the second wave.
+- **Client**: `designer/` Code tab shows a node graph, text, or both (`flow/FlowDocument.ts`, `graphOps.ts`, `graphModel.ts`, `layout.ts`, `components.ts`, `graphView.ts`; Rete.js + Lit, loaded on demand); `editor.ts` is the TypeScript-mode text view with completion for calls, events and event settings, hover docs, diagnostics with places and a memory meter; `docs.ts` rewritten (language, events, cost and memory pages; kind badges in the API reference).
+- **Checked in a browser** (headless Chrome): Code tab on starter classes, adding and wiring a node, typing a literal, undo, text edits driving the graph, the frozen banner, and a solo match with an upload over the wire.
+- **Incident**: cleaning up a temporary `git worktree` of `main` (used to compare old and new behaviour) deleted part of `node_modules` through a Windows junction (`node_modules/.bin`, some packages). `npm ci` is needed to restore it, which requires stopping the running `npm run dev` processes (they hold native files open).
+- Docs updated: `docs/game.md` (programs section), `docs/client.md`, `README.md`, `PLAN.md` (status and "What changed from the plan").
+
+### flowcode M0: Rete + Lit spike
+- Added exact-pinned client dependencies: `rete`, `rete-area-plugin`, `rete-connection-plugin`, `rete-render-utils`, `@retejs/lit-plugin`, `lit`, `@lezer/javascript`.
+- `packages/client/spike/flow.html` + `flow.ts`: a throwaway page with four nodes and five wires using our own `<wst-flow-node>` and `<wst-flow-socket>` Lit elements (header colour by node kind, triangle exec pins, round data pins), typed-socket checks, pan/zoom/selection, and a Lezer TypeScript parse button for the `on(Detected, {...}, ...)` sample (good and broken). Checked in headless Chrome and in a production build (87 KB gzip). `tsconfig.json` now includes `spike`.
+
+### flowcode M1: designer split into Design and Code tabs
+- `designer.ts` is now `src/designer/`: `Designer.ts` (shell: tabs, footer, selected class, draft, unsaved edits), `DesignTab.ts` (class list, preview, stats, installed modules, catalogue), `CodeTab.ts` (editor, class picker, history, upload diff, sandbox test run), `shared.ts` (`DesignerActions`, `ProgramHistory`, the `DesignerModel` interface the tabs use), `index.ts`. Imports of `./designer` are unchanged.
+- Design tab is three columns (classes, design, catalogue); Code tab gives the editor the full width, with the class chosen from a dropdown above it. The tab is remembered in `sessionStorage`. Upload on the Design tab switches to Code to show the diff. `style.css` and `docs/client.md` updated.
+- Behaviour is otherwise unchanged; `npm test` (150 tests) and typecheck pass.
+
+### flowcode branch: library research (no code yet)
+- Compared editor libraries for the node-graph language: Rete.js v2 (maintained, TypeScript, framework-agnostic core, MIT), LiteGraph (original last released 2024; the maintained fork `@comfyorg/litegraph` is 3.7 MB and tied to ComfyUI), Drawflow (stale, untyped sockets), xyflow system (d3-based, React/Svelte oriented), Blockly (blocks, not wires).
+- Pick: Rete.js core + area + connection plugins, rendered with Lit custom elements (`@retejs/lit-plugin`) rather than hand-written DOM. The engine owns the graph JSON format and interpreter, so the editor library stays swappable.
+- `PLAN.md`: Q1 settled (sensor limits match the existing ranges, energy per sweep equals one `scan()`, short sensor = tier 1, long sensor = tier 2), Q2 deferred.
+- `PLAN.md`: P1-P3 settled, and event sources became blocks that carry their own configuration (sensor `watch`/`range`/`interval`/`sort`/`limit`, `Order` filters, `Idle`/`Every` intervals, `Button` label and key). Only runtime settings stay as `config.*` nodes. Better sensors unlock more watched kinds, sort modes and reports per sweep.
+- Updated `PLAN.md` with the O1-O5 decisions: `Idle` heartbeat event, configuration nodes distinct from actions, suspendable handlers (1024-unit benchmark), literals cost memory not energy, old language retired and ported (milestones re-ordered so the port comes before the graph view).
+- Wrote `PLAN.md`: a single Flow IR shown as a graph or as TypeScript-subset text (kept in sync), event model, cost model (nodes + arcs), engine and editor architecture, milestones M0-M7, risks and open questions.
 
 ### Sounds and music mounted from outside the image
 - `sound/` is no longer copied into the server image; `docker-compose.yml` mounts `${SOUND_PATH:-./sound}` read-only at `/app/sound` (with `SOUND_DIR`), next to the existing music mount.

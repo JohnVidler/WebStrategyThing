@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { UNIT_API } from '@wst/engine';
+import { FLOW_HOST, parseText, UNIT_API } from '@wst/engine';
 
 /** Minimal DOM stand-in: the docs module only needs innerHTML, a search box and hash routing. */
 function stubDom() {
@@ -43,6 +43,15 @@ describe('script docs', () => {
       all += dom.page();
     }
     for (const b of UNIT_API) expect(all).toContain(`id="${b.name}"`);
+    // Every program shown in the guide is a real program: it parses and checks cleanly.
+    const samples = [...all.matchAll(/<pre><code>([\s\S]*?)<\/code><\/pre>/g)]
+      .map((m) => m[1].replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&'))
+      .filter((c) => c.includes('on('));
+    expect(samples.length).toBeGreaterThan(10);
+    for (const sample of samples) {
+      const { errors } = parseText(sample, FLOW_HOST);
+      expect(errors.map((e) => e.message), sample).toEqual([]);
+    }
     dom.go('#/constants');
     expect(dom.page()).toContain('URGENT');
   });

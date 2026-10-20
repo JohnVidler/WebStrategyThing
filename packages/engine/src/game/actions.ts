@@ -1,5 +1,5 @@
-import { compile } from '../vm/compiler';
-import type { Program } from '../vm/types';
+import { compileProgram, type FlowProgram } from '../flow/compile';
+import type { FlowHost } from '../flow/host';
 import { SCRIPT_CONSTANTS, UNIT_API } from './api';
 import { Caps, type BlueprintStats } from './blueprint';
 import { TaskType } from './tasks';
@@ -8,14 +8,11 @@ import { TaskType } from './tasks';
  * Player action buttons. Two kinds share the sidebar grid:
  *  - common actions (below) are always shown, and enabled when at least one
  *    selected unit has the modules to carry them out;
- *  - custom buttons are declared by class scripts (`button name "Label"`) and
- *    shown while a unit of that class is selected. Pressing one pushes the
- *    button's task type onto every selected unit whose class declares it.
- * Either way the result is just a task: the unit's script decides what happens.
+ *  - custom buttons are declared by `Button` blocks in class programs and shown
+ *    while a unit of that class is selected. Pressing one raises that block's
+ *    event on every selected unit whose class has it.
+ * Common actions become tasks (and an Order event); the unit's program decides what happens.
  */
-
-/** Task type of a class's first declared button; later buttons follow on. */
-export const CUSTOM_TASK_BASE = 100;
 
 export interface CommonAction {
   readonly id: string;
@@ -81,7 +78,10 @@ export const RESERVED_KEYS: ReadonlyMap<string, string> = new Map([
   [DEMOLISH_KEY, 'Demolish'],
 ]);
 
-/** Compiles a class program exactly as the server does (game API, constants and button rules). */
-export function compileUnitProgram(source: string): Program {
-  return compile(source, UNIT_API, SCRIPT_CONSTANTS, { buttonBase: CUSTOM_TASK_BASE, reservedKeys: RESERVED_KEYS });
+/** What the flow compiler and the editors need to know about the game: its API, constants and button hotkeys. */
+export const FLOW_HOST: FlowHost = { api: UNIT_API, constants: SCRIPT_CONSTANTS, reservedKeys: RESERVED_KEYS };
+
+/** Compiles a class program (stored JSON) exactly as the server does: game API, constants and button rules. */
+export function compileUnitProgram(source: string): FlowProgram {
+  return compileProgram(source, FLOW_HOST);
 }

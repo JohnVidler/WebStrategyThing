@@ -1,8 +1,8 @@
-import { BUILD_RANGE, BUILDING_BUILD_RANGE, BUILDING_TRANSFER_RANGE, CHARGE_PAD_RATE_MULTIPLIER, PART_TUNING, RADAR_COOLDOWN_TICKS, RADAR_ENERGY_PER_TILE, RADAR_FADE_TICKS, TESLA_COOLDOWN, TESLA_RANGE, TESLA_SELF_STUN_FACTOR, TESLA_STUN_TICKS, TILE } from './rules';
+import { BUILD_RANGE, BUILDING_BUILD_RANGE, BUILDING_TRANSFER_RANGE, CHARGE_PAD_RATE_MULTIPLIER, FLAK_BURST_RADIUS, PART_TUNING, type MissileTuning, RADAR_COOLDOWN_TICKS, RADAR_ENERGY_PER_TILE, RADAR_FADE_TICKS, TESLA_COOLDOWN, TESLA_RANGE, TESLA_SELF_STUN_FACTOR, TESLA_STUN_TICKS, TILE } from './rules';
 
 export { TILE };
 
-export type WeaponKind = 'gun' | 'cannon' | 'laser' | 'tesla';
+export type WeaponKind = 'gun' | 'cannon' | 'laser' | 'tesla' | 'missile' | 'flak';
 
 export type PartSlot =
   | 'chassis'
@@ -77,6 +77,8 @@ export interface PartDef {
   readonly flight?: boolean;
   /** Tiles. */
   readonly sensorRange?: number;
+  /** What a Detected block may configure: 1 = basic, 2 = better (see sensor.ts). */
+  readonly sensorTier?: number;
   readonly weapon?: {
     readonly range: number;
     readonly damage: number;
@@ -85,6 +87,8 @@ export interface PartDef {
     readonly kind?: WeaponKind;
     /** Matter per shot: taken from the cargo bay (vehicles) or the silos (buildings). */
     readonly matter?: number;
+    /** Missile launchers: how the missile flies. */
+    readonly missile?: MissileTuning;
   };
   readonly cargo?: number;
   readonly harvestRate?: number;
@@ -141,6 +145,7 @@ const CATALOGUE: PartDef[] = [
   { id: 'mem.large', slot: 'memory', name: `Memory bank (${T('mem.large').memory})`, ...T('mem.large'), description: `+${T('mem.large').memory} script variables.` },
 
   { id: 'motor.small', slot: 'motor', name: 'Small motor', ...T('motor.small'), mobileOnly: true, description: 'Ground drive.' },
+  { id: 'motor.turbo', slot: 'motor', name: 'Turbo motor', ...T('motor.turbo'), mobileOnly: true, description: 'Fast ground drive for light units: weak for its weight on anything heavy, but a light chassis with one is over twice as quick as with a small motor.' },
   { id: 'motor.large', slot: 'motor', name: 'Large motor', ...T('motor.large'), mobileOnly: true, description: 'Powerful ground drive.' },
   { id: 'rotor', slot: 'motor', name: 'Rotor', ...T('rotor'), flight: true, mobileOnly: true, description: 'Flight: crosses any terrain, lands only on passable cells.' },
 
@@ -151,6 +156,17 @@ const CATALOGUE: PartDef[] = [
   { id: 'gun.cannon', slot: 'weapon', name: 'Cannon', ...T('gun.cannon'), weapon: { ...T('gun.cannon').weapon!, kind: 'cannon' }, description: `${T('gun.cannon').weapon!.damage} damage, range ${T('gun.cannon').weapon!.range}. Uses ${T('gun.cannon').weapon!.matter} matter per shot: from the cargo bay on a vehicle, from the silos on a building.` },
   { id: 'laser.beam', slot: 'weapon', name: 'Laser', ...T('laser.beam'), weapon: { ...T('laser.beam').weapon!, kind: 'laser' }, description: `${T('laser.beam').weapon!.damage} damage at full power, range ${T('laser.beam').weapon!.range}. Heavy energy cost: ${T('laser.beam').use} per shot; damage scales with the energy spent, which scripts can set with laserPower(energy).` },
   { id: 'tesla.coil', slot: 'weapon', name: 'Tesla coil', ...T('tesla.coil'), weapon: { ...T('tesla.coil').weapon!, kind: 'tesla' }, description: `Stuns the CPU of every unit and building within ${TESLA_RANGE / TILE} tiles for ${TESLA_STUN_TICKS / 10}s, friend or foe, then recharges for ${TESLA_COOLDOWN / 10}s. Aim it with fire(). On a vehicle it stuns the vehicle too, for ${Math.round(TESLA_SELF_STUN_FACTOR * 100)}% as long.` },
+  { id: 'flak.cannon', slot: 'weapon', name: 'Flak cannon', ...T('flak.cannon'), weapon: { ...T('flak.cannon').weapon!, kind: 'flak' }, description: `Anti-missile air-burst: ${T('flak.cannon').weapon!.damage} damage to every enemy missile within ${FLAK_BURST_RADIUS / TILE} tiles of the one it is aimed at, range ${T('flak.cannon').weapon!.range}, never misses. Harmless to units and buildings. ${T('flak.cannon').use} energy per shot. Aim it with fire(); a Detected block can watch for MISSILE.` },
+  ...(['small', 'medium', 'large'] as const).map((size): PartDef => {
+    const id = `missile.${size}`;
+    const t = T(id);
+    const w = t.weapon!;
+    const m = w.missile!;
+    return {
+      id, slot: 'weapon', name: `Missile launcher (${size})`, ...t, weapon: { ...w, kind: 'missile' },
+      description: `Homing missile: ${w.damage} damage in a ${m.blast}-tile blast for ${w.matter} matter (from the cargo bay on a vehicle, from the silos on a building), range ${w.range}. Flies ${m.speed * 10} tiles/s, turns slowly and bursts after ${m.flight / 10}s. Hit-scan weapons can shoot it down: ${m.hp} hit points, and a ${Math.round(m.hitChance * 100)}% chance for a shot at it to connect.`,
+    };
+  }),
 
   { id: 'armor.plate', slot: 'armor', name: 'Armour plate', ...T('armor.plate'), description: `+${T('armor.plate').hp} hit points.` },
 

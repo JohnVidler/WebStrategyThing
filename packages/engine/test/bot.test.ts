@@ -42,7 +42,7 @@ describe('co-op bots', () => {
     const before = buildings();
     run(sim, bot, 100);
     expect(bot.wavesSent).toBeGreaterThanOrEqual(1);
-    run(sim, bot, 2500);
+    run(sim, bot, 5200); // long enough for the second wave: the first can be beaten by scouts that happen to be near a pad
     expect(buildings()).toBeLessThan(before);
   });
 });

@@ -76,10 +76,26 @@ export const STORAGE_RESERVE_FRACTION = 0.02;
 
 /** Tesla coil: stun radius (sub-tile units), stun length and recharge time (ticks, 10 per second). */
 export const TESLA_RANGE = 3 * TILE;
+/** Radius of a flak burst around the missile it is aimed at (sub-tile units). */
+export const FLAK_BURST_RADIUS = Math.floor(1.5 * TILE);
 export const TESLA_STUN_TICKS = 30;
 export const TESLA_COOLDOWN = 150;
 /** A tesla mounted on a vehicle also stuns that vehicle, for this share of the full duration. */
 export const TESLA_SELF_STUN_FACTOR = 0.5;
+
+/**
+ * Missiles are slow, homing shots that fly as entities of their own (see game/missile.ts). A
+ * launcher spends `matter` per missile and the warhead does MISSILE_DAMAGE_PER_MATTER damage for
+ * each unit of it, so damage is proportional to what the missile costs to make. Bigger missiles
+ * fly slower, turn wider, last longer, have more hit points and are easier to hit.
+ */
+export const MISSILE_DAMAGE_PER_MATTER = 12;
+/** A fresh missile leaves up to this many radians off the line to its target, so its arc shows. */
+export const MISSILE_LAUNCH_SPREAD = 0.45;
+/** A missile bursts when within this distance (sub-tile units) of the edge of an enemy unit or building. */
+export const MISSILE_FUSE_RADIUS = Math.floor(0.45 * TILE);
+/** Damage at the very edge of a blast, as a share of the damage at its centre (linear in between). */
+export const MISSILE_EDGE_DAMAGE = 0.4;
 
 // --- World & timing ----------------------------------------------------------------
 
@@ -186,6 +202,23 @@ export const WIND_TURBINE_OUTPUT = 1;
  * points, energy = storage, cycles = per tick, sensorRange / antennaRange in
  * tiles, use = energy per use (see PartDef.use), cooldown in ticks.
  */
+/** How a missile flies. Speed in tiles per tick, turn in degrees per tick, flight in ticks, blast in tiles. */
+export interface MissileTuning {
+  readonly speed: number;
+  readonly turn: number;
+  /** Ticks in the air before it bursts on its own. */
+  readonly flight: number;
+  readonly hp: number;
+  /** Radius of the burst. */
+  readonly blast: number;
+  /** Chance that a hit-scan shot at it connects: small missiles are hard to hit. */
+  readonly hitChance: number;
+}
+
+/** A launcher whose damage follows from the matter each missile costs. */
+const missileLauncher = (matter: number, range: number, cooldown: number, missile: MissileTuning) =>
+  ({ range, damage: matter * MISSILE_DAMAGE_PER_MATTER, cooldown, matter, missile });
+
 export interface PartTuning {
   readonly mass: number;
   readonly hp?: number;
@@ -197,7 +230,9 @@ export interface PartTuning {
   readonly stack?: number;
   readonly thrust?: number;
   readonly sensorRange?: number;
-  readonly weapon?: { readonly range: number; readonly damage: number; readonly cooldown: number; readonly matter?: number };
+  /** Sensor tier: what a Detected block may configure (see sensor.ts). */
+  readonly sensorTier?: number;
+  readonly weapon?: { readonly range: number; readonly damage: number; readonly cooldown: number; readonly matter?: number; readonly missile?: MissileTuning };
   readonly cargo?: number;
   readonly harvestRate?: number;
   readonly chargeRate?: number;
@@ -223,25 +258,32 @@ export const PART_TUNING: Readonly<Record<string, PartTuning>> = {
   'frame.medium': { mass: 20, hp: 600, slots: 16, energy: 500 },
   'frame.large': { mass: 40, hp: 1200, slots: 31, energy: 1000 },
 
-  'cpu.basic': { mass: 1, cycles: 20, stack: 8, memory: 4, use: 1 },
-  'cpu.fast': { mass: 1, cycles: 60, stack: 8, memory: 4, use: 1 },
-  'cpu.quantum': { mass: 3, cycles: 200, stack: 16, memory: 8, use: 2 },
+  'cpu.basic': { mass: 1, cycles: 20, stack: 8, memory: 16, use: 1 },
+  'cpu.fast': { mass: 1, cycles: 60, stack: 8, memory: 24, use: 1 },
+  'cpu.quantum': { mass: 3, cycles: 200, stack: 16, memory: 64, use: 2 },
 
-  'mem.small': { mass: 1, memory: 8 },
-  'mem.large': { mass: 2, memory: 32 },
+  'mem.small': { mass: 1, memory: 16 },
+  'mem.large': { mass: 2, memory: 64 },
 
   'motor.small': { mass: 1, thrust: 60, use: 1 },
   'motor.large': { mass: 3, thrust: 160, use: 3 },
   rotor: { mass: 2, thrust: 70, use: 3 },
+  'motor.turbo': { mass: 2, thrust: 150, use: 2 },
 
-  'sensor.short': { mass: 1, sensorRange: 6, use: 1 },
-  'sensor.long': { mass: 2, sensorRange: 14, use: 2 },
+  'sensor.short': { mass: 1, sensorRange: 6, sensorTier: 1, use: 1 },
+  'sensor.long': { mass: 2, sensorRange: 14, sensorTier: 2, use: 2 },
 
   // The tesla coil's range and cooldown come from TESLA_RANGE / TESLA_COOLDOWN above; its `use` is per discharge.
   'gun.light': { mass: 1, weapon: { range: 4, damage: 5, cooldown: 5 }, use: 0 },
   'gun.cannon': { mass: 4, weapon: { range: 7, damage: 25, cooldown: 20, matter: 3 }, use: 0 },
   'laser.beam': { mass: 3, weapon: { range: 8, damage: 8, cooldown: 8 }, use: 100 },
   'tesla.coil': { mass: 5, weapon: { range: 0, damage: 0, cooldown: 0 }, use: 40 },
+  // Missiles: damage is matter x MISSILE_DAMAGE_PER_MATTER; the matter comes from the cargo bay (vehicles) or the silos (buildings).
+  // Flak: an air-burst that only ever hurts missiles; every enemy missile in the burst is hit, no roll.
+  'flak.cannon': { mass: 3, weapon: { range: 10, damage: 12, cooldown: 3 }, use: 2 },
+  'missile.small': { mass: 3, weapon: missileLauncher(4, 12, 30, { speed: 0.5, turn: 7, flight: 40, hp: 4, blast: 1, hitChance: 0.3 }), use: 0 },
+  'missile.medium': { mass: 6, weapon: missileLauncher(12, 14, 40, { speed: 0.35, turn: 4.5, flight: 60, hp: 20, blast: 1.5, hitChance: 0.6 }), use: 0 },
+  'missile.large': { mass: 10, weapon: missileLauncher(30, 16, 60, { speed: 0.22, turn: 2.5, flight: 90, hp: 60, blast: 2.2, hitChance: 1 }), use: 0 },
 
   'armor.plate': { mass: 4, hp: 60 },
 

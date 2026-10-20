@@ -34,6 +34,12 @@ class Writer {
     this.off = 0;
   }
 
+  /** Text as a length and its UTF-16 code units. */
+  str(v: string): void {
+    this.varu(v.length);
+    for (let i = 0; i < v.length; i++) this.varu(v.charCodeAt(i));
+  }
+
   u8(v: number): void {
     this.ensure(1);
     this.view.setUint8(this.off, v);
@@ -107,6 +113,12 @@ class Reader {
     this.view = data instanceof Uint8Array
       ? new DataView(data.buffer, data.byteOffset, data.byteLength)
       : new DataView(data);
+  }
+
+  str(): string {
+    let out = '';
+    for (let n = this.varu(); n > 0; n--) out += String.fromCharCode(this.varu());
+    return out;
   }
 
   u8(): number {
@@ -209,7 +221,7 @@ export class Interest {
 }
 
 /** Encodes the world's pending changes (Delta) or its full networked state (Snapshot), optionally for one client's view. */
-export function encodeTick(world: World, tick: number, events: readonly number[], full: boolean, view?: InterestView): Uint8Array {
+export function encodeTick(world: World, tick: number, events: readonly number[], full: boolean, view?: InterestView, alerts: readonly Alert[] = []): Uint8Array {
   const w = writer;
   w.reset();
   w.u8(full ? PacketType.Snapshot : PacketType.Delta);
@@ -272,6 +284,15 @@ export function encodeTick(world: World, tick: number, events: readonly number[]
     w.varu(events[i + 1]);
     w.varu(events[i + 2]);
   }
+
+  // Speech bubbles: only for units the client can see.
+  const shown = alerts.filter((a) => !view || view.visible.has(a.e));
+  w.varu(shown.length);
+  for (const a of shown) {
+    w.varu(a.e);
+    w.varu(a.ticks);
+    w.str(a.text);
+  }
   return w.finish();
 }
 
@@ -280,6 +301,17 @@ export interface TickInfo {
   readonly full: boolean;
   /** Flat [type, a, b, ...] like Simulation.events. */
   readonly events: number[];
+  /** Speech bubbles raised this tick (`alert()` in a program). */
+  readonly alerts: Alert[];
+}
+
+/** A text-only speech bubble over a unit. */
+export interface Alert {
+  /** Entity index of the unit. */
+  readonly e: number;
+  /** How long it stays up, in ticks. */
+  readonly ticks: number;
+  readonly text: string;
 }
 
 /**
@@ -317,5 +349,7 @@ export function applyTick(world: World, data: ArrayBuffer | Uint8Array): TickInf
 
   const events: number[] = [];
   for (let n = r.varu(); n > 0; n--) events.push(r.u8(), r.varu(), r.varu());
-  return { tick, full, events };
+  const alerts: Alert[] = [];
+  for (let n = r.varu(); n > 0; n--) alerts.push({ e: r.varu(), ticks: r.varu(), text: r.str() });
+  return { tick, full, events, alerts };
 }

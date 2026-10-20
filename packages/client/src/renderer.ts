@@ -7,12 +7,13 @@ import {
   EnergyView,
   findPath,
   Health,
+  Missile,
   Position,
   Production,
   Resource,
   SimEvent,
   TaskType,
-  CUSTOM_TASK_BASE,
+  TICK_RATE,
   chargeZoneRadius,
   RADAR_FADE_TICKS,
   RESOURCE_PATCH_AMOUNT,
@@ -51,13 +52,32 @@ const CROWD_ROUTES = 6;
 /** Green when healthy, through yellow, to red. */
 const healthColour = (f: number) => (f > 0.6 ? 0x5bd68a : f > 0.3 ? 0xf5c542 : 0xff6b5b);
 /** Tasks from class buttons. */
-const CUSTOM_TASK_COLOUR = 0xc792ea;
 const SHOT_MS = 180;
+/** A missile leaving its launcher flashes briefly. */
+const LAUNCH_MS = 220;
+/** Missiles leave a trail of this many past positions, so their wide turns can be read. */
+const TRAIL_POINTS = 14;
+/** How far above its shadow a missile is drawn, in tiles: the shadow is what says it is flying. */
+const MISSILE_LIFT = 0.32;
+const MISSILE_BODY = 0xdfe5ee;
+const MISSILE_FLAME = 0xffb347;
 const EXPLOSION_MS = 600;
 /** Extra lifetime per tile of blast radius, so a building's blast lingers longer than a unit's. */
 const EXPLOSION_MS_PER_TILE = 260;
 const EXPLOSION_COLOUR = 0xff3b30;
-const PULSE_MS = 450;
+const PULSE_MS = 600;
+/** Lightning arcs per tesla discharge, segments per arc, and how often (ms) the crackle re-rolls. */
+const TESLA_BOLTS = 11;
+const TESLA_SEGMENTS = 9;
+const TESLA_FLICKER_MS = 55;
+const TESLA_CORE = 0xf3eaff;
+
+/** Cheap deterministic noise in [-1, 1) from three integers, so a bolt's shape is stable within one flicker frame. */
+const crackle = (a: number, b: number, c: number): number => {
+  let h = Math.imul(a + 0x9e3779b9, 0x85ebca6b) ^ Math.imul(b + 0x7f4a7c15, 0xc2b2ae35) ^ Math.imul(c + 0x1b873593, 0x27d4eb2f);
+  h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d);
+  return ((h ^ (h >>> 13)) >>> 0) / 2147483648 - 1;
+};
 /** A working charging pad sends out a slow green ring this often (see the engine's Charge event). */
 const CHARGE_PULSE_MS = 2000;
 const CHARGE_PULSE_COLOUR = 0x5dff9a;
@@ -145,6 +165,8 @@ interface Pulse {
   e: number;
   born: number;
   colour: number;
+  /** Tesla discharges: the lightning arcs, each with a seed for its crackle. */
+  bolts?: { angle: number; seed: number }[];
 }
 
 interface BuildBeam {
@@ -220,6 +242,9 @@ export class Renderer {
   private damageNumbers: { text: Text; x: number; y: number; born: number }[] = [];
   /** Finished damage-number texts, kept for reuse: building a Pixi Text renders a canvas texture. */
   private readonly damageTextPool: Text[] = [];
+  /** Speech bubbles from `alert()` in programs, by unit. */
+  private readonly bubbleLayer = new Container();
+  private readonly bubbles = new Map<number, { box: Container; until: number }>();
   /** Supply/load labels shown while the Power meter is hovered, by building. */
   private readonly powerLabelLayer = new Container();
   private readonly powerLabels = new Map<number, Text>();
@@ -238,6 +263,12 @@ export class Renderer {
   private curX = new Float32Array(1024);
   private curY = new Float32Array(1024);
   private shots: Shot[] = [];
+  /** Launcher entities that just fired a missile, with the time of the launch. */
+  private launches: { e: number; born: number }[] = [];
+  /** Missiles in flight (they are drawn straight from the Missile component, not as sprites, and cannot be selected). */
+  private readonly flying = new Set<number>();
+  /** Recent positions of each missile in tiles, flat [x, y, ...], oldest first. */
+  private readonly trails = new Map<number, number[]>();
   private pulses: Pulse[] = [];
   private chargePulses: Pulse[] = [];
   private explosions: Explosion[] = [];
@@ -273,7 +304,7 @@ export class Renderer {
     this.ghost.alpha = 0.55;
     this.ghost.visible = false;
     this.zoneLayer.filters = [new AlphaFilter({ alpha: CHARGE_ZONE_ALPHA })];
-    app.stage.addChild(this.backdrop, this.zoneLayer, this.linkLayer, this.layer, this.fogLayer, this.radarLayer, this.overlay, this.damageLayer, this.powerLabelLayer, this.ghost);
+    app.stage.addChild(this.backdrop, this.zoneLayer, this.linkLayer, this.layer, this.fogLayer, this.radarLayer, this.overlay, this.damageLayer, this.bubbleLayer, this.powerLabelLayer, this.ghost);
     app.ticker.add(() => this.frame());
   }
 
@@ -377,10 +408,25 @@ export class Renderer {
   }
 
   /** Topmost entity under a screen point: units beat buildings beat resources. */
-  pick(sx: number, sy: number): number {
+  pick(sx: number, sy: number, missiles = false): number {
     let best = -1;
     let bestScore = Infinity;
     const res = this.state.world.store(Resource);
+    if (missiles) {
+      // Missiles are not sprites; they fly above their shadow. Aimed orders may target one (to shoot it down).
+      const lift = this.scale * MISSILE_LIFT;
+      const reach = Math.max(10, this.scale * 0.45);
+      for (const e of this.flying) {
+        const store = this.state.world.store(Missile);
+        if (!store.has(e) || store.f.owner[e] === this.state.myId) continue;
+        const p = this.screenOf(e);
+        const d = Math.hypot(p.x - sx, p.y - lift - sy);
+        if (d <= reach && d - 5000 < bestScore) {
+          best = e;
+          bestScore = d - 5000;
+        }
+      }
+    }
     for (const e of this.sprites.keys()) {
       const p = this.screenOf(e);
       const s = this.state.stats(e);
@@ -428,12 +474,16 @@ export class Renderer {
       this.facing.clear();
       this.lastHp.clear();
       this.blastRadius.clear();
+      this.flying.clear();
+      this.trails.clear();
     }
     for (const e of world.despawned) {
       this.sprites.get(e)?.destroy();
       this.sprites.delete(e);
       this.routes.delete(e);
       this.facing.delete(e);
+      this.flying.delete(e);
+      this.trails.delete(e);
       // Forget what was seen: an entity that comes back (or an id that is reused) starts afresh.
       this.lastHp.delete(e);
       if (!dying.has(e)) this.blastRadius.delete(e);
@@ -441,6 +491,10 @@ export class Renderer {
 
     // Last tick's target becomes this tick's interpolation origin.
     for (const e of this.sprites.keys()) {
+      this.prevX[e] = this.curX[e];
+      this.prevY[e] = this.curY[e];
+    }
+    for (const e of this.flying) {
       this.prevX[e] = this.curX[e];
       this.prevY[e] = this.curY[e];
     }
@@ -454,7 +508,7 @@ export class Renderer {
       if (this.sprites.has(e) && dx * dx + dy * dy > 1e-6 && this.state.world.store(Unit).has(e) && !this.state.stats(e)?.structure) {
         this.facing.set(e, Math.atan2(dy, dx) + Math.PI / 2);
       }
-      if (!this.sprites.has(e)) {
+      if (!this.sprites.has(e) && !this.flying.has(e)) {
         this.prevX[e] = this.curX[e];
         this.prevY[e] = this.curY[e];
       }
@@ -466,6 +520,20 @@ export class Renderer {
       this.ensureSprite(e, this.unitTexture(this.state.blueprints.get(unit.f.blueprint[e]), unit.f.owner[e]));
       const st = this.state.stats(e);
       this.blastRadius.set(e, st?.structure ? st.footprint * 0.75 : 0.9);
+    }
+
+    const missiles = world.store(Missile);
+    for (const e of missiles.changed) {
+      if (!missiles.has(e)) continue;
+      this.flying.add(e);
+      this.blastRadius.set(e, missiles.f.blast[e] / 10);
+    }
+    for (const e of this.flying) {
+      if (!pos.has(e)) continue;
+      let trail = this.trails.get(e);
+      if (!trail) this.trails.set(e, (trail = []));
+      trail.push(this.curX[e], this.curY[e]);
+      if (trail.length > TRAIL_POINTS * 2) trail.splice(0, 2);
     }
 
     const res = world.store(Resource);
@@ -518,7 +586,11 @@ export class Renderer {
       }
       if (info.events[i] === SimEvent.Pulse) {
         const a = info.events[i + 1];
-        this.pulses.push({ e: a, born: now, colour: ownerColour(unit.f.owner[a]) });
+        const bolts = Array.from({ length: TESLA_BOLTS }, (_, i) => ({
+          angle: ((i + Math.random() * 0.8) / TESLA_BOLTS) * Math.PI * 2,
+          seed: Math.floor(Math.random() * 100000),
+        }));
+        this.pulses.push({ e: a, born: now, colour: ownerColour(unit.f.owner[a]), bolts });
         continue;
       }
       if (info.events[i] === SimEvent.Death) {
@@ -546,9 +618,52 @@ export class Renderer {
       }
       if (info.events[i] !== SimEvent.Shot) continue;
       const a = info.events[i + 1];
+      if (this.state.stats(a)?.weapon?.kind === 'missile') {
+        // No instant line: the missile itself is the shot (see drawMissiles).
+        this.launches.push({ e: a, born: now });
+        continue;
+      }
       this.shots.push({ a, b: info.events[i + 2], born: now, colour: ownerColour(unit.f.owner[a]) });
     }
+    for (const a of info.alerts) this.showBubble(a.e, a.text, now + a.ticks * (1000 / TICK_RATE));
     this.lastTickAt = now;
+  }
+
+  /** Puts (or replaces) a text-only speech bubble over a unit until the time given. */
+  private showBubble(e: number, message: string, until: number): void {
+    this.bubbles.get(e)?.box.destroy({ children: true });
+    const text = new Text({
+      text: message,
+      style: { fontFamily: TEXT_FONT, fontSize: 12, fill: 0x14181f, wordWrap: true, wordWrapWidth: 150, align: 'center' },
+    });
+    text.anchor.set(0.5, 1);
+    text.position.set(0, -8);
+    const w = text.width + 12;
+    const h = text.height + 8;
+    const back = new Graphics()
+      .roundRect(-w / 2, -8 - h + 2, w, h, 6)
+      .fill({ color: 0xf4f6fa, alpha: 0.95 })
+      .stroke({ color: 0x14181f, width: 1.5 })
+      .poly([-5, -7, 5, -7, 0, 0])
+      .fill({ color: 0xf4f6fa, alpha: 0.95 });
+    const box = new Container();
+    box.addChild(back, text);
+    this.bubbleLayer.addChild(box);
+    this.bubbles.set(e, { box, until });
+  }
+
+  private drawBubbles(now: number): void {
+    for (const [e, b] of this.bubbles) {
+      if (now >= b.until || !this.sprites.has(e)) {
+        b.box.destroy({ children: true });
+        this.bubbles.delete(e);
+        continue;
+      }
+      const p = this.screenOf(e);
+      const half = this.state.stats(e)?.structure ? ((this.state.stats(e)?.footprint ?? 1) * this.scale) / 2 : this.scale / 2;
+      b.box.position.set(p.x, p.y - half);
+      b.box.alpha = Math.min(1, (b.until - now) / 250);
+    }
   }
 
   /** Pins a number to the spot (in tiles) just above the entity that was hit. */
@@ -663,8 +778,115 @@ export class Renderer {
     this.drawRadar();
     this.drawOverlay(now);
     this.drawDamageNumbers(now);
+    this.drawBubbles(now);
     this.drawPowerLabels();
     this.drawGhost();
+  }
+
+  /**
+   * Missiles in flight: a small rocket with a flame and a fading trail, drawn above a darker, smaller
+   * copy on the ground that is the shadow. Bigger warheads make bigger missiles.
+   */
+  private drawMissiles(g: Graphics, now: number): void {
+    this.launches = this.launches.filter((l) => now - l.born < LAUNCH_MS && this.sprites.has(l.e));
+    for (const l of this.launches) {
+      const p = this.screenOf(l.e);
+      const age = (now - l.born) / LAUNCH_MS;
+      g.circle(p.x, p.y, this.scale * (0.2 + 0.35 * age)).fill({ color: MISSILE_FLAME, alpha: 0.7 * (1 - age) });
+    }
+
+    const store = this.state.world.store(Missile);
+    const lift = this.scale * MISSILE_LIFT;
+    for (const e of this.flying) {
+      if (!store.has(e)) continue;
+      const p = this.screenOf(e);
+      const angle = (store.f.heading[e] / 256) * Math.PI * 2;
+      const len = this.scale * (0.15 + 0.1 * Math.sqrt(store.f.size[e]));
+      const wid = len * 0.3;
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      // Points are given along (forward, sideways) and turned to the heading.
+      const at = (cx: number, cy: number, f: number, w: number): [number, number] => [cx + f * cos - w * sin, cy + f * sin + w * cos];
+      const poly = (cx: number, cy: number, pts: number[], k = 1): number[] => {
+        const out: number[] = [];
+        for (let i = 0; i < pts.length; i += 2) out.push(...at(cx, cy, pts[i] * k, pts[i + 1] * k));
+        return out;
+      };
+      const body = [len * 0.5, 0, len * 0.2, -wid / 2, -len * 0.5, -wid / 2, -len * 0.5, wid / 2, len * 0.2, wid / 2];
+
+      g.poly(poly(p.x, p.y, body, 0.85)).fill({ color: 0x000000, alpha: 0.3 });
+
+      const trail = this.trails.get(e);
+      if (trail && trail.length >= 2) {
+        const n = trail.length / 2;
+        let px = this.offX + trail[0] * this.scale;
+        let py = this.offY + trail[1] * this.scale - lift;
+        for (let i = 1; i <= n; i++) {
+          const x = i < n ? this.offX + trail[i * 2] * this.scale : p.x;
+          const y = i < n ? this.offY + trail[i * 2 + 1] * this.scale - lift : p.y - lift;
+          g.moveTo(px, py).lineTo(x, y).stroke({ width: Math.max(1.5, wid * 0.7), color: 0xe8edf5, alpha: 0.4 * (i / n) });
+          px = x;
+          py = y;
+        }
+      }
+
+      const y = p.y - lift;
+      const flame = len * (0.35 + 0.25 * Math.sin(now / 35 + e));
+      g.poly(poly(p.x, y, [-len * 0.5, -wid * 0.3, -len * 0.5 - flame, 0, -len * 0.5, wid * 0.3])).fill(MISSILE_FLAME);
+      for (const side of [-1, 1]) g.poly(poly(p.x, y, [-len * 0.5, side * wid * 0.5, -len * 0.75, side * wid * 1.1, -len * 0.2, side * wid * 0.5])).fill(0x8b95a5);
+      g.poly(poly(p.x, y, body)).fill(MISSILE_BODY);
+      g.poly(poly(p.x, y, [len * 0.5, 0, len * 0.2, -wid / 2, len * 0.2, wid / 2])).fill(ownerColour(store.f.owner[e]));
+    }
+  }
+
+  /**
+   * A tesla discharge: a ring of sparking charge races out from the coil to the edge of its range,
+   * trailing jagged lightning arcs that crackle (re-rolled every TESLA_FLICKER_MS) and shed sparks.
+   */
+  private drawTesla(g: Graphics, p: Pulse, now: number): void {
+    const range = this.state.stats(p.e)?.weapon?.range ?? 0;
+    const c = this.screenOf(p.e);
+    const age = (now - p.born) / PULSE_MS;
+    const reach = (range / TILE) * this.scale;
+    const front = reach * (1 - (1 - Math.min(1, age * 1.6)) ** 2); // the ring eases out and arrives at ~60% of the time
+    const fade = 1 - age;
+    const frame = Math.floor((now - p.born) / TESLA_FLICKER_MS);
+    g.circle(c.x, c.y, front).fill({ color: p.colour, alpha: 0.12 * fade });
+    g.circle(c.x, c.y, front).stroke({ width: 3, color: p.colour, alpha: 0.9 * fade });
+    g.circle(c.x, c.y, front * 0.93).stroke({ width: 1.5, color: TESLA_CORE, alpha: 0.7 * fade });
+    for (const b of p.bolts ?? []) {
+      const dx = Math.cos(b.angle);
+      const dy = Math.sin(b.angle);
+      // The arc reaches as far as the ring has; sideways kicks grow with distance and shake each flicker.
+      let px = c.x;
+      let py = c.y;
+      for (let i = 1; i <= TESLA_SEGMENTS; i++) {
+        const along = (i / TESLA_SEGMENTS) * front;
+        const kick = (i === TESLA_SEGMENTS ? 0.4 : 1) * crackle(b.seed, i, frame) * this.scale * 0.45;
+        const x = c.x + dx * along - dy * kick;
+        const y = c.y + dy * along + dx * kick;
+        g.moveTo(px, py).lineTo(x, y);
+        px = x;
+        py = y;
+      }
+      g.stroke({ width: 2.5, color: p.colour, alpha: 0.55 * fade });
+      px = c.x;
+      py = c.y;
+      for (let i = 1; i <= TESLA_SEGMENTS; i++) {
+        const along = (i / TESLA_SEGMENTS) * front;
+        const kick = (i === TESLA_SEGMENTS ? 0.4 : 1) * crackle(b.seed, i, frame) * this.scale * 0.45;
+        const x = c.x + dx * along - dy * kick;
+        const y = c.y + dy * along + dx * kick;
+        g.moveTo(px, py).lineTo(x, y);
+        px = x;
+        py = y;
+      }
+      g.stroke({ width: 1, color: TESLA_CORE, alpha: 0.9 * fade });
+      // A spark flies off the tip.
+      const sx = c.x + dx * front + crackle(b.seed, 77, frame) * this.scale * 0.25;
+      const sy = c.y + dy * front + crackle(b.seed, 78, frame) * this.scale * 0.25;
+      g.circle(sx, sy, Math.max(1.5, this.scale * 0.07)).fill({ color: 0xffffff, alpha: fade });
+    }
   }
 
   /** Radar contacts fade out over RADAR_FADE_TICKS; each pulse also sends out a quick ring. */
@@ -962,13 +1184,7 @@ export class Renderer {
     }
 
     this.pulses = this.pulses.filter((p) => now - p.born < PULSE_MS && this.sprites.has(p.e));
-    for (const p of this.pulses) {
-      const range = this.state.stats(p.e)?.weapon?.range ?? 0;
-      const c = this.screenOf(p.e);
-      const age = (now - p.born) / PULSE_MS;
-      g.circle(c.x, c.y, (range / TILE) * this.scale * age).stroke({ width: 3, color: p.colour, alpha: 1 - age });
-      g.circle(c.x, c.y, (range / TILE) * this.scale * age).fill({ color: p.colour, alpha: 0.15 * (1 - age) });
-    }
+    for (const p of this.pulses) this.drawTesla(g, p, now);
 
     this.chargePulses = this.chargePulses.filter((p) => now - p.born < CHARGE_PULSE_MS && this.sprites.has(p.e));
     for (const p of this.chargePulses) {
@@ -987,6 +1203,8 @@ export class Renderer {
 
     this.explosions = this.explosions.filter((x) => now - x.born < x.ms);
     for (const x of this.explosions) this.drawExplosion(g, x, now);
+
+    this.drawMissiles(g, now);
 
     this.shots = this.shots.filter((s) => now - s.born < SHOT_MS && this.sprites.has(s.a) && this.sprites.has(s.b));
     for (const s of this.shots) {
@@ -1028,7 +1246,7 @@ export class Renderer {
     const px = (t: number) => this.offX + t * this.scale;
     const py = (t: number) => this.offY + t * this.scale;
     route.segments.forEach((seg, i) => {
-      const colour = TASK_COLOURS[seg.type] ?? (seg.type >= CUSTOM_TASK_BASE ? CUSTOM_TASK_COLOUR : 0xffffff);
+      const colour = TASK_COLOURS[seg.type] ?? 0xffffff;
       const pts = seg.points;
       const n = pts.length;
       const end = `${seg.type}@${Math.floor(pts[n - 2])},${Math.floor(pts[n - 1])}`;
@@ -1175,11 +1393,6 @@ export class Renderer {
     }
   }
 
-  private isAimedTask(e: number, type: number): boolean {
-    const bp = this.state.world.store(Unit).f.blueprint[e];
-    return this.state.buttonsOf(bp).some((b) => b.task === type && b.aim);
-  }
-
   private routeFor(e: number): Route | undefined {
     const tasks = this.state.tasks.get(e);
     if (!tasks || tasks.length === 0) return undefined;
@@ -1191,8 +1404,6 @@ export class Renderer {
     for (let i = 0; i < tasks.length; i += 4) {
       const [type, x, y, target] = tasks.slice(i, i + 4);
       if (type === TaskType.Stop || type === TaskType.None) continue;
-      // Class-button tasks only have a destination when the button is aimed.
-      if (type >= CUSTOM_TASK_BASE && !this.isAimedTask(e, type)) continue;
       if (target >= 0 && this.sprites.has(target)) dests.push({ type, x: this.curX[target], y: this.curY[target] });
       else dests.push({ type, x: x + 0.5, y: y + 0.5 });
     }
