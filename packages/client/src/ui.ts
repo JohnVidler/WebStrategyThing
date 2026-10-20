@@ -1,3 +1,4 @@
+import { placeMusic } from './music';
 import {
   buildEnergyCost,
   MAX_UNITS_PER_PLAYER,
@@ -8,6 +9,7 @@ import {
   EnergyView,
   FAULT_NAMES,
   factoryModulesFor,
+  factoryRatePermille,
   Health,
   Modules,
   PARTS,
@@ -544,12 +546,12 @@ export class Ui {
     const btn = document.createElement('button');
     btn.dataset.blueprint = String(bp.id);
     btn.dataset.sound = 'build.choose';
-    btn.title = `${bp.name}: ${bp.stats.footprint}×${bp.stats.footprint}, costs ◆${bp.stats.cost} and ϟ${buildEnergyCost(bp.stats.footprint)} (paid as it is built). Select builders first to assign them.`;
+    btn.title = `${bp.name}: ${bp.stats.shape ? `${bp.stats.area} tiles in a ${bp.stats.footprint}×${bp.stats.footprint} box` : `${bp.stats.footprint}×${bp.stats.footprint}`}, costs ◆${bp.stats.cost} and ϟ${buildEnergyCost(bp.stats.area)} (paid as it is built). Select builders first to assign them.`;
     const img = document.createElement('img');
     img.alt = '';
     this.actions.iconFor(bp.id).then((src) => (img.src = src)).catch(() => img.remove());
     const label = document.createElement('span');
-    label.innerHTML = `${bp.name}<small>◆${bp.stats.cost} ϟ${buildEnergyCost(bp.stats.footprint)}</small>`;
+    label.innerHTML = `${bp.name}<small>◆${bp.stats.cost} ϟ${buildEnergyCost(bp.stats.area)}</small>`;
     btn.append(img, label);
     btn.onclick = () => this.actions.place(bp.id);
     return btn;
@@ -735,10 +737,13 @@ export class Ui {
         const btn = document.createElement('button');
         btn.className = 'action';
         const need = factoryModulesFor(bp.stats.size);
-        const fits = modules >= need;
-        btn.title = fits
-          ? `${bp.name}: ◆${bp.stats.cost} + ϟ${bp.stats.buildEnergy}, ${(bp.stats.buildTime / 10).toFixed(1)}s. Click to queue one.`
-          : `${bp.name} is too big for this building: it needs a factory with ${need} factory modules (this one has ${modules}).`;
+        const rate = factoryRatePermille(modules, need);
+        const fits = rate > 0;
+        const seconds = (bp.stats.buildTime * 1000) / Math.max(1, rate) / 10;
+        btn.title = !fits
+          ? `${bp.name} is too big for this building: it needs a factory with at least ${need - 1} factory modules (this one has ${modules}).`
+          : `${bp.name}: ◆${bp.stats.cost} + ϟ${bp.stats.buildEnergy}, ${seconds.toFixed(1)}s. Click to queue one.` +
+            (rate < 1000 ? ` Built slowly: a factory with ${need} factory modules is ${(1000 / rate).toFixed(0)}× faster (this one has ${modules}).` : '');
         const img = document.createElement('img');
         img.alt = '';
         this.actions.iconFor(bp.id).then((src) => (img.src = src)).catch(() => img.remove());
@@ -768,6 +773,7 @@ export class Ui {
   private toggleDocs(show: boolean): void {
     if (show && !this.docsFrame.src.endsWith('docs.html')) this.docsFrame.src = 'docs.html';
     setShown(this.docsOverlay, show);
+    placeMusic(show ? this.docsOverlay.querySelector<HTMLElement>('.docs-music') : null); // the player sits in the docs bar meanwhile
   }
 
   private describe(e: number): string {

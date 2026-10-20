@@ -37,7 +37,7 @@ import { missileSystem, type MissileFlight } from './missile';
 import { PARTS, SWITCHABLE, TILE } from './parts';
 import { findPath } from './path';
 import { emptyNetwork, powerLinks, powerNetworks, powerTopology, type PowerNetwork, type PowerNode } from './power';
-import { factoryModulesFor, BASE_LINK_RANGE, BUILD_RANGE, BUILDING_BUILD_RANGE, BUILDING_TRANSFER_RANGE, DEMOLISH_REFUND, DOCK_RANGE, HARVEST_RANGE, MAX_PRODUCTION_QUEUE, MAX_SITES_PER_PLAYER, RADAR_COOLDOWN_TICKS, RADAR_ENERGY_PER_TILE, SITE_START_HP, UNIT_TRANSFER_RANGE } from './rules';
+import { factoryModulesFor, factoryRatePermille, BASE_LINK_RANGE, BUILD_RANGE, BUILDING_BUILD_RANGE, BUILDING_TRANSFER_RANGE, DEMOLISH_REFUND, DOCK_RANGE, HARVEST_RANGE, MAX_PRODUCTION_QUEUE, MAX_SITES_PER_PLAYER, RADAR_COOLDOWN_TICKS, RADAR_ENERGY_PER_TILE, SITE_START_HP, UNIT_TRANSFER_RANGE } from './rules';
 import { SpatialGrid } from './spatial';
 import { inVision, viewersOf } from './vision';
 import {
@@ -387,11 +387,11 @@ export class Simulation {
   spawnStructure(bp: Blueprint, tx: number, ty: number, energyFraction = 1, built = true): number {
     const size = bp.stats.footprint;
     if (!bp.stats.structure) throw new BlueprintError(`${bp.name} is not a building`);
-    if (!this.terrain.footprintFree(tx, ty, size)) throw new CommandError(`No room for ${bp.name} at ${tx},${ty}`);
+    if (!this.terrain.footprintFree(tx, ty, size, bp.stats.shape)) throw new CommandError(`No room for ${bp.name} at ${tx},${ty}`);
     const e = this.addCommon(bp, (tx + size / 2) * TILE, (ty + size / 2) * TILE);
     this.energy.f.amount[e] = built ? Math.floor(bp.stats.energyCapacity * energyFraction) : 0;
     this.storage.add(e);
-    this.terrain.occupy(tx, ty, size, 1);
+    this.terrain.occupy(tx, ty, size, 1, bp.stats.shape);
     if (built) this.finishConstruction(e);
     else {
       this.construction.add(e);
@@ -591,7 +591,7 @@ export class Simulation {
     const s = this.unit.has(e) ? this.stats(e) : undefined;
     if (s?.structure) {
       const f = this.footprintOf(e);
-      this.terrain.occupy(f.x, f.y, f.size, -1);
+      this.terrain.occupy(f.x, f.y, f.size, -1, s.shape);
       this.powerDirty = true;
     }
     this.flows[e] = undefined;
@@ -1111,7 +1111,9 @@ export class Simulation {
     if (bp.retired) throw new CommandError(`${bp.name} is retired`);
     const have = this.stats(building).factoryModules;
     const need = factoryModulesFor(bp.stats.size);
-    if (have < need) throw new CommandError(`${bp.name} needs a factory with ${need} factory modules; ${host.name} has ${have}`);
+    if (factoryRatePermille(have, need) === 0) {
+      throw new CommandError(`${bp.name} is too big for ${host.name}: it needs a factory with at least ${need - 1} factory modules, this one has ${have}`);
+    }
     if (queue.length >= MAX_PRODUCTION_QUEUE) throw new CommandError('Production queue is full');
     if (!this.spendPool(owner, bp.stats.cost)) {
       throw new CommandError(`${bp.name} costs ${bp.stats.cost}, you have ${this.pool(owner)}`);

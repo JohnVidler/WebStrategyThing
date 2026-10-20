@@ -66,8 +66,14 @@ export interface BlueprintStats {
   readonly structure: boolean;
   /** Tiles per side (0 for mobile units). */
   readonly footprint: number;
+  /** Tiles a building covers (footprint squared for a square frame, fewer for a shaped one; 0 for units). */
+  readonly area: number;
+  /** Rows of the building's layout inside its footprint box ('X' covered, '.' empty); null = full square or unit. */
+  readonly shape: readonly string[] | null;
+  /** A vehicle chassis twice as long as it is wide. */
+  readonly long: boolean;
   readonly factory: boolean;
-  /** Working factory modules: the biggest unit it can produce is one with a chassis of size `factoryModules - 1`. */
+  /** Working factory modules: a unit with a chassis of size s is built at full speed with s + 1 of them, at a tenth of the speed with one fewer, and not at all with fewer. */
   readonly factoryModules: number;
   readonly depot: boolean;
   readonly chargeRate: number;
@@ -297,6 +303,9 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
     harvestRate: rate,
     structure,
     footprint: structure ? (frame.footprint ?? 1) : 0,
+    area: structure ? (frame.shape ? frame.shape.join('').split('X').length - 1 : (frame.footprint ?? 1) ** 2) : 0,
+    shape: structure ? (frame.shape ?? null) : null,
+    long: frame.long === true,
     factory,
     factoryModules,
     depot,
@@ -306,7 +315,7 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
     solar,
     wind,
     linkRange: Math.max(BASE_LINK_RANGE, antenna),
-    linkThroughput: antennas * (structure ? (frame.footprint ?? 1) : 0) * ANTENNA_THROUGHPUT_PER_TILE,
+    linkThroughput: antennas * (structure ? (frame.shape ? Math.round(Math.sqrt(frame.shape.join('').split('X').length - 1)) : (frame.footprint ?? 1)) : 0) * ANTENNA_THROUGHPUT_PER_TILE,
     energyCapacity: energy,
     cpuUse,
     motorUse,

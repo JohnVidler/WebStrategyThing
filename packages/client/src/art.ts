@@ -23,6 +23,12 @@ export interface Look {
   /** Chassis size class (units) or footprint in tiles (buildings). */
   readonly size: number;
   readonly flying: boolean;
+  /** Has a radar module: a dish spins on top (animated by the renderer; the static art leaves it out). */
+  readonly radar: boolean;
+  /** A vehicle chassis twice as long as it is wide. */
+  readonly long: boolean;
+  /** Building layout inside its footprint box ('X' = covered), null = a full square. */
+  readonly shape: readonly string[] | null;
   readonly motor: 'none' | 'small' | 'large' | 'rotor';
   readonly weapon: 'none' | 'gun' | 'cannon' | 'laser' | 'tesla' | 'missile' | 'flak';
   readonly armour: number;
@@ -72,6 +78,9 @@ export function lookOf(parts: readonly string[]): Look {
     structure,
     size: structure ? (frame?.footprint ?? 1) : (frame?.size ?? 0),
     flying: rotor,
+    radar: count('radar') > 0,
+    long: frame?.long === true,
+    shape: structure ? (frame?.shape ?? null) : null,
     motor,
     weapon,
     armour: count('armor'),
@@ -100,9 +109,50 @@ function shade(colour: number, k: number): number {
 }
 
 /** Draw a class at `tex` pixels per tile, centred on the origin. */
-export function drawLook(g: Graphics, look: Look, colour: number, tex: number): void {
+export function drawLook(g: Graphics, look: Look, colour: number, tex: number, staticDish = false): void {
   if (look.structure) drawBuilding(g, look, colour, tex);
   else drawUnit(g, look, colour, tex);
+  if (staticDish && look.radar) {
+    const a = dishAnchor(look, tex);
+    g.translateTransform(a.x, a.y);
+    drawDish(g, a.radius);
+    g.resetTransform();
+  }
+}
+
+/** Where a radar dish sits on a class (texture pixels from its centre) and how big it is. */
+export function dishAnchor(look: Look, tex: number): { x: number; y: number; radius: number } {
+  if (!look.structure) {
+    const r = unitRadius(look.size, tex);
+    return { x: 0, y: look.long ? r * 0.55 : r * 0.2, radius: r * 0.62 };
+  }
+  // On the covered tile nearest the middle (the middle itself may be a gap in a shaped building).
+  let cx = 0, cy = 0;
+  if (look.shape) {
+    const n = look.shape.length;
+    let best = Infinity;
+    for (let j = 0; j < n; j++) {
+      for (let i = 0; i < n; i++) {
+        const d = (i - (n - 1) / 2) ** 2 + (j - (n - 1) / 2) ** 2;
+        if (look.shape[j][i] === 'X' && d < best) {
+          best = d;
+          cx = (i - (n - 1) / 2) * tex;
+          cy = (j - (n - 1) / 2) * tex;
+        }
+      }
+    }
+  }
+  return { x: cx, y: cy, radius: Math.min(tex * 0.45, (look.size * tex) / 2 - 3) };
+}
+
+/** A radar dish seen from above, centred on the origin: draw it rotated for the spin. */
+export function drawDish(g: Graphics, r: number): void {
+  g.circle(0, 0, r * 1.05).fill({ color: DARK, alpha: 0.55 });
+  // The reflector: a thick curved rim on one side, with the feed horn out in front of it.
+  g.arc(-r * 0.15, 0, r * 0.85, -1.05, 1.05).stroke({ width: Math.max(2, r * 0.22), color: 0xdfe5ee, cap: 'round' });
+  g.moveTo(-r * 0.15, 0).lineTo(r * 0.55, 0).stroke({ width: 1.5, color: STEEL });
+  g.circle(r * 0.55, 0, Math.max(1.5, r * 0.12)).fill(WARN);
+  g.circle(0, 0, Math.max(2, r * 0.2)).fill(LASER).stroke({ width: 1, color: DARK });
 }
 
 /** Unit body radius in texture pixels: the only thing the chassis decides. */
@@ -163,22 +213,33 @@ export function hullOutline(l: Look): number[] | null {
   return null;
 }
 
-function hull(g: Graphics, l: Look, r: number, colour: number): void {
+/** How much longer than wide a long chassis is. */
+const LONG = 1.9;
+
+/** The hull path: the outline (or a disc) in body units, stretched lengthwise on a long chassis. */
+function hullPath(g: Graphics, l: Look, r: number): Graphics {
+  const stretch = l.long ? LONG : 1;
   const pts = hullOutline(l);
-  const shape = pts ? g.poly(pts.map((v) => v * r)) : g.circle(0, 0, r);
+  if (pts) return g.poly(pts.map((v, i) => (i % 2 ? v * stretch : v) * r));
+  return l.long ? g.ellipse(0, 0, r, r * stretch) : g.circle(0, 0, r);
+}
+
+function hull(g: Graphics, l: Look, r: number, colour: number): void {
+  const shape = hullPath(g, l, r);
   shape.fill(colour).stroke({ width: 2, color: 0xffffff, alpha: 0.5 });
 }
 
 function drawUnit(g: Graphics, l: Look, colour: number, tex: number): void {
   const r = unitRadius(l.size, tex);
   // Keeps every unit of a size class the same texture box, so sprites stay centred.
+  const len = l.long ? LONG : 1;
   const box = r * 1.45;
-  g.rect(-box, -box, box * 2, box * 2).fill({ color: 0, alpha: 0.001 });
+  g.rect(-box, -box * len, box * 2, box * 2 * len).fill({ color: 0, alpha: 0.001 });
 
   // Drive, underneath the hull.
   if (l.motor === 'small' || l.motor === 'large') {
     const w = l.motor === 'large' ? r * 0.42 : r * 0.26;
-    const h = r * (l.motor === 'large' ? 1.7 : 1.4);
+    const h = r * (l.motor === 'large' ? 1.7 : 1.4) * len;
     for (const sx of [-1, 1]) {
       g.roundRect(sx * r * 0.95 - w / 2, -h / 2, w, h, 2).fill(DARK).stroke({ width: 1, color: STEEL });
       if (l.motor === 'large') for (let i = -2; i <= 2; i++) g.moveTo(sx * r * 0.95 - w / 2, i * h * 0.17).lineTo(sx * r * 0.95 + w / 2, i * h * 0.17).stroke({ width: 1, color: STEEL, alpha: 0.7 });
@@ -196,8 +257,8 @@ function drawUnit(g: Graphics, l: Look, colour: number, tex: number): void {
   // Cargo container sits at the back of the hull, behind the body.
   if (l.cargo > 0) {
     const w = r * Math.min(1.5, 0.9 + l.cargo * 0.3);
-    g.roundRect(-w / 2, r * 0.35, w, r * 0.85, 2).fill(DARK).stroke({ width: 1.5, color: MATTER });
-    g.moveTo(-w / 2, r * 0.77).lineTo(w / 2, r * 0.77).stroke({ width: 1, color: MATTER, alpha: 0.7 });
+    g.roundRect(-w / 2, r * 0.35 * len, w, r * 0.85 * len, 2).fill(DARK).stroke({ width: 1.5, color: MATTER });
+    g.moveTo(-w / 2, r * 0.77 * len).lineTo(w / 2, r * 0.77 * len).stroke({ width: 1, color: MATTER, alpha: 0.7 });
   }
 
   hull(g, l, r, colour);
@@ -205,8 +266,7 @@ function drawUnit(g: Graphics, l: Look, colour: number, tex: number): void {
   // Armour: a heavier rim, one more notch per plate.
   if (l.armour > 0) {
     const w = Math.min(6, 1.5 + l.armour * 1.5);
-    const pts = hullOutline(l);
-    (pts ? g.poly(pts.map((v) => v * r)) : g.circle(0, 0, r)).stroke({ width: w, color: STEEL });
+    hullPath(g, l, r).stroke({ width: w, color: STEEL });
   }
 
   // Compute core.
@@ -220,7 +280,7 @@ function drawUnit(g: Graphics, l: Look, colour: number, tex: number): void {
   // Battery cells: a row of pips across the stern.
   if (l.batteries > 0) {
     const n = Math.min(4, l.batteries);
-    for (let i = 0; i < n; i++) g.rect((i - (n - 1) / 2) * r * 0.32 - r * 0.1, r * 0.55, r * 0.2, r * 0.3).fill(ENERGY);
+    for (let i = 0; i < n; i++) g.rect((i - (n - 1) / 2) * r * 0.32 - r * 0.1, r * 0.55 * len, r * 0.2, r * 0.3).fill(ENERGY);
   }
 
   // Build arm: a jointed arm with a claw, out to the front-right.
@@ -237,11 +297,19 @@ function drawUnit(g: Graphics, l: Look, colour: number, tex: number): void {
     g.circle(-r * 0.75, -r * 0.8, 1.5).fill(0xffffff);
   }
 
-  weaponTurret(g, l.weapon, r);
+  // On a long chassis the weapon rides forward of the middle, leaving the rear for cargo.
+  weaponTurret(g, l.weapon, r, l.long ? -r * (LONG - 1) * 0.55 : 0);
 }
 
 /** A weapon on a vehicle: its muzzle points up, the way units face. */
-function weaponTurret(g: Graphics, kind: Look['weapon'], r: number): void {
+function weaponTurret(g: Graphics, kind: Look['weapon'], r: number, dy = 0): void {
+  if (kind === 'none') return;
+  g.translateTransform(0, dy);
+  drawTurret(g, kind, r);
+  g.resetTransform();
+}
+
+function drawTurret(g: Graphics, kind: Look['weapon'], r: number): void {
   switch (kind) {
     case 'gun':
       g.circle(0, 0, r * 0.3).fill(DARK);
@@ -399,7 +467,39 @@ function glyphs(l: Look): Glyph[] {
   return out;
 }
 
+/** A shaped building: its covered tiles as one plate, an outline round the edge only, a symbol in each tile. */
+function drawShapedBuilding(g: Graphics, l: Look, shape: readonly string[], colour: number, tex: number): void {
+  const n = shape.length;
+  const x0 = -(n * tex) / 2;
+  const has = (i: number, j: number) => shape[j]?.[i] === 'X';
+  g.rect(x0, x0, n * tex, n * tex).fill({ color: 0, alpha: 0.001 });
+  const inset = 1;
+  const cells: [number, number][] = [];
+  for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) if (has(i, j)) cells.push([i, j]);
+  for (const [i, j] of cells) g.rect(x0 + i * tex, x0 + j * tex, tex, tex).fill({ color: colour, alpha: 0.85 });
+  // Edges that face an empty tile (or the outside).
+  const edges = (width: number, color: number, alpha: number, pad: number) => {
+    for (const [i, j] of cells) {
+      const left = x0 + i * tex + pad, right = x0 + (i + 1) * tex - pad, top = x0 + j * tex + pad, bottom = x0 + (j + 1) * tex - pad;
+      if (!has(i, j - 1)) g.moveTo(left, top).lineTo(right, top);
+      if (!has(i, j + 1)) g.moveTo(left, bottom).lineTo(right, bottom);
+      if (!has(i - 1, j)) g.moveTo(left, top).lineTo(left, bottom);
+      if (!has(i + 1, j)) g.moveTo(right, top).lineTo(right, bottom);
+    }
+    g.stroke({ width, color, alpha });
+  };
+  edges(2, 0xffffff, 0.5, inset);
+  if (l.armour > 0) edges(Math.min(5, 1 + l.armour), STEEL, 0.9, inset + 2);
+  const list = glyphs(l);
+  const s = Math.min(tex * 0.4, 9);
+  cells.slice(0, list.length).forEach(([i, j], k) => list[k](g, x0 + (i + 0.5) * tex, x0 + (j + 0.5) * tex, s));
+}
+
 function drawBuilding(g: Graphics, l: Look, colour: number, tex: number): void {
+  if (l.shape) {
+    drawShapedBuilding(g, l, l.shape, colour, tex);
+    return;
+  }
   const h = (l.size * tex) / 2 - 2;
   plate(g, l.role, h, colour);
   if (l.armour > 0) {

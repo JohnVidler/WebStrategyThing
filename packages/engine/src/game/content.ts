@@ -48,7 +48,7 @@ const template = (name: string, parts: readonly string[], text: string): ClassTe
 // Right-click a block in the editor and choose Expand to turn it into plain events you can change.
 
 export const HQ_CLASS: ClassTemplate = template('HQ', [
-  'frame.large', 'cpu.fast', 'mem.small', 'sensor.long', 'factory.basic', 'factory.basic', 'silo', 'silo',
+  'frame.large', 'cpu.fast', 'mem.small', 'sensor.long', 'factory.basic', 'silo', 'silo',
   'solar.panel', 'solar.panel', 'battery.cell',
 ], `// Headquarters: produces units and stores harvested resources in its silos.
 // Right-clicking with the HQ selected sets the rally point; harvesters that are produced or dock here
@@ -57,8 +57,9 @@ use(RallyPoint);
 use(DispatchHarvesters, { fieldsToChooseFrom: 4, minMatter: 10 });
 `);
 
-// Specialised unit factories: the size of unit a building can produce grows with its factory modules
-// (1 light, 2 medium, 3 heavy). The HQ has two, so anything lighter than a heavy unit is built there.
+// Specialised unit factories: a unit is built at full speed with 1 (light), 2 (medium) or 3 (heavy) factory
+// modules, at a tenth of the speed with one module fewer, and not at all with two fewer. The HQ has one, so it builds
+// light units normally and medium ones (such as Builders) slowly, but no heavy units.
 const FACTORY_PROGRAM = `// Produces units and sends each new one to the rally point (right-click with the building selected).
 use(RallyPoint);
 `;
@@ -162,6 +163,9 @@ export const STORMER_CLASS: ClassTemplate = template('Stormer', ['chassis.light'
 
 export const ROCKET_CLASS: ClassTemplate = template('Rocket Truck', ['chassis.medium', 'cpu.basic', 'motor.small', 'sensor.long', 'missile.medium', 'cargo.bay', 'cargo.bay'], FIGHTER_PROGRAM_TEXT + resupply(12));
 
+/** Long-range artillery on a double-length chassis: it out-ranges every sensor, so it fires at what allies or radar show it. */
+export const ARTILLERY_CLASS: ClassTemplate = template('Rocket Artillery', ['chassis.long.medium', 'cpu.basic', 'motor.large', 'sensor.long', 'missile.huge', 'cargo.bay', 'cargo.bay', 'cargo.bay', 'battery.cell', 'battery.cell'], FIGHTER_PROGRAM_TEXT + resupply(60));
+
 /** Anti-missile cover: the fighter program, but its sensor watches for incoming missiles and it fires at nothing else. */
 const FLAK_PROGRAM_TEXT = `// Flak: shoots incoming missiles only (its burst is harmless to everything else). Follows MOVE / ATTACK / STOP / CHARGE orders.
 ${BASICS(25)}
@@ -219,6 +223,7 @@ export const STARTER_CLASSES: readonly ClassTemplate[] = [
   LANCER_CLASS,
   STORMER_CLASS,
   ROCKET_CLASS,
+  ARTILLERY_CLASS,
   DART_CLASS,
   PATHFINDER_CLASS,
   FLAK_CLASS,

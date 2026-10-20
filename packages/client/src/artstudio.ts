@@ -17,7 +17,7 @@ export async function renderClassImage(
   scaleFor: (width: number, height: number) => number,
 ): Promise<string> {
   const g = new Graphics();
-  drawLook(g, lookOf(parts), colour, TEX);
+  drawLook(g, lookOf(parts), colour, TEX, true);
   const tex = renderer.generateTexture({ target: g, resolution: 4 });
   g.destroy();
   const sprite = new Sprite(tex);

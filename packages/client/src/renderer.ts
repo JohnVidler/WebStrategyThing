@@ -23,7 +23,7 @@ import {
   type TickInfo,
 } from '@wst/engine';
 import { AlphaFilter, Application, Container, Graphics, Sprite, Text, type Texture } from 'pixi.js';
-import { drawLook, lookOf } from './art';
+import { dishAnchor, drawDish, drawLook, lookOf } from './art';
 import { renderClassImage, TEX, TEX_RESOLUTION } from './artstudio';
 import type { ClientState } from './state';
 
@@ -203,6 +203,8 @@ export interface Placement {
   x: number;
   y: number;
   valid: boolean;
+  /** While dragging a line of buildings: every spot on it (top-left tiles); empty for a single building. */
+  line: { x: number; y: number; valid: boolean }[];
 }
 
 /** Input-owned state the renderer draws on top of the world. */
@@ -211,6 +213,8 @@ export interface ViewState {
   band: { x0: number; y0: number; x1: number; y1: number } | null;
   readonly pings: Ping[];
   placement: Placement | null;
+  /** While right-dragging a move order: the dragged path and where each selected unit would stand (screen pixels). */
+  orderPath: { path: { x: number; y: number }[]; stops: { x: number; y: number }[] } | null;
 }
 
 /** Planned route through a unit's whole task queue, in tile coordinates. */
@@ -252,7 +256,13 @@ export class Renderer {
   /** Last health seen per entity, to spot drops. */
   private readonly lastHp = new Map<number, number>();
   private readonly ghost = new Sprite();
+  /** Extra ghosts for the other buildings of a dragged line. */
+  private readonly lineGhosts: Sprite[] = [];
   private readonly sprites = new Map<number, Sprite>();
+  /** Spinning radar dishes riding on the sprites of radar-equipped units and buildings. */
+  private readonly dishes = new Map<number, Sprite>();
+  /** Entities known not to have a radar, so they are not checked every frame. */
+  private readonly noDish = new Set<number>();
   private readonly textures = new Map<string, Texture>();
   private readonly routes = new Map<number, Route>();
   /** Sprite rotation each unit is turning towards (art faces up; 0 = up). Kept while stopped. */
@@ -478,6 +488,9 @@ export class Renderer {
       this.trails.clear();
     }
     for (const e of world.despawned) {
+      this.dishes.get(e)?.destroy();
+      this.dishes.delete(e);
+      this.noDish.delete(e);
       this.sprites.get(e)?.destroy();
       this.sprites.delete(e);
       this.routes.delete(e);
@@ -744,6 +757,29 @@ export class Renderer {
     }
   }
 
+  /** Keeps a radar dish turning on top of a radar-equipped sprite (a child, so it moves and scales with it). */
+  private spinDish(e: number, s: Sprite, now: number): void {
+    let dish = this.dishes.get(e);
+    if (!dish) {
+      if (this.noDish.has(e)) return;
+      const unit = this.state.world.store(Unit);
+      const bp = unit.has(e) ? this.state.blueprints.get(unit.f.blueprint[e]) : undefined;
+      if (!bp) return; // class info not here yet
+      if (bp.stats.radarMaxEnergy <= 0) {
+        this.noDish.add(e);
+        return;
+      }
+      const look = lookOf(bp.parts);
+      const a = dishAnchor(look, TEX);
+      dish = new Sprite(this.texture(`dish:${Math.round(a.radius * 10)}`, (g) => drawDish(g, a.radius)));
+      dish.anchor.set(0.5);
+      dish.position.set(a.x, a.y);
+      s.addChild(dish);
+      this.dishes.set(e, dish);
+    }
+    dish.rotation = (now / 1000) * 2.4;
+  }
+
   /** Blueprint info can arrive after units; re-skin everything (rare). */
   restyle(): void {
     const unit = this.state.world.store(Unit);
@@ -762,6 +798,7 @@ export class Renderer {
     const turn = 1 - Math.exp(-((now - (this.lastFrameAt || now)) / 1000) * 12);
     this.lastFrameAt = now;
     for (const [e, s] of this.sprites) {
+      this.spinDish(e, s, now);
       const p = this.screenOf(e);
       s.position.set(p.x, p.y);
       s.scale.set(k);
@@ -938,13 +975,39 @@ export class Renderer {
 
   private drawGhost(): void {
     const p = this.view.placement;
-    this.ghost.visible = p !== null;
+    this.ghost.visible = p !== null && p.line.length === 0;
+    this.drawLineGhosts(p);
     if (!p) return;
     this.ghost.texture = this.unitTexture(p.bp, p.bp.owner);
     const size = p.bp.stats.footprint;
     this.ghost.position.set(this.offX + (p.x + size / 2) * this.scale, this.offY + (p.y + size / 2) * this.scale);
     this.ghost.scale.set(this.scale / TEX);
     this.ghost.tint = p.valid ? 0xffffff : 0xff6060;
+  }
+
+  /** One ghost per spot of a dragged line of buildings. */
+  private drawLineGhosts(p: Placement | null): void {
+    const spots = p?.line ?? [];
+    for (let i = 0; i < Math.max(spots.length, this.lineGhosts.length); i++) {
+      let s = this.lineGhosts[i];
+      if (i >= spots.length) {
+        if (s) s.visible = false;
+        continue;
+      }
+      if (!s) {
+        s = new Sprite();
+        s.anchor.set(0.5);
+        s.alpha = 0.55;
+        this.lineGhosts.push(s);
+        this.app.stage.addChild(s);
+      }
+      const size = p!.bp.stats.footprint;
+      s.visible = true;
+      s.texture = this.unitTexture(p!.bp, p!.bp.owner);
+      s.position.set(this.offX + (spots[i].x + size / 2) * this.scale, this.offY + (spots[i].y + size / 2) * this.scale);
+      s.scale.set(this.scale / TEX);
+      s.tint = spots[i].valid ? 0xffffff : 0xff6060;
+    }
   }
 
   /** Ghosted (dashed) lines from a building being placed to the buildings its power links would reach. */
@@ -1104,9 +1167,19 @@ export class Renderer {
     if (placing) {
       const size = placing.bp.stats.footprint;
       const colour = placing.valid ? 0x5bd68a : 0xff6b5b;
-      g.rect(this.offX + placing.x * this.scale, this.offY + placing.y * this.scale, size * this.scale, size * this.scale)
-        .fill({ color: colour, alpha: 0.15 })
-        .stroke({ width: 1.5, color: colour });
+      const shape = placing.bp.stats.shape;
+      const spots = placing.line.length ? placing.line : [{ x: placing.x, y: placing.y, valid: placing.valid }];
+      for (const spot of spots) {
+        const c = spot.valid ? 0x5bd68a : 0xff6b5b;
+        for (let j = 0; j < size; j++) {
+          for (let i = 0; i < size; i++) {
+            if (shape && shape[j][i] !== 'X') continue;
+            g.rect(this.offX + (spot.x + i) * this.scale, this.offY + (spot.y + j) * this.scale, this.scale, this.scale)
+              .fill({ color: c, alpha: 0.15 })
+              .stroke({ width: 1.5, color: c });
+          }
+        }
+      }
       const reach = placing.bp.stats.linkRange;
       g.rect(
         this.offX + (placing.x - reach) * this.scale,
@@ -1224,6 +1297,14 @@ export class Renderer {
         continue;
       }
       g.circle(pings[i].x, pings[i].y, 4 + 8 * age).stroke({ width: 1.5, color: pings[i].colour, alpha: 1 - age });
+    }
+
+    const drag = this.view.orderPath;
+    if (drag && drag.path.length > 1) {
+      g.moveTo(drag.path[0].x, drag.path[0].y);
+      for (const p of drag.path) g.lineTo(p.x, p.y);
+      g.stroke({ width: 2, color: 0x5bd68a, alpha: 0.7 });
+      for (const s of drag.stops) g.circle(s.x, s.y, 4).fill({ color: 0x5bd68a, alpha: 0.9 }).stroke({ width: 1, color: 0xffffff, alpha: 0.8 });
     }
 
     const band = this.view.band;

@@ -33,7 +33,7 @@ export const BOT_CORE_CLASS: ClassTemplate = {
 /** The special building: produces units continuously for as long as the match runs. */
 export const BOT_ASSEMBLER_CLASS: ClassTemplate = {
   name: 'Assembler',
-  parts: ['frame.medium', 'factory.basic', 'factory.basic', 'battery.cell', 'armor.plate', 'armor.plate'],
+  parts: ['frame.medium', 'factory.basic', 'factory.basic', 'factory.basic', 'battery.cell', 'armor.plate'],
   program: '',
 };
 

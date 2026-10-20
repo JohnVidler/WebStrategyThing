@@ -245,7 +245,7 @@ export class ClientState {
       const s = this.stats(e);
       if (!s?.structure) continue;
       const f = this.footprint(e);
-      this.terrain.occupy(f.x, f.y, f.size, 1);
+      this.terrain.occupy(f.x, f.y, f.size, 1, s.shape);
       nodes.push({ e, owner: this.unit.f.owner[e], x: f.x, y: f.y, size: f.size, reach: s.linkRange, site: this.isSite(e) });
     }
     this.powerNodes = nodes;

@@ -1,4 +1,5 @@
 import './docs.css';
+import { MANUAL } from './manual';
 import {
   API_GROUPS,
   BLOCKS,
@@ -678,7 +679,8 @@ const reference: Page[] = [
   },
 ];
 
-const pages = [...guides, ...reference];
+const manual: Page[] = MANUAL.map((p) => ({ ...p, section: 'Manual' }));
+const pages = [...manual, ...guides, ...reference];
 
 function renderNav(active: string, filter: string): void {
   const nav = document.getElementById('nav')!;
@@ -686,7 +688,7 @@ function renderNav(active: string, filter: string): void {
   const matches = filter
     ? UNIT_API.filter((b) => b.name.toLowerCase().includes(filter) || (b.doc ?? '').toLowerCase().includes(filter))
     : [];
-  nav.innerHTML = `<h1>Programming</h1>
+  nav.innerHTML = `<h1>Manual</h1>
     <input id="search" type="search" placeholder="Search functions…" value="${esc(filter)}">
     ${filter ? `<h2>Matches</h2>${matches.map((b) => `<a href="#/api/${slug(b.group ?? '')}#${b.name}">${callName(b)}()</a>`).join('') || '<p class="note">None</p>'}` : ''}
     ${sections
@@ -711,7 +713,7 @@ function route(): void {
   const [path, anchor] = location.hash.replace(/^#\/?/, '').split('#');
   const page = pages.find((p) => p.id === path) ?? pages[0];
   document.getElementById('page')!.innerHTML = page.render();
-  document.title = `${page.title} — WebStrategyThing programming`;
+  document.title = `${page.title} — Digital Chaos manual`;
   renderNav(page.id, '');
   if (anchor) document.getElementById(anchor)?.scrollIntoView();
   else window.scrollTo(0, 0);

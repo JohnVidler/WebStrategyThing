@@ -46,7 +46,10 @@ body {
   padding: 5px 8px;
 }
 
-#page { flex: 1; min-width: 0; max-width: 900px; padding: 24px 32px 64px; }
+#page { flex: 1; min-width: 0; padding: 24px 32px 64px; }
+/* The prose is a centred column; rendered graphs may grow wider than it, and only scroll once they outgrow the page. */
+#page > * { max-width: 900px; margin-left: auto; margin-right: auto; }
+#page > figure.graph { max-width: 100%; width: fit-content; min-width: min(100%, 600px); }
 #page h1 { margin-top: 0; font-size: 24px; }
 #page h2 { font-size: 18px; margin-top: 32px; border-bottom: 1px solid var(--line); padding-bottom: 4px; }
 #page h3 { font-size: 15px; margin: 24px 0 4px; }
@@ -73,3 +76,47 @@ th { color: var(--muted); font-weight: 600; }
   #nav { width: auto; height: auto; position: static; }
   #page { padding: 16px; }
 }
+
+/* --- Manual: rendered graph editor nodes ------------------------------------------------- */
+.graph { margin: 14px 0; }
+.graph figcaption { color: var(--muted); font-size: 13px; margin-top: 4px; max-width: 900px; }
+.graph-scroll { overflow-x: auto; overflow-y: hidden; background: #10141b; border: 1px solid var(--line); border-radius: 6px; }
+.graph-canvas { position: relative; }
+.graph-canvas svg { position: absolute; left: 0; top: 0; pointer-events: none; }
+.graph-canvas path { fill: none; stroke-linecap: round; }
+.graph-canvas path.data { stroke: #4f87c7; stroke-width: 3px; }
+.graph-canvas path.exec { stroke: #f2f2f2; stroke-width: 4px; }
+.gnode { position: absolute; box-sizing: border-box; background: #1d222c; border: 1px solid #343c4b; border-radius: 6px; font: 12px/1.35 system-ui, sans-serif; color: #dde3ee; box-shadow: 0 4px 14px #0008; overflow: visible; }
+.gnode header { display: flex; align-items: center; gap: 6px; padding: 0 9px; border-radius: 5px 5px 0 0; font-weight: 600; background: var(--head, #555); }
+.gnode.event { --head: #8c2f39; } .gnode.action { --head: #a65a1e; } .gnode.query { --head: #2c5d92; } .gnode.config { --head: #1f6f6b; }
+.gnode.logic { --head: #3a4150; } .gnode.variable { --head: #3b6a3a; } .gnode.flow { --head: #4f3d7a; } .gnode.note { --head: #6a5d2a; }
+.gnode.block { --head: #34499a; border-color: #5b6fb0; font-size: 12px; }
+.gnode .icon { opacity: 0.85; width: 14px; text-align: center; }
+.gnode .title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gnode .sub { font-weight: 400; opacity: 0.7; font-size: 10px; }
+.gnode .cost { font-weight: 400; font-size: 10px; padding: 0 5px; border-radius: 8px; background: #0006; }
+.gnode .setting { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: center; padding: 0 9px; }
+.gnode .setting label { color: #8f9bb0; }
+.gnode .field { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: #12161d; border: 1px solid #343c4b; border-radius: 4px; padding: 1px 6px; }
+.gnode .field.small { padding: 0 4px; font-size: 11px; }
+.gnode .field.note-text { white-space: pre-wrap; grid-column: 1 / -1; height: 60px; }
+.gnode .row { display: flex; align-items: center; justify-content: space-between; }
+.gnode .in, .gnode .out { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.gnode .in { margin-left: -7px; } .gnode .out { margin-right: -7px; }
+.gnode .lab { color: #aab4c6; }
+.gnode .pin { width: 12px; height: 12px; box-sizing: border-box; background: #6aa7ff; border: 2px solid #0c0e12; border-radius: 50%; flex: none; }
+.gnode .pin.exec { background: #f2f2f2; clip-path: polygon(0 0, 100% 50%, 0 100%); border: 0; border-radius: 0; }
+.gnode .emits { padding: 2px 9px 4px; color: #8f9bb0; font-size: 11px; }
+.gnode .emits b { color: #dde3ee; font-weight: 600; }
+.gnode .actions { padding: 4px 9px 8px; }
+.gnode .button { display: inline-block; background: #12161d; border: 1px solid #343c4b; border-radius: 4px; padding: 2px 8px; }
+.manual-lead { font-size: 16px; color: var(--text); }
+.manual-steps { counter-reset: step; list-style: none; padding-left: 0; }
+.manual-steps > li { counter-increment: step; position: relative; padding-left: 34px; margin: 10px 0; }
+.manual-steps > li::before { content: counter(step); position: absolute; left: 0; top: 0; width: 24px; height: 24px; border-radius: 50%; background: #23324a; color: #fff; text-align: center; line-height: 24px; font-weight: 600; }
+.block-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+.block-gallery > section { border: 1px solid var(--line); border-radius: 6px; background: var(--panel); padding: 8px 12px; min-width: 0; }
+.block-gallery h3 { margin: 4px 0; }
+.try { border: 1px solid #2f6b4a; background: #14231c; border-radius: 6px; padding: 8px 14px; margin: 14px 0; }
+.try > b { color: #7ee0b5; }
+.kbd { font: 12px ui-monospace, Consolas, monospace; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; background: var(--panel); }

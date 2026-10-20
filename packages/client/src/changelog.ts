@@ -13,8 +13,13 @@ export const CHANGELOG: readonly ChangelogEntry[] = [
   {
     date: '2026-10-20',
     changes: [
+      'The documentation is now a full Manual: how the game works, controls, economy, building, fighting, designing classes, programming from zero (with links to learn more), a tour of the graph editor, nine worked recipes drawn as real graphs, and a gallery of every built-in block. The reference pages follow it.',
+      'Drag while placing a building to lay a straight line of them, side by side (up to 12; spots that are blocked are skipped, and builders take them in order). Right-drag with units selected to spread them evenly along the path you drew.',
+      'Units and buildings with a Radar module now carry a spinning radar dish on top.',
+      'New double-length vehicle chassis (Long light, Long medium, Long heavy) with more module slots, drawn twice as long as they are wide, and a Rocket Artillery unit built on one: its huge missile launcher reaches 26 tiles, further than any sensor sees, so it needs spotters or radar.',
+      'New building shapes: L, T, cross, U and H-shaped frames. They cover 5 or 7 tiles of a 3×3 box, leave the empty tiles walkable, and hold modules in proportion to the tiles they cover; construction energy is now charged per tile covered.',
       'Your saved designs now remember which version of the game they were made with. After an update that changes the default units, you are asked whether to merge the new defaults with your edits, replace your versions, or keep yours.',
-      'Factories now limit unit size: a building needs 1 factory module for a light chassis, 2 for a medium and 3 for a heavy one. The HQ has two; new Light Factory, Vehicle Factory and Heavy Factory buildings are specialised producers.',
+      'Factory modules decide what a building can make: a light unit is built at full speed with 1 factory module, a medium one with 2, a heavy one with 3. One module short, a unit takes ten times as long (the HQ, with 1 module, builds Builders slowly); two or more short, the building cannot make it at all. New Light Factory, Vehicle Factory and Heavy Factory buildings are specialised producers.',
       'The graph editor shows blocks as cards with their settings and an Expand button, has a Blocks group in the palette and a Template chooser for new classes; the Docs have a new page on blocks and your own events.',
       'Starter units are now built from ready-made behaviour blocks (orders, recharging, harvesting, building, repairing, fighting), written as use(HarvestLoop, { minMatter: 10 }) and expandable into plain events to edit.',
       'Radio and Laser link modules: units and buildings of a team can now talk. radioSend(channel, value) reaches allies with a radio within 12 tiles (even through rock); laserSend reaches allies with a laser link up to 40 tiles away, but only along a clear line of sight. Receivers react in a new Message event block.',

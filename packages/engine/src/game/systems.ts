@@ -11,7 +11,7 @@ import { TILE } from './parts';
 import { daylight, routeEnergy, share, StorageMode, wind } from './power';
 import { GENERATION_SCALE } from './parts';
 import { BUILDER_ENERGY_RESERVE, SEPARATION_RADIUS, DECAY_TICKS, MAX_TRANSMISSION_LOSS, RESOURCE_REGEN_INTERVAL_TICKS, SOLAR_GENERATION_MULTIPLIER, STORAGE_DISCHARGE_FRACTION, STORAGE_RESERVE_FRACTION, TESLA_SELF_STUN_FACTOR, TESLA_STUN_TICKS, TRANSMISSION_LOSS_PER_TILE, WIND_GENERATION_MULTIPLIER, buildEnergyCost } from './rules';
-import { CHARGE_PAD_RATE_MULTIPLIER, CHARGE_RANGE, FLAK_BURST_RADIUS } from './rules';
+import { CHARGE_PAD_RATE_MULTIPLIER, CHARGE_RANGE, FLAK_BURST_RADIUS, factoryModulesFor, factoryRatePermille } from './rules';
 import type { Simulation } from './simulation';
 
 /** Energy a storage building keeps back from discharging (and refills first), so its script can always run. */
@@ -553,16 +553,20 @@ export function productionSystem(sim: Simulation): void {
     let progress = view.f.progress[b];
     const bp = queue.length ? sim.blueprints.get(queue[0]) : undefined;
     const s = sim.stats(b);
-    // The unit's own energy cost is spread evenly over its build time (exact total, whole numbers per tick).
-    const next = sim.productionTicks[b] + 1;
+    // Work is counted in thousandths of a build tick: a factory with too few modules for the unit
+    // advances more slowly. The unit's own energy cost is spread evenly over the work (exact total,
+    // whole numbers per tick).
+    const rate = bp ? factoryRatePermille(s.factoryModules, factoryModulesFor(bp.stats.size)) : 0;
+    const before = sim.productionTicks[b];
+    const after = before + rate;
     const total = bp?.stats.buildEnergy ?? 0;
-    const time = bp?.stats.buildTime ?? 1;
-    const step = Math.floor((total * next) / time) - Math.floor((total * (next - 1)) / time);
+    const time = (bp?.stats.buildTime ?? 1) * 1000;
+    const step = Math.floor((total * after) / time) - Math.floor((total * before) / time);
     if (bp && s.factory && sim.spend(b, s.factoryUse + step)) {
-      const ticks = ++sim.productionTicks[b];
+      sim.productionTicks[b] = after;
       blueprint = bp.id;
-      progress = Math.floor((ticks * 100) / bp.stats.buildTime);
-      if (ticks >= bp.stats.buildTime) {
+      progress = Math.min(100, Math.floor((after * 100) / time));
+      if (after >= time) {
         const x = sim.pos.f.x[b] + (sim.rng.int(3) - 1) * TILE;
         const y = sim.pos.f.y[b] + (s.footprint / 2 + 0.5) * TILE;
         const e = sim.spawnUnit(bp, x, y);
@@ -651,7 +655,7 @@ export function buildSystem(sim: Simulation): void {
     const s = sim.stats(e);
     if (s.buildRate <= 0) continue;
     const siteStats = sim.stats(site);
-    const perMatter = buildEnergyCost(siteStats.footprint) / siteStats.cost;
+    const perMatter = buildEnergyCost(siteStats.area) / siteStats.cost;
     const supplied = sim.siteSupplied(site);
     const energyRoom = supplied
       ? sim.gridEnergy(site)

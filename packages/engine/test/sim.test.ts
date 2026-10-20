@@ -640,7 +640,7 @@ describe('construction and resources', () => {
     const [hq] = own(1, 'HQ');
     const before = new Set(own(1, 'Builder'));
     sim.enqueueProduction(1, hq, cls(1, 'Builder').id);
-    run(sim, cls(1, 'Builder').stats.buildTime + 30);
+    run(sim, cls(1, 'Builder').stats.buildTime * 10 + 30); // the HQ has one factory module: a tenth of the speed for a medium unit
     const made = own(1, 'Builder').filter((e) => !before.has(e));
     expect(made).toHaveLength(1);
     expect(sim.tasks[made[0]]!.type(0)).not.toBe(TaskType.Harvest);

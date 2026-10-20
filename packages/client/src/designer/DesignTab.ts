@@ -7,7 +7,9 @@ const CATEGORIES: { title: string; match: (p: PartDef) => boolean }[] = [
   { title: 'Building frames', match: (p) => p.slot === 'chassis' && p.structure === true },
   { title: 'Compute', match: (p) => p.slot === 'cpu' || p.slot === 'memory' },
   { title: 'Movement', match: (p) => p.slot === 'motor' },
-  { title: 'Sensors & weapons', match: (p) => (['sensor', 'radar', 'comms', 'weapon', 'armor'] as PartSlot[]).includes(p.slot) },
+  { title: 'Weapons & armour', match: (p) => p.slot === 'weapon' || p.slot === 'armor' },
+  { title: 'Sensors & radar', match: (p) => p.slot === 'sensor' || p.slot === 'radar' },
+  { title: 'Radio & laser links', match: (p) => p.slot === 'comms' },
   { title: 'Industry', match: (p) => (['cargo', 'builder', 'repair', 'factory', 'depot'] as PartSlot[]).includes(p.slot) },
   { title: 'Power', match: (p) => (['battery', 'charger', 'generator', 'antenna'] as PartSlot[]).includes(p.slot) },
 ];
@@ -137,7 +139,7 @@ export class DesignTab {
       ['Memory', `${s.memorySlots} vars · stack ${s.stackDepth}`],
     ];
     if (s.structure) {
-      rows.push(['Footprint', `${s.footprint}×${s.footprint} tiles`], ['Link reach', `${s.linkRange} tiles`]);
+      rows.push(['Footprint', s.shape ? `${s.area} tiles in a ${s.footprint}×${s.footprint} box` : `${s.footprint}×${s.footprint} tiles`], ['Link reach', `${s.linkRange} tiles`]);
       if (s.solar || s.wind) rows.push(['Generation', `☀ ${s.solar / GENERATION_SCALE}/t  ≋ ${s.wind / GENERATION_SCALE}/t (peak)`]);
       if (s.chargeRate) rows.push(['Charging', `${s.chargeRate}/t per unit`]);
       if (s.resourceCapacity) rows.push(['Silos', String(s.resourceCapacity)]);
@@ -204,9 +206,12 @@ export class DesignTab {
     const full = frame?.slots !== undefined && parts.length - 1 >= frame.slots;
     this.palette.innerHTML = '';
     for (const cat of CATEGORIES) {
-      const details = document.createElement('details');
-      details.open = true;
-      details.innerHTML = `<summary>${cat.title}</summary>`;
+      const details = document.createElement('section');
+      details.className = 'part-group';
+      details.innerHTML = `<h3>${cat.title}</h3>`;
+      const grid = document.createElement('div');
+      grid.className = 'part-grid';
+      details.appendChild(grid);
       for (const p of PART_LIST.filter(cat.match)) {
         const isFrame = p.slot === 'chassis';
         const fits = isFrame || (structure ? !p.mobileOnly : !p.structureOnly);
@@ -220,9 +225,17 @@ export class DesignTab {
           p.slots ? `${p.slots} slots` : '',
           p.energy ? `+${p.energy} energy` : '',
         ].filter(Boolean).join(' · ');
-        row.innerHTML = `<span>${isFrame ? '⇄ ' : '+ '}${esc(p.name)}</span><small>${esc(detail)}</small>`;
+        // Why the button is disabled, shown on the tile itself.
+        const reason = !editable
+          ? 'This class can’t be edited'
+          : !fits
+            ? `Only fits ${p.structureOnly ? 'buildings' : 'units'}`
+            : !isFrame && full
+              ? 'No free slots'
+              : '';
+        row.innerHTML = `<b>${isFrame ? '⇄ ' : '+ '}${esc(p.name)}</b><small>${esc(detail)}</small>${reason ? `<small class="why-disabled">${esc(reason)}</small>` : ''}`;
         row.onclick = () => (isFrame ? this.setFrame(p) : this.addPart(p));
-        details.appendChild(row);
+        grid.appendChild(row);
       }
       this.palette.appendChild(details);
     }
@@ -252,7 +265,7 @@ export class DesignTab {
       this.previewNote.textContent = 'Invalid design';
       return;
     }
-    this.previewNote.textContent = s.structure ? `${s.footprint}×${s.footprint} building` : s.flying ? 'flying unit' : 'ground unit';
+    this.previewNote.textContent = s.structure ? (s.shape ? `${s.area}-tile building (${s.footprint}×${s.footprint} box)` : `${s.footprint}×${s.footprint} building`) : s.flying ? 'flying unit' : s.long ? 'long ground unit' : 'ground unit';
     const parts = this.m.currentParts();
     // The same scale for every design, so body sizes compare directly.
     const views: [HTMLImageElement, number, boolean][] = [[this.preview, 64, false], [this.previewOwn, 32, false], [this.previewRival, 32, true]];

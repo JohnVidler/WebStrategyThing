@@ -4,7 +4,7 @@ import { getPlayerName, getSavedPlayerName, NAME_MAX, setPlayerName } from './pl
 import { CHANGELOG } from './changelog';
 import { randomHex } from './random';
 import { playSound, sound } from './sound';
-import { musicPlayer } from './music';
+import { musicPlayer, placeMusic } from './music';
 import { isShown, setShown, swapContent } from './transition';
 import { startMenuBackground } from './menuBackground';
 import { createMapTerrain, DEFAULT_MAP_ID, GAME_MODES, MAPS, parseGameMode, type GameMode } from '@wst/engine';
@@ -48,11 +48,11 @@ interface CreditTrack {
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
 
-/** "What's new": the latest update open, older ones folded away. */
+/** "What's new": every update folded away until opened. */
 const changelogHtml = (): string =>
   `<section class="lobby-changes"><h2>What’s new</h2>${CHANGELOG.map(
-    (entry, i) =>
-      `<details${i === 0 ? ' open' : ''}><summary>${esc(entry.date)}</summary><ul>${entry.changes.map((c) => `<li>${esc(c)}</li>`).join('')}</ul></details>`,
+    (entry) =>
+      `<details><summary>${esc(entry.date)}</summary><ul>${entry.changes.map((c) => `<li>${esc(c)}</li>`).join('')}</ul></details>`,
   ).join('')}</section>`;
 
 const previews = new Map<string, string>();
@@ -203,8 +203,9 @@ export function showLobby(apiBase: string, joinRoom?: string, preferredMapId = D
     <div id="lobby-view" class="lobby-view"></div>
     <div id="lobby-docs" hidden>
       <div class="docs-bar">
-        <span>Script API reference</span>
+        <span>Manual &amp; API reference</span>
         <span>
+          <span class="docs-music"></span>
           <a class="button" href="docs.html" target="_blank" rel="noopener">Open in new tab ↗</a>
           <button id="lobby-docs-close" data-sound="ui.panel_close" title="Close (Esc)">✕</button>
         </span>
@@ -230,6 +231,7 @@ export function showLobby(apiBase: string, joinRoom?: string, preferredMapId = D
     const frame = root.querySelector<HTMLIFrameElement>('#lobby-docs-frame')!;
     if (open && !frame.src.endsWith('docs.html')) frame.src = 'docs.html';
     setShown(docs, open);
+    placeMusic(open ? docs.querySelector<HTMLElement>('.docs-music') : null); // the player sits in the docs bar meanwhile
   };
   const closeDocs = () => (lobbyState()?.overlay === 'docs' ? history.back() : showDocs(false));
   const openDocs = () => {
@@ -268,7 +270,7 @@ export function showLobby(apiBase: string, joinRoom?: string, preferredMapId = D
         <button id="menu-designer" data-sound="menu.click"><b>Designer</b><small>Design units and buildings and write their programs</small></button>
         <button data-go="options" data-sound="menu.click"><b>Options</b><small>Music and sound effect volume</small></button>
         <button data-go="credits" data-sound="menu.click"><b>Credits</b><small>The music and its licences</small></button>
-        <button id="menu-docs" data-sound="menu.click"><b>API reference</b><small>The scripting language and every function</small></button>
+        <button id="menu-docs" data-sound="menu.click"><b>Manual</b><small>How to play, design and program; every function</small></button>
       </nav>
       ${changelogHtml()}`;
     view.querySelectorAll<HTMLButtonElement>('button[data-go]').forEach((b) => (b.onclick = () => go(b.dataset.go as View)));

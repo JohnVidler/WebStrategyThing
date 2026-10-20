@@ -17,6 +17,10 @@ const TASK_SOUNDS: Record<number, string> = {
 };
 
 const DRAG_THRESHOLD = 5;
+/** A dragged line of buildings never has more spots than a player may have construction sites. */
+const MAX_LINE = 12;
+/** A dragged order path adds a point whenever the mouse has moved this far (pixels). */
+const PATH_STEP = 4;
 const WHEEL_ZOOM = 1.15;
 const KEY_PAN = 60;
 /** Recalling the same control group twice within this time centres the view on it. */
@@ -37,7 +41,9 @@ const isQueueModifier = (ev: MouseEvent | KeyboardEvent) => ev.ctrlKey || ev.met
  *                       opens its own context menu on Shift + right click)
  *   Mouse wheel         zoom at the cursor; middle-drag or arrow keys pan; Home resets
  *   Build bar           pick a building, left-click to place it (Ctrl/Shift: place several);
- *                       selected builders are told to build it. Right-click or Esc cancels.
+ *                       selected builders are told to build it. Left-drag places a straight
+ *                       line of them, side by side. Right-click or Esc cancels.
+ *   Right drag          spreads the selected units evenly along the path dragged
  *   Action grid         common actions (M move, A attack, S stop, H harvest, D unload,
  *                       C recharge) and class buttons; aimed ones wait for a left-click
  *   Esc                 cancel aiming / placement, or deselect
@@ -49,6 +55,7 @@ export class Input implements ViewState {
   band: ViewState['band'] = null;
   readonly pings: ViewState['pings'] = [];
   placement: Placement | null = null;
+  orderPath: ViewState['orderPath'] = null;
   /** Own unit/building under the cursor, or -1. */
   hovered = -1;
   /** An aimed action waiting for its point/unit (left-click), or null. */
@@ -57,6 +64,10 @@ export class Input implements ViewState {
   demolishArmedUntil = 0;
 
   private dragFrom: { x: number; y: number } | null = null;
+  /** Top-left tile where a left-press began while placing, for dragging a line of buildings. */
+  private placeStart: { x: number; y: number } | null = null;
+  /** A right-press being dragged: the mouse path so far (screen pixels). */
+  private orderDrag: { path: { x: number; y: number }[]; moved: boolean } | null = null;
   private panFrom: { x: number; y: number } | null = null;
   /** Control groups by number (1-9): saved entity lists, pruned as units die. */
   private readonly groups = new Map<number, number[]>();
@@ -179,11 +190,12 @@ export class Input implements ViewState {
   /** Start placing a building blueprint (from the build bar). */
   beginPlacement(bp: Blueprint): void {
     this.cancelAiming();
-    this.placement = { bp, x: -100, y: -100, valid: false };
+    this.placement = { bp, x: -100, y: -100, valid: false, line: [] };
     this.onPlacementChanged();
   }
 
   cancelPlacement(): void {
+    this.placeStart = null;
     if (!this.placement) return;
     this.placement = null;
     this.onPlacementChanged();
@@ -199,8 +211,11 @@ export class Input implements ViewState {
       this.panFrom = { x: ev.offsetX, y: ev.offsetY };
       this.renderer.canvas.setPointerCapture(ev.pointerId);
     } else if (this.placement) {
-      if (ev.button === 0) this.place(isQueueModifier(ev));
-      else if (ev.button === 2) {
+      if (ev.button === 0) {
+        // Placed on release: a drag in between lays a line of them.
+        this.placeStart = { x: this.placement.x, y: this.placement.y };
+        this.renderer.canvas.setPointerCapture(ev.pointerId);
+      } else if (ev.button === 2) {
         this.cancelPlacement();
         playSound('build.cancel_placement');
       }
@@ -211,7 +226,9 @@ export class Input implements ViewState {
       this.dragFrom = { x: ev.offsetX, y: ev.offsetY };
       this.renderer.canvas.setPointerCapture(ev.pointerId);
     } else if (ev.button === 2) {
-      this.order(ev.offsetX, ev.offsetY, isQueueModifier(ev));
+      // The order is sent on release: a drag in between spreads the units along the path.
+      this.orderDrag = { path: [{ x: ev.offsetX, y: ev.offsetY }], moved: false };
+      this.renderer.canvas.setPointerCapture(ev.pointerId);
     }
   }
 
@@ -234,8 +251,16 @@ export class Input implements ViewState {
       const tile = this.renderer.screenToTile(ev.offsetX, ev.offsetY);
       this.placement.x = Math.round(tile.x - size / 2);
       this.placement.y = Math.round(tile.y - size / 2);
-      this.placement.valid =
-        this.state.terrain.footprintFree(this.placement.x, this.placement.y, size) && this.state.canPlaceInVision(this.placement.x, this.placement.y, size);
+      this.placement.valid = this.spotValid(this.placement.x, this.placement.y);
+      this.placement.line = this.placeStart ? this.lineSpots() : [];
+      return;
+    }
+    if (this.orderDrag) {
+      const path = this.orderDrag.path;
+      const last = path[path.length - 1];
+      if (Math.hypot(ev.offsetX - last.x, ev.offsetY - last.y) >= PATH_STEP) path.push({ x: ev.offsetX, y: ev.offsetY });
+      if (!this.orderDrag.moved && Math.hypot(ev.offsetX - path[0].x, ev.offsetY - path[0].y) > DRAG_THRESHOLD) this.orderDrag.moved = true;
+      this.orderPath = this.orderDrag.moved ? this.spreadPlan() : null;
       return;
     }
     if (!this.dragFrom) return;
@@ -248,6 +273,23 @@ export class Input implements ViewState {
   private pointerUp(ev: PointerEvent): void {
     if (ev.button === 1) {
       this.panFrom = null;
+      return;
+    }
+    if (ev.button === 0 && this.placeStart) {
+      const p = this.placement;
+      this.placeStart = null;
+      if (!p) return;
+      if (p.line.length > 1) this.placeLine(isQueueModifier(ev));
+      else this.place(isQueueModifier(ev));
+      return;
+    }
+    if (ev.button === 2 && this.orderDrag) {
+      const drag = this.orderDrag;
+      this.orderDrag = null;
+      this.orderPath = null;
+      const spread = drag.moved ? this.spreadUnits(drag.path) : null;
+      if (spread) this.sendSpread(spread, isQueueModifier(ev));
+      else this.order(drag.path[0].x, drag.path[0].y, isQueueModifier(ev));
       return;
     }
     if (ev.button !== 0 || !this.dragFrom) return;
@@ -343,6 +385,96 @@ export class Input implements ViewState {
     playSound('select.group_recall');
   }
 
+  private spotValid(x: number, y: number): boolean {
+    const bp = this.placement!.bp;
+    return this.state.terrain.footprintFree(x, y, bp.stats.footprint, bp.stats.shape) && this.state.canPlaceInVision(x, y, bp.stats.footprint);
+  }
+
+  /**
+   * The spots of a line of buildings from where the press began to the cursor: one every
+   * `footprint` tiles along the longer axis, so neighbours touch without overlapping.
+   * Empty while the cursor is less than one building away.
+   */
+  private lineSpots(): Placement['line'] {
+    const p = this.placement!;
+    const a = this.placeStart!;
+    const size = p.bp.stats.footprint;
+    const dx = p.x - a.x;
+    const dy = p.y - a.y;
+    const major = Math.max(Math.abs(dx), Math.abs(dy));
+    if (major < size) return [];
+    const n = Math.min(MAX_LINE, Math.floor(major / size) + 1);
+    const out: Placement['line'] = [];
+    for (let i = 0; i < n; i++) {
+      const x = Math.round(a.x + (dx * i * size) / major);
+      const y = Math.round(a.y + (dy * i * size) / major);
+      out.push({ x, y, valid: this.spotValid(x, y) });
+    }
+    return out;
+  }
+
+  /** Places every free spot of the dragged line; builders get them as one queue, in order. */
+  private placeLine(keepPlacing: boolean): void {
+    const p = this.placement!;
+    const builders = this.ownedSelection().filter((e) => ((this.state.stats(e)?.caps ?? 0) & Caps.Build) !== 0);
+    let sent = 0;
+    for (const spot of p.line) {
+      if (!spot.valid) continue;
+      this.send({ t: 'place', blueprint: p.bp.id, x: spot.x, y: spot.y, builders, queue: keepPlacing || sent > 0 });
+      this.state.terrain.occupy(spot.x, spot.y, p.bp.stats.footprint, 1, p.bp.stats.shape);
+      sent++;
+    }
+    playSound(sent ? 'build.place' : 'build.place_invalid');
+    p.line = [];
+    p.valid = false;
+    if (!keepPlacing && sent) this.cancelPlacement();
+  }
+
+  /**
+   * Where each selected unit would stand if the dragged path were spread over them: evenly
+   * along its length, the unit nearest the start of the path taking the first spot, and so on.
+   */
+  private spreadUnits(path: { x: number; y: number }[]): { unit: number; sx: number; sy: number }[] | null {
+    const units = this.ownedSelection().filter((e) => !this.state.isStructure(e));
+    if (!units.length || path.length < 2) return null;
+    const lengths = [0];
+    for (let i = 1; i < path.length; i++) lengths.push(lengths[i - 1] + Math.hypot(path[i].x - path[i - 1].x, path[i].y - path[i - 1].y));
+    const total = lengths[lengths.length - 1];
+    if (total <= 0) return null;
+    const at = (d: number) => {
+      let i = 1;
+      while (i < lengths.length - 1 && lengths[i] < d) i++;
+      const span = lengths[i] - lengths[i - 1] || 1;
+      const t = (d - lengths[i - 1]) / span;
+      return { x: path[i - 1].x + (path[i].x - path[i - 1].x) * t, y: path[i - 1].y + (path[i].y - path[i - 1].y) * t };
+    };
+    const stops = units.map((_, i) => at(units.length === 1 ? total : (total * i) / (units.length - 1)));
+    // Order the units along the path's overall direction so their routes do not cross.
+    const dir = { x: path[path.length - 1].x - path[0].x, y: path[path.length - 1].y - path[0].y };
+    const side = (e: number) => {
+      const p = this.renderer.screenOf(e);
+      return p.x * dir.x + p.y * dir.y;
+    };
+    const ordered = [...units].sort((a, b) => side(a) - side(b));
+    return ordered.map((unit, i) => ({ unit, sx: stops[i].x, sy: stops[i].y }));
+  }
+
+  /** The preview for the renderer while the drag is under way. */
+  private spreadPlan(): ViewState['orderPath'] {
+    const drag = this.orderDrag!;
+    const spread = this.spreadUnits(drag.path);
+    return { path: drag.path, stops: (spread ?? []).map((s) => ({ x: s.sx, y: s.sy })) };
+  }
+
+  private sendSpread(spread: { unit: number; sx: number; sy: number }[], queue: boolean): void {
+    for (const s of spread) {
+      const tile = this.renderer.screenToTile(s.sx, s.sy);
+      this.send({ t: 'order', units: [s.unit], x: Math.floor(tile.x), y: Math.floor(tile.y), target: -1, queue });
+      this.pings.push({ x: s.sx, y: s.sy, born: performance.now(), colour: 0x5bd68a });
+    }
+    playSound(queue ? 'order.queue' : 'order.move');
+  }
+
   /** Places the current blueprint; selected builders are assigned to it. */
   private place(keepPlacing: boolean): void {
     const p = this.placement;
@@ -355,7 +487,7 @@ export class Input implements ViewState {
     this.send({ t: 'place', blueprint: p.bp.id, x: p.x, y: p.y, builders, queue: keepPlacing });
     playSound('build.place');
     // Optimistically block the footprint so a second click can't land on the same spot.
-    this.state.terrain.occupy(p.x, p.y, p.bp.stats.footprint, 1);
+    this.state.terrain.occupy(p.x, p.y, p.bp.stats.footprint, 1, p.bp.stats.shape);
     p.valid = false;
     if (!keepPlacing) this.cancelPlacement();
   }

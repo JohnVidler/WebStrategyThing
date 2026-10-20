@@ -548,7 +548,7 @@ Asked for: unit sizes both larger and smaller than today's three (light, medium,
 
 ## What "size" is today
 
-A chassis part carries `size` 0, 1 or 2. Everything else about a unit already comes from the chassis *part*: `mass`, `hp`, `slots` (4 / 6 / 9) and base `energy`. In the engine `size` only decides which factories may build it (new: a factory needs `size + 1` factory modules); in the client it only scales the drawn body (`unitRadius`). Units are points to physics: pathing, separation (`SEPARATION_RADIUS`, 0.7 tile for everything), spatial grid and vision do not look at size at all. That is what makes extra tiers cheap.
+A chassis part carries `size` 0, 1 or 2. Everything else about a unit already comes from the chassis *part*: `mass`, `hp`, `slots` (4 / 6 / 9) and base `energy`. In the engine `size` only decides how fast a factory builds it (a factory builds at full speed with `size + 1` factory modules at a tenth of the speed with one fewer and not at all with two fewer); in the client it only scales the drawn body (`unitRadius`). Units are points to physics: pathing, separation (`SEPARATION_RADIUS`, 0.7 tile for everything), spatial grid and vision do not look at size at all. That is what makes extra tiers cheap.
 
 ## Proposal: more chassis parts on a longer tier ladder (no new concept)
 

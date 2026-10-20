@@ -38,10 +38,11 @@ export class Terrain {
     return this.passable[i] === 1 && this.occupied[i] === 0;
   }
 
-  /** Marks (delta = 1) or clears (delta = -1) a size × size footprint whose top-left is (x, y). */
-  occupy(x: number, y: number, size: number, delta: 1 | -1): void {
+  /** Marks (delta = 1) or clears (delta = -1) a size × size footprint (only the 'X' cells of `shape`, if given) whose top-left is (x, y). */
+  occupy(x: number, y: number, size: number, delta: 1 | -1, shape?: readonly string[] | null): void {
     for (let j = y; j < y + size; j++) {
       for (let i = x; i < x + size; i++) {
+        if (shape && shape[j - y][i - x] !== 'X') continue;
         if (this.inBounds(i, j)) this.occupied[j * this.width + i] += delta;
       }
     }
@@ -53,8 +54,8 @@ export class Terrain {
     this.version++;
   }
 
-  footprintFree(x: number, y: number, size: number): boolean {
-    for (let j = y; j < y + size; j++) for (let i = x; i < x + size; i++) if (!this.walkable(i, j)) return false;
+  footprintFree(x: number, y: number, size: number, shape?: readonly string[] | null): boolean {
+    for (let j = y; j < y + size; j++) for (let i = x; i < x + size; i++) if ((!shape || shape[j - y][i - x] === 'X') && !this.walkable(i, j)) return false;
     return true;
   }
 

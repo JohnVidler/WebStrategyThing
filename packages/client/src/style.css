@@ -554,6 +554,8 @@ header { display: flex; flex-direction: column; gap: 8px; }
   box-shadow: 0 10px 40px rgb(0 0 0 / 0.6);
   overflow: hidden;
 }
+.docs-bar > span:last-child { display: flex; align-items: center; gap: 8px; }
+.docs-music { display: inline-flex; align-items: center; }
 .docs-bar {
   display: flex;
   justify-content: space-between;
@@ -654,10 +656,12 @@ button.primary { border-color: var(--accent); background: #1b2a40; }
 .installed { margin: 0; padding-left: 28px; display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
 .installed li span:first-child { margin-right: 6px; }
 .installed li button { margin-left: 6px; padding: 0 5px; font-size: 11px; }
-.palette details { border: 1px solid var(--line); border-radius: 4px; padding: 4px 6px; }
-.palette details + details { margin-top: 6px; }
-.palette summary { cursor: pointer; color: var(--muted); font-size: 12px; }
-.palette .part-row { width: 100%; text-align: left; margin-top: 4px; padding: 4px 6px; }
+.palette { display: flex; flex-direction: column; gap: 14px; }
+.palette .part-group h3 { margin: 0 0 6px; padding-bottom: 3px; border-bottom: 1px solid var(--line); }
+.palette .part-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 6px; }
+.palette .part-row { justify-content: flex-start; gap: 3px; text-align: left; padding: 6px 8px; }
+.palette .part-row b { font-weight: 600; }
+.palette .part-row small.why-disabled { color: var(--bad); margin-top: auto; padding-top: 2px; }
 .designer-tab-code { position: relative; display: flex; flex-direction: column; padding-top: 8px; }
 .editor-host { flex: 1; min-height: 0; border-top: 1px solid var(--line); }
 .editor-host .cm-editor { height: 100%; }

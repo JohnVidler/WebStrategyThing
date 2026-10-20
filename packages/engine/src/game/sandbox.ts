@@ -60,7 +60,7 @@ export function testRun(parts: readonly string[], source: string, options: TestR
     const bp = sim.blueprints.define(1, 'Test subject', parts);
     if (source.trim()) buttons = sim.setProgram(bp.id, source).buttons;
     if (bp.stats.structure) {
-      const spot = freeSpot(sim, bp.stats.footprint);
+      const spot = freeSpot(sim, bp.stats.footprint, bp.stats.shape);
       if (!spot) return { error: 'No room for the building in the sandbox', samples: [], notes: [], buttons };
       e = sim.spawnStructure(bp, spot[0], spot[1]);
     } else {
@@ -159,11 +159,11 @@ export function testRun(parts: readonly string[], source: string, options: TestR
 }
 
 /** A free spot for a building near the starting base (top-left corner). */
-function freeSpot(sim: ReturnType<typeof createMatch>, size: number): [number, number] | null {
+function freeSpot(sim: ReturnType<typeof createMatch>, size: number, shape: readonly string[] | null): [number, number] | null {
   for (let r = 0; r < 20; r++) {
     for (let y = 12 - r; y <= 12 + r; y++) {
       for (let x = 12 - r; x <= 12 + r; x++) {
-        if (x >= 1 && y >= 1 && sim.terrain.footprintFree(x, y, size)) return [x, y];
+        if (x >= 1 && y >= 1 && sim.terrain.footprintFree(x, y, size, shape)) return [x, y];
       }
     }
   }

@@ -33,9 +33,9 @@ export const BUILDING_BUILD_RANGE = 4 * TILE;
 /** Share of a finished building's cost returned when it is demolished (sites return everything invested). */
 export const DEMOLISH_REFUND = 0.5;
 
-/** Energy to construct a building: this much per tile of footprint area (so 1x1 = 50, 2x2 = 200, 3x3 = 450). */
+/** Energy to construct a building: this much per tile it covers (so 1x1 = 250, 2x2 = 1000, 3x3 = 2250). */
 export const BUILD_ENERGY_PER_TILE = 250;
-export const buildEnergyCost = (footprint: number): number => footprint * footprint * BUILD_ENERGY_PER_TILE;
+export const buildEnergyCost = (area: number): number => area * BUILD_ENERGY_PER_TILE;
 /** Radar pulse: energy per tile of range (the script chooses how much to spend, up to the module's limit). */
 export const RADAR_ENERGY_PER_TILE = 25;
 /** Ticks a radar module must rest after a pulse (10 ticks = 1 second). */
@@ -159,8 +159,19 @@ export const PRODUCTION_ENERGY_BY_SLOT: Readonly<Record<string, number>> = {
 export const SITE_START_HP = 0.1;
 export const MAX_SITES_PER_PLAYER = 12;
 export const MAX_PRODUCTION_QUEUE = 8;
-/** A factory building can produce a chassis of size s (0 light, 1 medium, 2 heavy) only with at least s + 1 factory modules. */
+/** Factory modules a chassis of size s (0 light, 1 medium, 2 heavy) needs to be built at full speed: s + 1. */
 export const factoryModulesFor = (chassisSize: number): number => chassisSize + 1;
+/** Speed of a factory one module short of a unit's need, in thousandths of full speed. */
+export const FACTORY_ONE_SHORT_PERMILLE = 100;
+/**
+ * Production speed in thousandths of full speed. With at least the modules a unit needs it is
+ * built at full speed (more modules give no extra speed); one module short it is built at a
+ * tenth of the speed; two or more short it cannot be built there at all (0).
+ */
+export const factoryRatePermille = (have: number, need: number): number => {
+  if (have >= need) return 1000;
+  return need - have === 1 && have > 0 ? FACTORY_ONE_SHORT_PERMILLE : 0;
+};
 export const MAX_UNITS_PER_PLAYER = 256;
 export const MAX_CLASSES_PER_PLAYER = 40;
 
@@ -258,10 +269,19 @@ export const PART_TUNING: Readonly<Record<string, PartTuning>> = {
   'chassis.light': { mass: 2, hp: 40, slots: 4, energy: 600 },
   'chassis.medium': { mass: 5, hp: 100, slots: 6, energy: 1200 },
   'chassis.heavy': { mass: 10, hp: 220, slots: 9, energy: 2400 },
+  'chassis.long.light': { mass: 4, hp: 75, slots: 7, energy: 1100 },
+  'chassis.long.medium': { mass: 9, hp: 190, slots: 11, energy: 2200 },
+  'chassis.long.heavy': { mass: 19, hp: 420, slots: 16, energy: 4400 },
   // Building frames
   'frame.small': { mass: 10, hp: 300, slots: 8, energy: 200 },
   'frame.medium': { mass: 20, hp: 600, slots: 16, energy: 500 },
   'frame.large': { mass: 40, hp: 1200, slots: 31, energy: 1000 },
+  // Shaped frames: per tile roughly what the square ones give (slots 3.4, mass 4.4, hp 135, energy 110).
+  'frame.l': { mass: 24, hp: 700, slots: 17, energy: 560 },
+  'frame.t': { mass: 24, hp: 700, slots: 17, energy: 560 },
+  'frame.plus': { mass: 24, hp: 700, slots: 17, energy: 560 },
+  'frame.u': { mass: 32, hp: 950, slots: 24, energy: 780 },
+  'frame.h': { mass: 32, hp: 950, slots: 24, energy: 780 },
 
   'cpu.basic': { mass: 1, cycles: 20, stack: 8, memory: 16, use: 1 },
   'cpu.fast': { mass: 1, cycles: 60, stack: 8, memory: 24, use: 1 },
@@ -288,6 +308,8 @@ export const PART_TUNING: Readonly<Record<string, PartTuning>> = {
   'flak.cannon': { mass: 3, weapon: { range: 10, damage: 12, cooldown: 3 }, use: 2 },
   'missile.small': { mass: 3, weapon: missileLauncher(4, 12, 30, { speed: 0.5, turn: 7, flight: 40, hp: 4, blast: 1, hitChance: 0.3 }), use: 0 },
   'missile.medium': { mass: 6, weapon: missileLauncher(12, 14, 40, { speed: 0.35, turn: 4.5, flight: 60, hp: 20, blast: 1.5, hitChance: 0.6 }), use: 0 },
+  // Artillery: reaches further than any sensor sees (sensor.long is 14), so it needs a spotter, a radar or allied vision.
+  'missile.huge': { mass: 16, weapon: missileLauncher(60, 26, 100, { speed: 0.3, turn: 2, flight: 110, hp: 80, blast: 3, hitChance: 1 }), use: 0 },
   'missile.large': { mass: 10, weapon: missileLauncher(30, 16, 60, { speed: 0.22, turn: 2.5, flight: 90, hp: 60, blast: 2.2, hitChance: 1 }), use: 0 },
 
   'armor.plate': { mass: 4, hp: 60 },

@@ -66,9 +66,13 @@ export interface PartDef {
   readonly slots?: number;
   /** Chassis: render size class. */
   readonly size?: number;
-  /** Frame: immobile building occupying footprint × footprint tiles. */
+  /** Frame: immobile building occupying footprint × footprint tiles (or the cells of `shape` inside that box). */
   readonly structure?: boolean;
   readonly footprint?: number;
+  /** Frame: rows of the building's layout inside its footprint box, 'X' = a tile it covers, '.' = empty. Absent = a full square. */
+  readonly shape?: readonly string[];
+  /** Vehicle chassis twice as long as it is wide. */
+  readonly long?: boolean;
   /** Energy storage capacity (chassis base buffer, or battery modules). */
   readonly energy?: number;
   readonly cycles?: number;
@@ -136,9 +140,17 @@ const CATALOGUE: PartDef[] = [
   { id: 'chassis.medium', slot: 'chassis', name: 'Medium chassis', ...T('chassis.medium'), size: 1, description: 'General-purpose body.' },
   { id: 'chassis.heavy', slot: 'chassis', name: 'Heavy chassis', ...T('chassis.heavy'), size: 2, description: 'Slow, tough and roomy.' },
   // Building frames
+  { id: 'chassis.long.light', slot: 'chassis', name: 'Long light chassis', ...T('chassis.long.light'), size: 0, long: true, description: 'Twice as long as a light chassis: more room for modules, still quick to build and nimble.' },
+  { id: 'chassis.long.medium', slot: 'chassis', name: 'Long medium chassis', ...T('chassis.long.medium'), size: 1, long: true, description: 'A double-length body with room for a big launcher and its ammunition.' },
+  { id: 'chassis.long.heavy', slot: 'chassis', name: 'Long heavy chassis', ...T('chassis.long.heavy'), size: 2, long: true, description: 'A double-length armoured hull: the roomiest vehicle body.' },
   { id: 'frame.small', slot: 'chassis', name: 'Small frame (1×1)', ...T('frame.small'), structure: true, footprint: 1, description: 'A one-tile building.' },
   { id: 'frame.medium', slot: 'chassis', name: 'Medium frame (2×2)', ...T('frame.medium'), structure: true, footprint: 2, description: 'A 2×2 building.' },
   { id: 'frame.large', slot: 'chassis', name: 'Large frame (3×3)', ...T('frame.large'), structure: true, footprint: 3, description: 'A 3×3 building.' },
+  { id: 'frame.l', slot: 'chassis', name: 'L-shaped frame', ...T('frame.l'), structure: true, footprint: 3, shape: ['X..', 'X..', 'XXX'], description: 'An L-shaped building in a 3×3 box: 5 tiles, so it fits round obstacles and holds modules in proportion.' },
+  { id: 'frame.t', slot: 'chassis', name: 'T-shaped frame', ...T('frame.t'), structure: true, footprint: 3, shape: ['XXX', '.X.', '.X.'], description: 'A T-shaped building in a 3×3 box: 5 tiles.' },
+  { id: 'frame.plus', slot: 'chassis', name: 'Cross-shaped frame', ...T('frame.plus'), structure: true, footprint: 3, shape: ['.X.', 'XXX', '.X.'], description: 'A plus-shaped building in a 3×3 box: 5 tiles. Units can stand in the corners.' },
+  { id: 'frame.u', slot: 'chassis', name: 'U-shaped frame', ...T('frame.u'), structure: true, footprint: 3, shape: ['X.X', 'X.X', 'XXX'], description: 'A U-shaped building in a 3×3 box: 7 tiles around a bay.' },
+  { id: 'frame.h', slot: 'chassis', name: 'H-shaped frame', ...T('frame.h'), structure: true, footprint: 3, shape: ['X.X', 'XXX', 'X.X'], description: 'An H-shaped building in a 3×3 box: 7 tiles.' },
 
   ...(['cpu.basic', 'cpu.fast', 'cpu.quantum'] as const).map((id): PartDef => {
     const t = T(id);
@@ -162,7 +174,7 @@ const CATALOGUE: PartDef[] = [
   { id: 'laser.beam', slot: 'weapon', name: 'Laser', ...T('laser.beam'), weapon: { ...T('laser.beam').weapon!, kind: 'laser' }, description: `${T('laser.beam').weapon!.damage} damage at full power, range ${T('laser.beam').weapon!.range}. Heavy energy cost: ${T('laser.beam').use} per shot; damage scales with the energy spent, which scripts can set with laserPower(energy).` },
   { id: 'tesla.coil', slot: 'weapon', name: 'Tesla coil', ...T('tesla.coil'), weapon: { ...T('tesla.coil').weapon!, kind: 'tesla' }, description: `Stuns the CPU of every unit and building within ${TESLA_RANGE / TILE} tiles for ${TESLA_STUN_TICKS / 10}s, friend or foe, then recharges for ${TESLA_COOLDOWN / 10}s. Aim it with fire(). On a vehicle it stuns the vehicle too, for ${Math.round(TESLA_SELF_STUN_FACTOR * 100)}% as long.` },
   { id: 'flak.cannon', slot: 'weapon', name: 'Flak cannon', ...T('flak.cannon'), weapon: { ...T('flak.cannon').weapon!, kind: 'flak' }, description: `Anti-missile air-burst: ${T('flak.cannon').weapon!.damage} damage to every enemy missile within ${FLAK_BURST_RADIUS / TILE} tiles of the one it is aimed at, range ${T('flak.cannon').weapon!.range}, never misses. Harmless to units and buildings. ${T('flak.cannon').use} energy per shot. Aim it with fire(); a Detected block can watch for MISSILE.` },
-  ...(['small', 'medium', 'large'] as const).map((size): PartDef => {
+  ...(['small', 'medium', 'large', 'huge'] as const).map((size): PartDef => {
     const id = `missile.${size}`;
     const t = T(id);
     const w = t.weapon!;
@@ -180,7 +192,7 @@ const CATALOGUE: PartDef[] = [
   { id: 'battery.cell', slot: 'battery', name: 'Battery cell', ...T('battery.cell'), description: `+${T('battery.cell').energy} energy storage.` },
   { id: 'battery.bank', slot: 'battery', name: 'Battery bank', ...T('battery.bank'), structureOnly: true, description: `+${T('battery.bank').energy} energy storage.` },
 
-  { id: 'factory.basic', slot: 'factory', name: 'Factory', ...T('factory.basic'), structureOnly: true, description: 'Produces units. The size of unit a building can produce depends on how many factory modules it has: 1 for a light chassis, 2 for a medium one, 3 for a heavy one. More modules also use more energy while producing.' },
+  { id: 'factory.basic', slot: 'factory', name: 'Factory', ...T('factory.basic'), structureOnly: true, description: 'Produces units. A light chassis is built at full speed with 1 factory module, a medium one with 2, a heavy one with 3. One module short, a unit is built at a tenth of the speed; two or more short, the building cannot build it. More modules also use more energy while producing.' },
   { id: 'silo', slot: 'depot', name: 'Resource silo', ...T('silo'), structureOnly: true, description: `Stores ${T('silo').storage} resources; units dock here to fill it or take from it.` },
   { id: 'build.arm', slot: 'builder', name: 'Build arm', ...T('build.arm'), mobileOnly: true, description: `Constructs buildings, investing ${T('build.arm').buildRate} resources per tick.` },
   { id: 'build.crane', slot: 'builder', name: 'Build crane', ...T('build.crane'), structureOnly: true, description: `Constructs buildings up to ${BUILDING_BUILD_RANGE / TILE} tiles from this building's edge, investing ${T('build.crane').buildRate} resources per tick.` },
