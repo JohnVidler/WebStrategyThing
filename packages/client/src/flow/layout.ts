@@ -14,7 +14,7 @@ export function estimateHeight(n: GNode): number {
   const rows = Math.max(n.inputs.length, n.outputs.length);
   const extra = n.controls.filter((c) => !n.inputs.some((i) => i.key === c.key)).length;
   const lines = n.controls.some((c) => c.type === 'multiline') ? 3 : 0;
-  return 38 + rows * ROW + extra * 28 + lines * 14 + 12;
+  return 38 + rows * ROW + extra * 28 + lines * 14 + (n.actions?.length ? 30 : 0) + (n.emits?.length ? 18 : 0) + (n.kind === 'block' ? 40 : 0) + 12;
 }
 
 /**
@@ -102,6 +102,16 @@ export function layout(model: GraphModel): Positions {
   };
 
   let y = 40;
+  // Built-in blocks come first, as a row of cards; what they raise is what the event blocks below hook.
+  const cards = model.nodes.filter((n) => n.kind === 'block');
+  for (let start = 0; start < cards.length; start += 3) {
+    const row = cards.slice(start, start + 3);
+    row.forEach((c, col) => {
+      pos[c.id] = [40 + col * (NODE_WIDTH + 60), y];
+      placed.add(c.id);
+    });
+    y += Math.max(...row.map((n) => estimateHeight(n))) + GAP_Y;
+  }
   const heads = model.nodes.filter((n) => n.kind === 'event');
   for (const h of heads) {
     const r = chain(h.id, 40, y);

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  expandBlocks,
   ActivityKind,
   FLOW_HOST,
   parseText,
@@ -200,8 +201,10 @@ describe('starter programs', () => {
     for (const c of STARTER_CLASSES) {
       if (!c.program) continue;
       const doc = parseText(c.text ?? '', FLOW_HOST).doc;
+      expect(doc.blocks?.length, `${c.name} is made of built-in blocks`).toBeGreaterThan(0);
+      expect(doc.handlers, `${c.name} needs no event blocks of its own`).toEqual([]);
       expect(
-        doc.handlers.map((h) => h.event),
+        expandBlocks(doc, FLOW_HOST).handlers.map((h) => h.event),
         c.name,
       ).not.toContain('Idle');
     }

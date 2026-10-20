@@ -31,10 +31,14 @@ export interface EventDef {
 export const DetectKind = { Enemy: 1, Resource: 2, DamagedAlly: 3, Missile: 4 } as const;
 /** Order policy constants. */
 export const OrderPolicy = { Queue: 0, Replace: 1 } as const;
+/** Which kind of link carried a Message. */
+export const CommsLink = { Radio: 1, Laser: 2 } as const;
 export const DetectSort = { Nearest: 0, Weakest: 1, Strongest: 2, MostDamaged: 3 } as const;
 
 /** Constants usable in programs, besides the game's own (MOVE, ENEMY, ...). */
 export const FLOW_CONSTANT_DOCS: readonly (readonly [string, number, string])[] = [
+  ['RADIO', CommsLink.Radio, 'Message link: a radio message'],
+  ['LASER', CommsLink.Laser, 'Message link: a laser-link message'],
   ['QUEUE', OrderPolicy.Queue, 'Order policy: urgent orders wait their turn'],
   ['REPLACE', OrderPolicy.Replace, 'Order policy: an urgent order replaces the plan'],
   ['ENEMY', DetectKind.Enemy, 'Detected kind: an enemy unit or building'],
@@ -122,15 +126,59 @@ export const EVENTS: readonly EventDef[] = [
     doc: 'The unit has nothing left to do: a job ended with no chain attached, or there is no next order, or it was just built. Raised once when that happens, and again every `repeat` ticks while the unit stays free, so a free unit can look for work without polling.',
   },
   {
+    id: 14, name: 'Message', params: ['channel', 'value', 'sender', 'link'], multi: true,
+    config: [
+      ints('channels', [], 'Only these channels (empty: any)'),
+      int('link', 0, 0, 2, 'Only RADIO (1) or LASER (2) messages; 0 = either'),
+    ],
+    doc: 'A radio or laser message from an allied unit or building reached this one. `channel` and `value` are what the sender passed to radioSend / laserSend, `sender` is its handle and `link` is RADIO or LASER. Needs a radio or laser module of the same kind.',
+  },
+  {
     id: 12, name: 'EnergyFull', params: [], multi: false,
     config: [int('above', 95, 2, 100, 'Percent')],
     doc: 'Stored energy rose above the threshold.',
   },
 ];
 
+/** Events a program makes up itself: a capitalised name, raised with `emit(Name, ...)`, handled with `on(Name, ...)`. */
+export const CUSTOM_EVENT_BASE = 64;
+export const MAX_CUSTOM_EVENTS = 16;
+export const MAX_CUSTOM_PARAMS = 4;
+const CUSTOM_NAME = /^[A-Z][A-Za-z0-9_]*$/;
+
+export const customEventDef = (name: string, index = 0): EventDef => ({
+  id: CUSTOM_EVENT_BASE + index,
+  name,
+  params: ['a', 'b', 'c', 'd'],
+  config: [],
+  multi: true,
+  doc: `An event of this program: raised by emit(${name}, ...).`,
+});
+
+/** The program's own event names, in order of first use (handlers, then emits). */
+export function customEventNames(doc: { readonly handlers: readonly { readonly event: string; readonly body: readonly unknown[] }[] }): string[] {
+  const out: string[] = [];
+  const add = (n: string) => {
+    if (isCustomEventName(n) && !out.includes(n)) out.push(n);
+  };
+  type Walk = { k: string; event?: string; then?: Walk[]; else?: Walk[]; body?: Walk[]; outcomes?: Record<string, Walk[]> };
+  const walk = (list: readonly Walk[]): void => {
+    for (const s of list) {
+      if (s.k === 'emit') add(s.event!);
+      else if (s.k === 'if') (walk(s.then!), walk(s.else!));
+      else if (s.k === 'while') walk(s.body!);
+      else if (s.k === 'call' && s.outcomes) for (const c of Object.values(s.outcomes)) walk(c);
+    }
+  };
+  for (const h of doc.handlers) add(h.event);
+  for (const h of doc.handlers) walk(h.body as Walk[]);
+  return out;
+}
+
 export const EVENT_BY_NAME: ReadonlyMap<string, EventDef> = new Map(EVENTS.map((e) => [e.name, e]));
 export const EVENT_BY_ID: ReadonlyMap<number, EventDef> = new Map(EVENTS.map((e) => [e.id, e]));
+export const isCustomEventName = (name: string): boolean => CUSTOM_NAME.test(name) && !EVENT_BY_NAME.has(name);
 export const EventId = Object.fromEntries(EVENTS.map((e) => [e.name, e.id])) as Record<
-  'Spawned' | 'Idle' | 'Every' | 'Timer' | 'Order' | 'Arrived' | 'Damaged' | 'Detected' | 'Visitor' | 'Button' | 'EnergyLow' | 'EnergyFull' | 'Free',
+  'Spawned' | 'Idle' | 'Every' | 'Timer' | 'Order' | 'Arrived' | 'Damaged' | 'Detected' | 'Visitor' | 'Button' | 'EnergyLow' | 'EnergyFull' | 'Free' | 'Message',
   number
 >;

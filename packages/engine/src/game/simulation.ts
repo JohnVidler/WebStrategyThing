@@ -1,6 +1,6 @@
 import { World } from '../ecs/world';
 import { configInt, configInts, handles, type FlowProgram } from '../flow/compile';
-import { EventId, OrderPolicy } from '../flow/events';
+import { CommsLink, EventId, OrderPolicy } from '../flow/events';
 import { FlowError } from '../flow/ir';
 import { createFlow, raise, type FlowState } from '../flow/run';
 import type { Alert } from '../net/codec';
@@ -37,7 +37,7 @@ import { missileSystem, type MissileFlight } from './missile';
 import { PARTS, SWITCHABLE, TILE } from './parts';
 import { findPath } from './path';
 import { emptyNetwork, powerLinks, powerNetworks, powerTopology, type PowerNetwork, type PowerNode } from './power';
-import { BASE_LINK_RANGE, BUILD_RANGE, BUILDING_BUILD_RANGE, BUILDING_TRANSFER_RANGE, DEMOLISH_REFUND, DOCK_RANGE, HARVEST_RANGE, MAX_PRODUCTION_QUEUE, MAX_SITES_PER_PLAYER, RADAR_COOLDOWN_TICKS, RADAR_ENERGY_PER_TILE, SITE_START_HP, UNIT_TRANSFER_RANGE } from './rules';
+import { factoryModulesFor, BASE_LINK_RANGE, BUILD_RANGE, BUILDING_BUILD_RANGE, BUILDING_TRANSFER_RANGE, DEMOLISH_REFUND, DOCK_RANGE, HARVEST_RANGE, MAX_PRODUCTION_QUEUE, MAX_SITES_PER_PLAYER, RADAR_COOLDOWN_TICKS, RADAR_ENERGY_PER_TILE, SITE_START_HP, UNIT_TRANSFER_RANGE } from './rules';
 import { SpatialGrid } from './spatial';
 import { inVision, viewersOf } from './vision';
 import {
@@ -1109,6 +1109,9 @@ export class Simulation {
     if (!bp || bp.owner !== owner) throw new CommandError('Not your class');
     if (bp.stats.structure) throw new CommandError('Buildings cannot be produced by a factory');
     if (bp.retired) throw new CommandError(`${bp.name} is retired`);
+    const have = this.stats(building).factoryModules;
+    const need = factoryModulesFor(bp.stats.size);
+    if (have < need) throw new CommandError(`${bp.name} needs a factory with ${need} factory modules; ${host.name} has ${have}`);
     if (queue.length >= MAX_PRODUCTION_QUEUE) throw new CommandError('Production queue is full');
     if (!this.spendPool(owner, bp.stats.cost)) {
       throw new CommandError(`${bp.name} costs ${bp.stats.cost}, you have ${this.pool(owner)}`);
@@ -1373,6 +1376,49 @@ export class Simulation {
     this.events.length = 0;
     this.alerts.length = 0;
     this.radarPulses.length = 0;
+  }
+
+  /** Is there open ground (no rock) all the way between two points (sub-tile units)? Buildings and units do not block it. */
+  clearLine(x0: number, y0: number, x1: number, y1: number): boolean {
+    const steps = Math.max(1, Math.ceil(Math.hypot(x1 - x0, y1 - y0) / (TILE / 2)));
+    for (let i = 0; i <= steps; i++) {
+      const x = this.tileX(x0 + ((x1 - x0) * i) / steps);
+      const y = this.tileY(y0 + ((y1 - y0) * i) / steps);
+      if (!this.terrain.isPassable(x, y)) return false;
+    }
+    return true;
+  }
+
+  /**
+   * Sends a message over a radio or laser link to every allied unit and building in range that has
+   * the same kind of module (and, for a laser, a clear line to it) and a Message block that accepts it.
+   * Returns how many received it, or -1 if there is no working module or the energy is not there.
+   */
+  transmit(e: number, link: number, channel: number, value: number): number {
+    const s = this.stats(e);
+    const laser = link === CommsLink.Laser;
+    const range = laser ? s.laserRange : s.radioRange;
+    const use = laser ? s.laserUse : s.radioUse;
+    if (range <= 0 || !this.spend(e, use)) return -1;
+    const owner = this.unit.f.owner[e];
+    const x = this.pos.f.x[e];
+    const y = this.pos.f.y[e];
+    const sender = this.world.handle(e);
+    let heard = 0;
+    this.spatial.forEachInRadius(x, y, range, (o) => {
+      if (o === e || !this.unit.has(o) || this.isSite(o) || !this.allied(this.unit.f.owner[o], owner)) return;
+      const f = this.flows[o];
+      if (!f || !handles(f.program, EventId.Message) || (laser ? this.stats(o).laserRange : this.stats(o).radioRange) <= 0) return;
+      if (laser && !this.clearLine(x, y, this.pos.f.x[o], this.pos.f.y[o])) return;
+      const taken = raise(f, EventId.Message, channel, value, sender, link, (h) => {
+        const cfg = f.program.handlers[h];
+        const channels = configInts(cfg, 'channels');
+        const only = configInt(cfg, 'link');
+        return (channels.length === 0 || channels.includes(channel)) && (only === 0 || only === link);
+      });
+      if (taken) heard++;
+    });
+    return heard;
   }
 
   /** Ticks until `e`'s radar can pulse again (0 when ready). */

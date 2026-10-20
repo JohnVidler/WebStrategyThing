@@ -149,6 +149,7 @@ export const PRODUCTION_ENERGY_BY_SLOT: Readonly<Record<string, number>> = {
   antenna: 15,
   builder: 40,
   radar: 40,
+  comms: 15,
   repair: 40,
 };
 
@@ -158,6 +159,8 @@ export const PRODUCTION_ENERGY_BY_SLOT: Readonly<Record<string, number>> = {
 export const SITE_START_HP = 0.1;
 export const MAX_SITES_PER_PLAYER = 12;
 export const MAX_PRODUCTION_QUEUE = 8;
+/** A factory building can produce a chassis of size s (0 light, 1 medium, 2 heavy) only with at least s + 1 factory modules. */
+export const factoryModulesFor = (chassisSize: number): number => chassisSize + 1;
 export const MAX_UNITS_PER_PLAYER = 256;
 export const MAX_CLASSES_PER_PLAYER = 40;
 
@@ -246,6 +249,8 @@ export interface PartTuning {
   readonly use?: number;
   /** Radar: the most energy one pulse may spend. */
   readonly radarMaxEnergy?: number;
+  /** Radio and laser link: reach in tiles (`use` is the energy per message). */
+  readonly commsRange?: number;
 }
 
 export const PART_TUNING: Readonly<Record<string, PartTuning>> = {
@@ -297,6 +302,8 @@ export const PART_TUNING: Readonly<Record<string, PartTuning>> = {
   'build.arm': { mass: 2, buildRate: 4, use: 2 },
   'build.crane': { mass: 4, buildRate: 6, use: 3 },
   'radar.pulse': { mass: 4, radarMaxEnergy: 800 },
+  'radio.basic': { mass: 1, commsRange: 12, use: 1 },
+  'radio.laser': { mass: 3, commsRange: 40, use: 3 },
   'repair.beam': { mass: 3, repairRate: 4, use: 8 },
   'charger.pad': { mass: 3, chargeRate: 10 },
   'solar.panel': { mass: 2, output: SOLAR_PANEL_OUTPUT },

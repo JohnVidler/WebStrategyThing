@@ -6,6 +6,7 @@ export * from './flow/events';
 export * from './flow/host';
 export * from './flow/cost';
 export * from './flow/check';
+export * from './flow/blocks';
 export * from './flow/config';
 export * from './flow/text';
 export * from './flow/compile';

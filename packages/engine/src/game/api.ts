@@ -1,6 +1,6 @@
-import { FLOW_CONSTANT_DOCS } from '../flow/events';
+import { CommsLink, FLOW_CONSTANT_DOCS } from '../flow/events';
 import { MAX_TEXT } from '../flow/check';
-import { addTimer, running } from '../flow/run';
+import { addTimer, textAt } from '../flow/run';
 import { ACTIVITY_OUTCOMES, ActivityKind, cancelActivity, resumeActivity, startActivity, suspendActivity } from './activity';
 import type { Builtin, CallKind, HostApi } from '../flow/host';
 import { Caps, type Blueprint, type BlueprintStats } from './blueprint';
@@ -44,6 +44,7 @@ export const API_GROUPS = [
   'Construction & resources',
   'Energy & modules',
   'Power network',
+  'Communication',
   'Buildings',
 ] as const;
 
@@ -80,6 +81,8 @@ export const SCRIPT_CONSTANT_DOCS: readonly (readonly [string, number, string])[
   ['CAN_FLY', Caps.Fly, 'Capability: flies'],
   ['CAN_BUILD', Caps.Build, 'Capability: has a working build arm'],
   ['HAS_RADAR', Caps.Radar, 'Capability: has a working radar module'],
+  ['HAS_RADIO', Caps.Radio, 'Capability: has a working radio module'],
+  ['HAS_LASER', Caps.Laser, 'Capability: has a working laser link module'],
   ['CAN_REPAIR', Caps.Repair, 'Capability: has a working repair module'],
   ['IS_STRUCTURE', Caps.Structure, 'Capability: is a building'],
   ['IS_FACTORY', Caps.Factory, 'Capability: can produce units'],
@@ -158,7 +161,7 @@ function api(
 
 /** Calls that change the world now (statements). Everything else is a query unless it is a runtime setting. */
 const ACTIONS: ReadonlySet<string> = new Set([
-  'after', 'alert', 'radarPulse', 'moveTo', 'move', 'stop', 'fire', 'giveEnergy', 'order', 'queueUnit',
+  'after', 'alert', 'radioSend', 'laserSend', 'radarPulse', 'moveTo', 'move', 'stop', 'fire', 'giveEnergy', 'order', 'queueUnit',
   'goTo', 'approach', 'harvest', 'dock', 'take', 'build', 'repair', 'charge', 'supply', 'engage', 'suspendActivity', 'resumeActivity',
   'nextOrder', 'swapOrder', 'clearOrders',
 ]);
@@ -217,6 +220,12 @@ export const UNIT_API: HostApi<UnitContext> = [
   api('Sensing', 'radarPulse(energy)', 10,
     'One-off radar scan: spends `energy` (at most the module allows; 25 per tile of range) and reveals every non-allied unit and building in that radius to you as fading blips on the map. Returns the number of contacts, or -1 with no radar, while it rests, or if the energy is not there.',
     (c, a) => c.sim.radarPulse(c.e, a[0])),
+  api('Communication', 'radioSend(channel, value)', 6,
+    'Sends a radio message to every allied unit and building within radio range that has a radio: their Message event fires with this channel and value. Costs a little energy. Returns how many received it, or -1 with no working radio or no energy.',
+    (c, a) => c.sim.transmit(c.e, CommsLink.Radio, a[0], a[1])),
+  api('Communication', 'laserSend(channel, value)', 6,
+    'Like radioSend, but over a laser link: much longer range, but only to receivers with a laser link and a clear line of sight (rock blocks it). Returns how many received it, or -1 with no working laser link or no energy.',
+    (c, a) => c.sim.transmit(c.e, CommsLink.Laser, a[0], a[1])),
   api('Sensing', 'radarCooldown()', 0, 'Ticks until the radar can pulse again; 0 when ready (or if there is no radar).',
     (c) => c.sim.radarCooldown(c.e)),
   api('Sensing', 'nearestDepot()', 4, 'Nearest own finished building with silo space to spare, or -1.',
@@ -300,7 +309,7 @@ export const UNIT_API: HostApi<UnitContext> = [
   api('Actions', 'alert(text, duration_ms)', 2,
     `Show a speech bubble with text (in quotes, up to ${MAX_TEXT} characters) over the unit for duration_ms milliseconds (100 to ${MAX_ALERT_MS}). A newer alert replaces the unit's current one. Everyone who can see the unit sees it.`,
     (c, a) => {
-      const text = running.strings[a[0]] ?? '';
+      const text = textAt(a[0]);
       const ticks = Math.min(MAX_ALERT_MS, Math.max(MIN_ALERT_MS, a[1])) / MS_PER_TICK;
       const { alerts } = c.sim;
       const at = alerts.findIndex((x) => x.e === c.e);

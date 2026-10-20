@@ -1,4 +1,5 @@
 import type { ConfigField } from './events';
+import { BLOCK_BY_NAME } from './blocks';
 import { EVENT_BY_NAME } from './events';
 import type { FlowHost } from './host';
 import { FlowError, type ConfigValue } from './ir';
@@ -10,6 +11,10 @@ export const CONFIG_NAMES: Readonly<Record<string, readonly string[]>> = {
   'Order.types': ['MOVE', 'ATTACK', 'HARVEST', 'DOCK', 'STOP', 'CHARGE', 'BUILD', 'SUPPLY', 'REPAIR'],
   'Order.from': ['FROM_PLAYER', 'FROM_BUILDING'],
   'Order.urgent': ['QUEUE', 'REPLACE'],
+  'TakeOrders.types': ['MOVE', 'STOP', 'CHARGE'],
+  'TakeOrders.urgent': ['QUEUE', 'REPLACE'],
+  'EngageEnemies.watch': ['ENEMY', 'RESOURCE', 'DAMAGED_ALLY', 'MISSILE'],
+  'Message.link': ['RADIO', 'LASER'],
   'Visitor.reasons': ['PRODUCED', 'DOCKED'],
 };
 
@@ -51,7 +56,7 @@ const evalNumber = (text: string, host: FlowHost): number | undefined => {
 
 /** Reads what a player typed into a setting. Throws FlowError saying what is wrong. */
 export function configFromText(event: string, field: ConfigField, text: string, host: FlowHost): ConfigValue {
-  if (!EVENT_BY_NAME.has(event)) throw new FlowError(`Unknown event ${event}`);
+  if (!EVENT_BY_NAME.has(event) && !BLOCK_BY_NAME.has(event)) throw new FlowError(`Unknown event ${event}`);
   if (field.type === 'string') return text;
   if (field.type === 'ints') {
     const items = text.split(',').map((s) => s.trim()).filter(Boolean);

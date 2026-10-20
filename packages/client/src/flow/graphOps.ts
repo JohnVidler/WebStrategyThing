@@ -1,5 +1,11 @@
 import {
+  BLOCK_BY_NAME,
+  checkBlocks,
+  customEventNames,
+  expandOne,
   EVENT_BY_NAME,
+  isCustomEventName,
+  MAX_CUSTOM_PARAMS,
   MAX_TEXT,
   isIdentifier,
   type BinOp,
@@ -202,6 +208,7 @@ export function freshId(p: Program): string {
     }
   };
   for (const h of p.doc.handlers) (seen(h.id), walk(h.body));
+  for (const b of p.doc.blocks ?? []) seen(b.id);
   for (const c of p.scratch.chains) walk(c);
   for (const e of p.scratch.exprs) seen(e.id);
   return `n${max + 1}`;
@@ -540,6 +547,7 @@ export type NewStatement =
   | { readonly k: 'set'; readonly name: string }
   | { readonly k: 'if' }
   | { readonly k: 'while' }
+  | { readonly k: 'emit'; readonly event: string; readonly argc: number }
   | { readonly k: 'comment'; readonly text: string };
 
 export type NewExpr =
@@ -560,6 +568,7 @@ export function addStatement(program: Program, what: NewStatement): { program: P
     case 'set': stmt = { id, k: 'set', name: what.name, value: clone(LITERAL_ZERO) }; break;
     case 'if': stmt = { id, k: 'if', cond: clone(LITERAL_ZERO), then: [], else: [] }; break;
     case 'while': stmt = { id, k: 'while', cond: clone(LITERAL_ZERO), body: [] }; break;
+    case 'emit': stmt = { id, k: 'emit', event: what.event, args: zeros(what.argc) }; break;
     case 'comment': stmt = { id, k: 'comment', text: what.text }; break;
   }
   p.scratch.chains.push([stmt]);
@@ -586,12 +595,123 @@ export function addExpression(program: Program, what: NewExpr): { program: Progr
 /** Adds an event block with its default settings (and no code). */
 export function addHandler(program: Program, event: string): { program: Program; id: string } {
   const def = EVENT_BY_NAME.get(event);
-  if (!def) throw new OpError(`Unknown event '${event}'`);
-  if (!def.multi && program.doc.handlers.some((h) => h.event === event)) throw new OpError(`A class can only have one ${event} block`);
+  const own = !def && isCustomEventName(event);
+  if (!def && !own) throw new OpError(`Unknown event '${event}'`);
+  if (def && !def.multi && program.doc.handlers.some((h) => h.event === event)) throw new OpError(`A class can only have one ${event} block`);
   const p = cloneProgram(program);
   const id = freshIdIn(p);
-  p.doc.handlers.push({ id, event, config: {}, params: [...def.params], body: [] });
+  p.doc.handlers.push({ id, event, config: {}, params: def ? [...def.params] : [], body: [] });
   return { program: tidy(p), id };
+}
+
+// --- events of the program's own -------------------------------------------------------------------------------
+
+/** The names of the events this program makes up. */
+export const ownEvents = (program: Program): string[] => {
+  const names = customEventNames(program.doc);
+  // What the blocks in use raise can be hooked too.
+  for (const u of program.doc.blocks ?? []) for (const e of BLOCK_BY_NAME.get(u.block)?.emits ?? []) if (!names.includes(e)) names.push(e);
+  return names;
+};
+
+// --- built-in blocks -------------------------------------------------------------------------------------------
+
+/** Adds a built-in block with its default settings. Each block can be used once. */
+export function addBlock(program: Program, name: string): { program: Program; id: string } {
+  if (!BLOCK_BY_NAME.has(name)) throw new OpError(`Unknown block '${name}'`);
+  if (program.doc.blocks?.some((b) => b.block === name)) throw new OpError(`${name} is already in the program: change its settings instead`);
+  const p = cloneProgram(program);
+  const id = freshIdIn(p);
+  p.doc.blocks = [...(p.doc.blocks ?? []), { id, block: name, settings: {} }];
+  return { program: tidy(p), id };
+}
+
+/** Changes one setting of a block. */
+export function setBlockSetting(program: Program, id: string, key: string, value: ConfigValue): Program {
+  const p = cloneProgram(program);
+  const u = (p.doc.blocks ?? []).find((b: { id: string }) => b.id === id);
+  if (!u) throw new OpError('That block no longer exists');
+  u.settings = { ...u.settings, [key]: value };
+  const problem = checkBlocks(p.doc as FlowDoc)[0];
+  if (problem) throw new OpError(problem.message);
+  return tidy(p);
+}
+
+/** Turns a block into the plain variables and event blocks it is made of (one way, like ejecting). */
+export function expandBlock(program: Program, id: string, host: FlowHost): Program {
+  const p = cloneProgram(program);
+  try {
+    p.doc = expandOne(p.doc as FlowDoc, id, host);
+  } catch (err) {
+    throw new OpError(err instanceof Error ? err.message : String(err));
+  }
+  return tidy(p);
+}
+
+/** A name for a new event of the program's own that nothing uses yet (`MyEvent`, `MyEvent2`, ...). */
+export function newEventName(program: Program): string {
+  const used = new Set(ownEvents(program));
+  let name = 'MyEvent';
+  for (let i = 2; used.has(name); i++) name = `MyEvent${i}`;
+  return name;
+}
+
+/** Points an emit node at another event of the program's own. */
+export function setEmitEvent(program: Program, id: string, event: string): Program {
+  if (EVENT_BY_NAME.has(event)) throw new OpError(`${event} is a built-in event: emit is for events of your own`);
+  if (!isCustomEventName(event)) throw new OpError(`'${event}' is not a valid event name: start with a capital letter, then letters and digits`);
+  const p = cloneProgram(program);
+  const f = findStmt(p, id);
+  if (!f || f.stmt.k !== 'emit') throw new OpError('That is not an emit node');
+  f.stmt.event = event;
+  return tidy(p);
+}
+
+/** How many values an emit node carries: extra ones are dropped from the end, new ones start at 0. */
+export function setEmitArgs(program: Program, id: string, count: number): Program {
+  if (!Number.isInteger(count) || count < 0 || count > MAX_CUSTOM_PARAMS) throw new OpError(`An event carries 0 to ${MAX_CUSTOM_PARAMS} values`);
+  const p = cloneProgram(program);
+  const f = findStmt(p, id);
+  if (!f || f.stmt.k !== 'emit') throw new OpError('That is not an emit node');
+  const args = f.stmt.args as Mutable[];
+  while (args.length > count) args.pop();
+  while (args.length < count) args.push(clone(LITERAL_ZERO));
+  return tidy(p);
+}
+
+/** Renames an event of the program's own everywhere: its blocks and every emit. */
+export function renameEvent(program: Program, from: string, to: string): Program {
+  if (EVENT_BY_NAME.has(to)) throw new OpError(`${to} is a built-in event`);
+  if (!isCustomEventName(to)) throw new OpError(`'${to}' is not a valid event name: start with a capital letter, then letters and digits`);
+  if (to !== from && ownEvents(program).includes(to)) throw new OpError(`There is already an event called ${to}`);
+  const p = cloneProgram(program);
+  const walk = (list: Mutable[]) => {
+    for (const s of list) {
+      if (s.k === 'emit' && s.event === from) s.event = to;
+      else if (s.k === 'if') (walk(s.then), walk(s.else));
+      else if (s.k === 'while') walk(s.body);
+      else if (s.k === 'call' && s.outcomes) for (const c of Object.values(s.outcomes as Record<string, Mutable[]>)) walk(c);
+    }
+  };
+  for (const h of p.doc.handlers as Handler[]) {
+    if (h.event === from) (h as Mutable).event = to;
+    walk(h.body as Mutable[]);
+  }
+  for (const c of p.scratch.chains as Mutable[][]) walk(c);
+  return tidy(p);
+}
+
+/** Names the values a block of an event of the program's own receives (a comma-separated list). */
+export function setHandlerParams(program: Program, id: string, text: string): Program {
+  const names = text.split(',').map((s) => s.trim()).filter(Boolean);
+  if (names.length > MAX_CUSTOM_PARAMS) throw new OpError(`An event carries at most ${MAX_CUSTOM_PARAMS} values`);
+  for (const n of names) if (!isIdentifier(n)) throw new OpError(`'${n}' is not a valid name`);
+  if (new Set(names).size !== names.length) throw new OpError('Each value needs its own name');
+  const p = cloneProgram(program);
+  const h = p.doc.handlers.find((x: Handler) => x.id === id);
+  if (!h || EVENT_BY_NAME.has(h.event)) throw new OpError('Only blocks of your own events have values you can name');
+  h.params = names;
+  return tidy(p);
 }
 
 /**
@@ -610,6 +730,12 @@ export function deleteNode(program: Program, id: string): Program {
       if (!at) throw new OpError('That node no longer exists');
       setIn(at.holder, at.path, clone(LITERAL_ZERO));
     }
+    return tidy(p);
+  }
+  const bi = (p.doc.blocks ?? []).findIndex((b: { id: string }) => b.id === id);
+  if (bi >= 0) {
+    p.doc.blocks.splice(bi, 1);
+    if (p.doc.blocks.length === 0) delete p.doc.blocks;
     return tidy(p);
   }
   const hi = p.doc.handlers.findIndex((h: Handler) => h.id === id);

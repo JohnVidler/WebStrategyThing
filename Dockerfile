@@ -9,6 +9,9 @@ RUN npm ci
 
 COPY . .
 ARG VITE_SERVER_URL
+ARG GIT_HASH
+ARG GIT_BRANCH
+ENV GIT_HASH=$GIT_HASH GIT_BRANCH=$GIT_BRANCH
 RUN if [ -n "$VITE_SERVER_URL" ]; then \
       npm run build --workspace=@wst/client; \
     else \

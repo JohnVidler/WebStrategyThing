@@ -91,7 +91,7 @@ describe('text form', () => {
     const bad = parseText(
       [
         'let x = 0;',
-        'on(Nope, () => {});',
+        'on(nope, () => {});',
         'on(Idle, () => {',
         '  x += 1;',
         '  for (;;) {}',
@@ -103,7 +103,7 @@ describe('text form', () => {
       host,
     );
     const messages = bad.errors.map((e) => e.message);
-    expect(messages.some((m) => /Unknown event 'Nope'/.test(m))).toBe(true);
+    expect(messages.some((m) => /Unknown event 'nope'/.test(m))).toBe(true);
     expect(messages.some((m) => /plain '='/.test(m))).toBe(true);
     expect(messages.some((m) => /not supported/.test(m))).toBe(true);
     expect(messages.some((m) => /const must be bound to a call/.test(m))).toBe(true);

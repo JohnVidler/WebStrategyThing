@@ -1,4 +1,5 @@
 /** Room list shown when the page is opened without ?room=: pick a match or create one. */
+import { GAME_BRANCH, GAME_VERSION } from './version';
 import { getPlayerName, getSavedPlayerName, NAME_MAX, setPlayerName } from './playerName';
 import { CHANGELOG } from './changelog';
 import { randomHex } from './random';
@@ -163,6 +164,7 @@ const lobbyState = (): LobbyState | undefined => {
 /** `apiBase` is the same-origin API root, e.g. /api/v1. */
 export function showLobby(apiBase: string, joinRoom?: string, preferredMapId = DEFAULT_MAP_ID, preferredMode: GameMode = 'versus'): void {
   const root = document.getElementById('lobby')!;
+  const VERSION_TAG = `<div class="lobby-version">Version: ${esc(GAME_BRANCH)} / ${esc(GAME_VERSION)}</div>`;
   document.getElementById('panel')!.hidden = true;
   document.getElementById('stage')!.hidden = true;
   root.hidden = false;
@@ -174,6 +176,7 @@ export function showLobby(apiBase: string, joinRoom?: string, preferredMapId = D
   if (!getSavedPlayerName()) {
     root.innerHTML = `
       <h1>Digital Chaos</h1>
+      ${VERSION_TAG}
       <form id="lobby-name-form" class="lobby-name-screen">
         <h2>Choose your player name</h2>
         ${joinRoom ? `<p>Joining <strong>${esc(joinRoom)}</strong></p>` : ''}
@@ -195,6 +198,7 @@ export function showLobby(apiBase: string, joinRoom?: string, preferredMapId = D
 
   root.innerHTML = `
     <h1>Digital Chaos</h1>
+    ${VERSION_TAG}
     <label class="lobby-player">Your name <input id="lobby-player" maxlength="${NAME_MAX}" autocomplete="off" /></label>
     <div id="lobby-view" class="lobby-view"></div>
     <div id="lobby-docs" hidden>

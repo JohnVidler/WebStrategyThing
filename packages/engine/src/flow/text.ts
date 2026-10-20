@@ -1,14 +1,16 @@
 import { parser } from '@lezer/javascript';
 import type { SyntaxNode } from '@lezer/common';
+import { BLOCK_BY_NAME, blockContext, checkBlocks } from './blocks';
 import { checkDoc, type MemoryUse } from './check';
 import { configNumberText } from './config';
-import { EVENT_BY_NAME, type EventDef } from './events';
+import { customEventDef, EVENT_BY_NAME, isCustomEventName, type EventDef } from './events';
 import type { FlowHost } from './host';
 import {
   emptyDoc,
   FlowError,
   idGenerator,
   type BinOp,
+  type BlockUse,
   type ConfigValue,
   type Expr,
   type FlowDoc,
@@ -253,6 +255,14 @@ export function parseText(text: string, host: FlowHost, prev?: FlowDoc, reserved
           }
           return [{ id: mk(n), k: 'set', name: src(target), value: expr(value) }];
         }
+        if (e.name === 'CallExpression' && src(kids(e)[0]) === 'emit') {
+          const argNodes = kids(kids(e)[1]).filter((c) => !['(', ')', ','].includes(c.name));
+          if (!argNodes[0] || argNodes[0].name !== 'VariableName') {
+            err('emit() needs an event name first, such as emit(Delivered, amount)', e);
+            return [];
+          }
+          return [{ id: mk(n), k: 'emit', event: src(argNodes[0]), args: argNodes.slice(1).map(expr) }];
+        }
         if (e.name === 'CallExpression') {
           const s = callStmt(e);
           return s ? [s] : [];
@@ -301,6 +311,7 @@ export function parseText(text: string, host: FlowHost, prev?: FlowDoc, reserved
   // --- top level ---
   const vars: VarDecl[] = [];
   const handlers: Handler[] = [];
+  const blocks: BlockUse[] = [];
   let note: string[] = [];
   const takeNote = (): string | undefined => {
     const n = note.length ? note.join('\n') : undefined;
@@ -354,9 +365,9 @@ export function parseText(text: string, host: FlowHost, prev?: FlowDoc, reserved
       err('on() needs an event name first, such as on(Idle, () => { ... })', call);
       return;
     }
-    const def = EVENT_BY_NAME.get(src(evNode));
+    const def = EVENT_BY_NAME.get(src(evNode)) ?? (isCustomEventName(src(evNode)) ? customEventDef(src(evNode)) : undefined);
     if (!def) {
-      err(`Unknown event '${src(evNode)}' (events: ${[...EVENT_BY_NAME.keys()].join(', ')})`, evNode);
+      err(`Unknown event '${src(evNode)}' (events: ${[...EVENT_BY_NAME.keys()].join(', ')}; or one of your own, starting with a capital letter)`, evNode);
       return;
     }
     const fnNode = args.at(-1);
@@ -380,6 +391,24 @@ export function parseText(text: string, host: FlowHost, prev?: FlowDoc, reserved
     handlers.push({ id: mk(call), event: def.name, config, params, body: body(block), ...(comment ? { note: comment } : {}) });
   };
 
+  const use = (call: SyntaxNode, comment: string | undefined): void => {
+    const args = kids(kids(call)[1]).filter((c) => !['(', ')', ','].includes(c.name));
+    const nameNode = args[0];
+    if (!nameNode || nameNode.name !== 'VariableName') {
+      err('use() needs a block name first, such as use(HarvestLoop, { minMatter: 10 })', call);
+      return;
+    }
+    const def = BLOCK_BY_NAME.get(src(nameNode));
+    if (!def) {
+      err(`Unknown block '${src(nameNode)}' (blocks: ${[...BLOCK_BY_NAME.keys()].join(', ')})`, nameNode);
+      return;
+    }
+    let settings: Record<string, ConfigValue> = {};
+    if (args.length === 2 && args[1].name === 'ObjectExpression') settings = configOf({ name: def.name, config: def.settings } as unknown as EventDef, args[1]);
+    else if (args.length > 1) err('The settings of a block are written as one object: { minMatter: 10 }', args[1]);
+    blocks.push({ id: mk(call), block: def.name, settings, ...(comment ? { note: comment } : {}) });
+  };
+
   for (const n of kids(tree.topNode)) {
     if (n.name === 'LineComment') {
       note.push(src(n).replace(/^\/\/ ?/, ''));
@@ -398,17 +427,19 @@ export function parseText(text: string, host: FlowHost, prev?: FlowDoc, reserved
       ranges.set(`var:${src(name)}`, firstLine(n));
     } else if (n.name === 'ExpressionStatement' && n.firstChild?.name === 'CallExpression' && src(kids(n.firstChild)[0]) === 'on') {
       handler(n.firstChild, comment);
+    } else if (n.name === 'ExpressionStatement' && n.firstChild?.name === 'CallExpression' && src(kids(n.firstChild)[0]) === 'use') {
+      use(n.firstChild, comment);
     } else if (n.name !== ';') {
-      err('At the top level only let declarations and on(...) blocks are allowed', n);
+      err('At the top level only let declarations, use(...) and on(...) blocks are allowed', n);
     }
   }
 
   const syntaxErrors = errors.length;
-  let doc: FlowDoc = { ...emptyDoc(), vars, handlers };
-  // Check the program too, and turn each problem into a range in the text.
-  const analysis = checkDoc(doc, host, host.reservedKeys);
-  for (const e of analysis.errors) {
-    const r = e.node ? ranges.get(e.node) : undefined;
+  let doc: FlowDoc = { ...emptyDoc(), vars, handlers, ...(blocks.length ? { blocks } : {}) };
+  // Check the program too (with its blocks expanded), and turn each problem into a range in the text.
+  const analysis = checkDoc(expandBlocks(doc, host), host, host.reservedKeys);
+  for (const e of [...checkBlocks(doc), ...analysis.errors]) {
+    const r = e.node ? ranges.get(e.node.split('~')[0]) : undefined;
     errors.push(r ? new FlowError(e.message, r.from, r.to, e.node) : e);
   }
   if (prev) doc = alignIds(prev, doc);
@@ -453,7 +484,69 @@ export function alignIds(prev: FlowDoc, doc: FlowDoc): FlowDoc {
     const old = prev.handlers.filter((p) => p.event === h.event)[n];
     return { ...h, id: claim(old?.id, h.id), body: walk(old?.body, h.body) };
   });
-  return { ...doc, handlers };
+  const blocks = doc.blocks?.map((b, i) => {
+    const old = prev.blocks?.[i];
+    return { ...b, id: claim(old && old.block === b.block ? old.id : undefined, b.id) };
+  });
+  return { ...doc, handlers, ...(blocks ? { blocks } : {}) };
+}
+
+// ============================================================================================
+// Blocks
+// ============================================================================================
+
+const prefixed = (list: readonly Stmt[], prefix: string): Stmt[] =>
+  list.map((s): Stmt => {
+    const id = `${prefix}~${s.id}`;
+    if (s.k === 'if') return { ...s, id, then: prefixed(s.then, prefix), else: prefixed(s.else, prefix) };
+    if (s.k === 'while') return { ...s, id, body: prefixed(s.body, prefix) };
+    if (s.k === 'call' && s.outcomes) return { ...s, id, outcomes: Object.fromEntries(Object.entries(s.outcomes).map(([k, chain]) => [k, prefixed(chain, prefix)])) };
+    return { ...s, id };
+  });
+
+/** The program text a block writes for its settings (what `Expand` turns it into). */
+export function blockText(use: BlockUse, host: FlowHost): string {
+  const def = BLOCK_BY_NAME.get(use.block);
+  return def ? def.text(blockContext(def, use.settings, host.constants)) : '';
+}
+
+/**
+ * The plain program a document with blocks stands for: every `use` replaced by the variables and event
+ * blocks its template writes. Their ids are `<use id>~<their id>` so a problem in one can be shown on the block.
+ */
+export function expandBlocks(doc: FlowDoc, host: FlowHost): FlowDoc {
+  if (!doc.blocks?.length) return doc;
+  const vars = [...doc.vars];
+  const handlers = [...doc.handlers];
+  for (const u of doc.blocks) {
+    if (!BLOCK_BY_NAME.has(u.block)) continue;
+    const part = parseText(blockText(u, host), host);
+    if (part.syntaxErrors) throw new Error(`Block ${u.block} wrote a program with errors: ${part.errors.map((e) => e.message).join('; ')}`);
+    vars.push(...part.doc.vars);
+    for (const h of part.doc.handlers) handlers.push({ ...h, id: `${u.id}~${h.id}`, body: prefixed(h.body, u.id) });
+  }
+  const { blocks: _blocks, ...rest } = doc;
+  return { ...rest, vars, handlers };
+}
+
+/** One block turned into its plain variables and event blocks, in the program. */
+export function expandOne(doc: FlowDoc, id: string, host: FlowHost): FlowDoc {
+  const use = doc.blocks?.find((b) => b.id === id);
+  if (!use) throw new FlowError('That block no longer exists');
+  const expanded = expandBlocks({ ...doc, vars: [], handlers: [], blocks: [use] }, host);
+  const rest = (doc.blocks ?? []).filter((b) => b.id !== id);
+  const gen = idGenerator(doc);
+  const fresh = (list: readonly Stmt[]): Stmt[] =>
+    list.map((s): Stmt => {
+      const sid = gen();
+      if (s.k === 'if') return { ...s, id: sid, then: fresh(s.then), else: fresh(s.else) };
+      if (s.k === 'while') return { ...s, id: sid, body: fresh(s.body) };
+      if (s.k === 'call' && s.outcomes) return { ...s, id: sid, outcomes: Object.fromEntries(Object.entries(s.outcomes).map(([k, chain]) => [k, fresh(chain)])) };
+      return { ...s, id: sid };
+    });
+  const handlers = expanded.handlers.map((h) => ({ ...h, id: gen(), body: fresh(h.body), ...(use.note ? {} : {}) }));
+  const { blocks: _b, ...base } = doc;
+  return { ...base, vars: [...doc.vars, ...expanded.vars], handlers: [...doc.handlers, ...handlers], ...(rest.length ? { blocks: rest } : {}) };
 }
 
 // ============================================================================================
@@ -521,6 +614,9 @@ export function printText(doc: FlowDoc, host: FlowHost): string {
           lines.push(`${indent}});`);
           break;
         }
+        case 'emit':
+          lines.push(`${indent}emit(${[s.event, ...s.args.map(expr)].join(', ')});`);
+          break;
         case 'set':
           lines.push(`${indent}${s.name} = ${expr(s.value)};`);
           break;
@@ -569,6 +665,19 @@ export function printText(doc: FlowDoc, host: FlowHost): string {
   for (const v of doc.vars) {
     comment(v.note, '');
     lines.push(`let ${v.name} = ${v.init};`);
+  }
+  for (const b of doc.blocks ?? []) {
+    if (lines.length && !lines[lines.length - 1].startsWith('use(')) lines.push('');
+    comment(b.note, '');
+    const keys = Object.keys(b.settings);
+    const parts = keys.map((k) => {
+      const v = b.settings[k];
+      const named = (n: number): string => configNumberText(b.block, k, n, host);
+      if (typeof v === 'string') return `${k}: '${v.replace(/(['\\])/g, '\\$1')}'`;
+      if (typeof v === 'number') return `${k}: ${named(v)}`;
+      return `${k}: [${v.map(named).join(', ')}]`;
+    });
+    lines.push(parts.length ? `use(${b.block}, { ${parts.join(', ')} });` : `use(${b.block});`);
   }
   for (const h of doc.handlers) {
     if (lines.length) lines.push('');

@@ -23,6 +23,7 @@ import {
 } from '@codemirror/view';
 import {
   compileDoc,
+  BLOCKS,
   EVENT_BY_NAME,
   EVENTS,
   FLOW_HOST,
@@ -182,6 +183,7 @@ function completions(context: CompletionContext) {
     })),
     ...SCRIPT_CONSTANT_DOCS.map(([name, value, doc]) => ({ label: name, type: 'constant', detail: String(value), info: doc })),
     ...EVENTS.map(blockSnippet),
+    ...BLOCKS.map((b) => snippetCompletion(`use(${b.name}${b.settings.length ? ', { ${} }' : ''});`, { label: `use ${b.name}`, type: 'class', detail: `block · ${b.group}`, info: b.doc })),
     ...KEYWORD_SNIPPETS,
     ...[...vars].map((v) => ({ label: v, type: 'variable', detail: 'variable' })),
     ...[...locals].map((v) => ({ label: v, type: 'variable', detail: 'event parameter or result' })),

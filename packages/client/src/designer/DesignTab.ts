@@ -7,7 +7,7 @@ const CATEGORIES: { title: string; match: (p: PartDef) => boolean }[] = [
   { title: 'Building frames', match: (p) => p.slot === 'chassis' && p.structure === true },
   { title: 'Compute', match: (p) => p.slot === 'cpu' || p.slot === 'memory' },
   { title: 'Movement', match: (p) => p.slot === 'motor' },
-  { title: 'Sensors & weapons', match: (p) => (['sensor', 'radar', 'weapon', 'armor'] as PartSlot[]).includes(p.slot) },
+  { title: 'Sensors & weapons', match: (p) => (['sensor', 'radar', 'comms', 'weapon', 'armor'] as PartSlot[]).includes(p.slot) },
   { title: 'Industry', match: (p) => (['cargo', 'builder', 'repair', 'factory', 'depot'] as PartSlot[]).includes(p.slot) },
   { title: 'Power', match: (p) => (['battery', 'charger', 'generator', 'antenna'] as PartSlot[]).includes(p.slot) },
 ];

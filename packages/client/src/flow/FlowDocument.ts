@@ -1,5 +1,7 @@
 import {
+  checkBlocks,
   checkDoc,
+  expandBlocks,
   emptyDoc,
   FlowError,
   isFlowSource,
@@ -145,8 +147,10 @@ export class FlowDocument {
 
   private findProblems(): ReadonlyMap<string, string> {
     const out = new Map<string, string>();
-    for (const e of checkDoc(this.doc, this.host, this.host.reservedKeys).errors) {
-      if (e.node && !out.has(e.node)) out.set(e.node, e.message);
+    // Problems inside a block's expansion are shown on the block (their ids are `<block id>~<id>`).
+    for (const e of [...checkBlocks(this.doc), ...checkDoc(expandBlocks(this.doc, this.host), this.host, this.host.reservedKeys).errors]) {
+      const node = e.node?.split('~')[0];
+      if (node && !out.has(node)) out.set(node, e.message);
     }
     return out;
   }

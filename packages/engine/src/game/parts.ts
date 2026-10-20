@@ -21,6 +21,7 @@ export type PartSlot =
   | 'antenna'
   | 'builder'
   | 'radar'
+  | 'comms'
   | 'repair';
 
 /** Numeric slot codes, exposed to scripts via moduleKind() as M_CPU, M_MOTOR, ... */
@@ -42,11 +43,12 @@ export const SLOT_CODES: Readonly<Record<PartSlot, number>> = {
   builder: 15,
   radar: 16,
   repair: 17,
+  comms: 18,
 };
 
 /** Modules that use or make energy can be switched off; passive ones (frame, memory, armour, batteries) cannot. */
 export const SWITCHABLE: ReadonlySet<PartSlot> = new Set<PartSlot>([
-  'cpu', 'motor', 'sensor', 'weapon', 'cargo', 'factory', 'charger', 'generator', 'antenna', 'builder', 'radar', 'repair',
+  'cpu', 'motor', 'sensor', 'weapon', 'cargo', 'factory', 'charger', 'generator', 'antenna', 'builder', 'radar', 'repair', 'comms',
 ]);
 
 /**
@@ -113,6 +115,9 @@ export interface PartDef {
   readonly use?: number;
   /** Radar: the most energy one pulse may spend. */
   readonly radarMaxEnergy?: number;
+  /** Radio / laser link: which kind it is, and its reach in tiles. */
+  readonly link?: 'radio' | 'laser';
+  readonly commsRange?: number;
   readonly structureOnly?: boolean;
   readonly mobileOnly?: boolean;
   readonly description: string;
@@ -175,12 +180,14 @@ const CATALOGUE: PartDef[] = [
   { id: 'battery.cell', slot: 'battery', name: 'Battery cell', ...T('battery.cell'), description: `+${T('battery.cell').energy} energy storage.` },
   { id: 'battery.bank', slot: 'battery', name: 'Battery bank', ...T('battery.bank'), structureOnly: true, description: `+${T('battery.bank').energy} energy storage.` },
 
-  { id: 'factory.basic', slot: 'factory', name: 'Factory', ...T('factory.basic'), structureOnly: true, description: 'Produces units.' },
+  { id: 'factory.basic', slot: 'factory', name: 'Factory', ...T('factory.basic'), structureOnly: true, description: 'Produces units. The size of unit a building can produce depends on how many factory modules it has: 1 for a light chassis, 2 for a medium one, 3 for a heavy one. More modules also use more energy while producing.' },
   { id: 'silo', slot: 'depot', name: 'Resource silo', ...T('silo'), structureOnly: true, description: `Stores ${T('silo').storage} resources; units dock here to fill it or take from it.` },
   { id: 'build.arm', slot: 'builder', name: 'Build arm', ...T('build.arm'), mobileOnly: true, description: `Constructs buildings, investing ${T('build.arm').buildRate} resources per tick.` },
   { id: 'build.crane', slot: 'builder', name: 'Build crane', ...T('build.crane'), structureOnly: true, description: `Constructs buildings up to ${BUILDING_BUILD_RANGE / TILE} tiles from this building's edge, investing ${T('build.crane').buildRate} resources per tick.` },
   { id: 'repair.beam', slot: 'repair', name: 'Repair beam', ...T('repair.beam'), description: `Restores ${T('repair.beam').repairRate} hit points per tick to an own unit or building in reach (${BUILD_RANGE / TILE} tiles from a unit, ${BUILDING_BUILD_RANGE / TILE} from a building), costing ${T('repair.beam').use} energy per tick. Aim it with repair(h).` },
   { id: 'radar.pulse', slot: 'radar', name: 'Radar', ...T('radar.pulse'), description: `Pulse scan: radarPulse(energy) spends that energy (up to ${T('radar.pulse').radarMaxEnergy}) and reveals every unit and building within ${RADAR_ENERGY_PER_TILE} energy per tile of range, up to ${Math.floor(T('radar.pulse').radarMaxEnergy! / RADAR_ENERGY_PER_TILE)} tiles. Contacts show as blips that fade over ${RADAR_FADE_TICKS / 10}s; the module rests ${RADAR_COOLDOWN_TICKS / 10}s between pulses.` },
+  { id: 'radio.basic', slot: 'comms', name: 'Radio', ...T('radio.basic'), link: 'radio', description: `Short-range radio: radioSend(channel, value) reaches every allied unit and building with a radio within ${T('radio.basic').commsRange} tiles, through rock and buildings, and raises their Message event. Costs ${T('radio.basic').use} energy per message; receiving is free.` },
+  { id: 'radio.laser', slot: 'comms', name: 'Laser link', ...T('radio.laser'), link: 'laser', description: `Line-of-sight laser communication: laserSend(channel, value) reaches every allied unit and building with a laser link within ${T('radio.laser').commsRange} tiles that it has a clear line to (rock blocks it). Costs ${T('radio.laser').use} energy per message; receiving is free.` },
   { id: 'charger.pad', slot: 'charger', name: 'Charging pad', ...T('charger.pad'), structureOnly: true, description: `Transfers ${T('charger.pad').chargeRate! * CHARGE_PAD_RATE_MULTIPLIER} energy/tick (as much as the pad's store holds) from the building to each own unit within ${BUILDING_TRANSFER_RANGE / TILE} tiles.` },
   { id: 'solar.panel', slot: 'generator', name: 'Solar panel', ...T('solar.panel'), output: T('solar.panel').output! * GENERATION_SCALE, generator: 'solar', structureOnly: true, description: `Up to ${T('solar.panel').output}/tick, following daylight.` },
   { id: 'wind.turbine', slot: 'generator', name: 'Wind turbine', ...T('wind.turbine'), output: T('wind.turbine').output! * GENERATION_SCALE, generator: 'wind', structureOnly: true, description: `Up to ${T('wind.turbine').output}/tick, following the wind.` },

@@ -519,9 +519,9 @@ Block cards and outcome pins in `graphModel`/`graphView`; the palette gets Block
 |---|---|---|
 | **M8** Activities (done) | Engine activities with outcomes, `urgent` policy and `nextOrder`, behaviour tests per activity (walking, gathering, docking, building, repairing, charging) and the CPU saving | A hand-written program using only outcomes harvests, docks and repeats with no `Idle` |
 | **M9** Continuations (done: engine and graph pins) | IR `outcomes`, text syntax, compile and run with saved frames, graph outcome pins | A graph and its text show and edit outcome chains and round-trip |
-| **M10** Custom events | `emit` / `on(Name)` in IR, text, runtime and graph | Two blocks of one program talk through an event |
-| **M11** Blocks | `use` nodes, template registry with the block list above, settings and hardware limits, `Expand` | Each starter class is expressed as blocks plus small event blocks, passes the same scenarios as now, and no starter uses `Idle` (a test enforces it) |
-| **M12** Graph pass | Block cards, causality layout, template chooser, palette groups, inspector for settings, readability review with the user | The user can read and change a starter class in the graph without opening the text |
+| **M10** Custom events (done) | `emit` / `on(Name)` in IR, text, runtime and graph | Two blocks of one program talk through an event |
+| **M11** Blocks (engine done 2026-10-20; graph cards are M12) | `use` nodes, template registry with the block list above, settings and hardware limits, `Expand` | Each starter class is expressed as blocks plus small event blocks, passes the same scenarios as now, and no starter uses `Idle` (a test enforces it) |
+| **M12** Graph pass (done except the readability review with you, 2026-10-20) | Block cards, causality layout, template chooser, palette groups, inspector for settings, readability review with the user | The user can read and change a starter class in the graph without opening the text |
 
 ## Risks and open points
 
@@ -535,4 +535,52 @@ Block cards and outcome pins in `graphModel`/`graphView`; the palette gets Block
 Decided with the user: completion is reported by **outcome pins** (a node per way an activity can end); reusable behaviours are a **built-in library** of templates with settings, each able to `Expand` into plain event blocks; **orders start activities directly** (the task queue is no longer a program concept; queued orders are a simple order list read with `nextOrder`, `swapOrder`, `clearOrders`, `orderCount`).
 
 Done: engine activities, outcome chains in IR, text, checker, compiler and interpreter; `Free` and `Order { urgent }`; starters rewritten without `Idle` (a test enforces it); graph outcome pins and `outcome` ExecRef in `graphOps`/`graphModel`/`graphView`; docs page "Orders & activities". Measured: base income unchanged; Harvester about 0.17 cycles/tick (16.8 in the polling language).
-Next: M10 custom events, M11 block library, M12 graph pass.
+M10 done (2026-10-20): `emit` statement, capitalised own events (ids from 64, max 16, 4 values), `Op.Emit`, graph emit node and own-event blocks.
+Also done (2026-10-20, by request): joined text with `+` (run-time templates, `Op.Concat`), and radio / laser link modules with the `Message` event.
+M11 engine done (2026-10-20): `flow/blocks.ts` registry (TakeOrders, RechargeWhenLow, ReviveFlatUnits, HarvestLoop, BuildJobs, RepairJobs, MaintainNearby, EngageEnemies, Resupply, RallyPoint, DispatchHarvesters, StorageController, RadarPing), `FlowDoc.blocks` with `use(Block, { settings })` in text, expansion into plain handlers at check and compile time (ids `<use>~<id>`), `expandOne` for Expand, every starter class is blocks only (a test enforces it). Only `Charged` and `Delivered` are emitted by blocks so far (TakeOrders cannot emit OrderFinished: finishing an order is the engine's job).
+M12 done (2026-10-20): block cards with settings and Expand, palette group Blocks, template chooser, blocks-first layout, docs page. Left for the readability review with the user: whether the cards read well, whether outcome pins/emit wires need arrows from a block to the `on(Name)` block that hooks it, and a settings inspector panel (settings are on the card for now).
+
+---
+
+# Unit size tiers (plan, proposed 2026-10-20, not started)
+
+Asked for: unit sizes both larger and smaller than today's three (light, medium, heavy), without breaking the paradigms (part catalogue, flyweight blueprints, deterministic engine, designs referencing parts by id).
+
+## What "size" is today
+
+A chassis part carries `size` 0, 1 or 2. Everything else about a unit already comes from the chassis *part*: `mass`, `hp`, `slots` (4 / 6 / 9) and base `energy`. In the engine `size` only decides which factories may build it (new: a factory needs `size + 1` factory modules); in the client it only scales the drawn body (`unitRadius`). Units are points to physics: pathing, separation (`SEPARATION_RADIUS`, 0.7 tile for everything), spatial grid and vision do not look at size at all. That is what makes extra tiers cheap.
+
+## Proposal: more chassis parts on a longer tier ladder (no new concept)
+
+1. **Tiers, not free scaling.** Keep one chassis part per tier so a class is still "a list of part ids". Ladder (names and numbers provisional):
+
+   | Tier | Chassis | Slots | Mass | HP | Factory modules needed |
+   |---|---|---|---|---|---|
+   | 0 | Micro | 2 | 1 | 15 | 1 |
+   | 1 | Light (today `chassis.light`) | 4 | 2 | 40 | 1 |
+   | 2 | Medium (today) | 6 | 5 | 100 | 2 |
+   | 3 | Heavy (today) | 9 | 10 | 220 | 3 |
+   | 4 | Super-heavy | 14 | 20 | 480 | 4 |
+   | 5 | Colossus | 20 | 40 | 1000 | 5 |
+
+   The rule becomes `modules = max(1, tier)`; micro and light share the 1-module factory. Existing part ids and saved designs keep working: only the numeric `size` field is renumbered (it is not stored in designs). The big tiers are gated by factory size, a longer production time and more energy, and the class cost is already derived from mass, so no new balance machinery is needed.
+2. **Smaller than a tile, larger than a tile.** Add `radius` (sub-tile units) to the chassis `PartDef` beside `size`; `SEPARATION_RADIUS`, the selection box, hit tests, spatial queries and `unitRadius` read it. Phase 1 keeps units point-like for pathing (a colossus squeezes through gaps; documented). Phase 2 (optional, bigger change): pathing clearance by tier, an A* cost layer that treats cells narrower than the unit as blocked, cached per tier (at most 6 variants).
+3. **Slots and parts must scale together.** Modules keep their mass; bigger chassis get more slots and more thrust headroom (`motor.*` thrust per mass). Add heavier modules where a tier makes the existing ones pointless: `motor.huge`, `battery.large`, `cargo.hold`, bigger weapons (the missile family already has small / medium / large). Check the speed formula `thrust * SPEED_FACTOR / mass` still gives a usable slow end.
+4. **Programs.** No change to the language: capabilities (`CAN_MOVE`, ...) come from modules. Add `SIZE` (own tier) as a readable value so a program can behave differently by size, and `unitSize(h)` for known units. CPU and memory stay modules; a micro chassis (2 slots) fits a CPU and one module only, which is the point of the tier.
+5. **Docs, designer and UI.** Designer chassis list grouped by tier with the slot count; the production panel greys out classes the building cannot make (done for the three existing tiers); docs table of the ladder.
+6. **Art.** `drawUnit` already scales by `size`; new tiers need only a radius table and a few outline tweaks (outlines are in units of body radius). Sprites for micro and colossus are the main art cost.
+
+## Risks
+
+- **Pathing for big units** is the real cost (phase 2); phase 1 is shippable without it.
+- **Balance**: micro units are cheap and numerous (spatial grid, replication and CPU load grow with unit count; the per-player unit cap stays the guard). A *tier cost multiplier* for the unit cap (a colossus counts as several units) may be needed.
+- **Renumbering `size`** touches `art.ts` and `unitRadius` (one table) and the factory rule; saved designs are unaffected.
+
+## Milestones
+
+| S | Deliverable | Done when |
+|---|---|---|
+| **S1** (done, 2026-10-20) | Factory modules limit chassis size; HQ has 2 modules; Light / Vehicle / Heavy Factory classes | A 1-module factory refuses a medium unit (test); the production panel dims what does not fit |
+| **S2** | `size` ladder with Micro, Super-heavy, Colossus chassis, slot/mass/hp table, `radius` on the part, rendering and separation from `radius`, designer and docs | Each new tier can be designed, produced at the right factory and drawn at the right size |
+| **S3** | New heavy modules (motor, battery, cargo, weapon) and a tier-aware balance pass; `SIZE` in programs | A colossus is worth its cost against ten lights in the scenario tests |
+| **S4** (optional) | Clearance-aware pathing per tier | A colossus never plans a path through a one-tile gap |

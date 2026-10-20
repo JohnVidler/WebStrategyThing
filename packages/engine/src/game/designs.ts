@@ -39,6 +39,8 @@ export interface DesignFile {
   readonly version: number;
   readonly build: string;
   readonly savedAt: string;
+  /** Git hash of the game build the player last accepted these designs under ('' if unknown). */
+  readonly game: string;
   readonly classes: readonly DesignEntry[];
   /** Classes whose old-language program (a version 1 file) was replaced by a default or the new-class starter. */
   readonly migrated?: readonly string[];
@@ -72,12 +74,13 @@ export function defaultHash(name: string): string | undefined {
 /** Fingerprint of the whole default set: changes whenever any default design changes. */
 export const DESIGNS_BUILD = fnv(STARTER_CLASSES.map((c) => `${c.name}:${designHash(c.parts, c.program)}`).join('|'));
 
-export function makeDesignFile(classes: readonly Omit<DesignEntry, 'base'>[]): DesignFile {
+export function makeDesignFile(classes: readonly Omit<DesignEntry, 'base'>[], game = ''): DesignFile {
   return {
     format: DESIGN_FORMAT,
     version: DESIGN_VERSION,
     build: DESIGNS_BUILD,
     savedAt: new Date().toISOString(),
+    game,
     classes: classes.map((c) => ({
       name: c.name,
       parts: [...c.parts],
@@ -124,6 +127,7 @@ export function parseDesignFile(raw: unknown): DesignFile {
     version: DESIGN_VERSION,
     build: typeof f.build === 'string' ? f.build : '',
     savedAt: typeof f.savedAt === 'string' ? f.savedAt : '',
+    game: typeof f.game === 'string' ? f.game : '',
     classes,
     ...(migrated.length ? { migrated } : {}),
   };

@@ -13,6 +13,8 @@ import type { Control, GNode, NodeKind, Port } from './graphModel';
 export interface NodeCallbacks {
   /** A control was committed (typed value or chosen option). */
   control(nodeId: string, key: string, value: string): void;
+  /** A button on a card was pressed (a block's Expand). */
+  action(nodeId: string, key: string): void;
 }
 
 type Emit = (props: unknown) => void;
@@ -26,6 +28,7 @@ const KIND_ICON: Record<NodeKind, string> = {
   variable: '𝑥',
   flow: '⑂',
   note: '✎',
+  block: '▣',
 };
 
 export const KIND_NAME: Record<NodeKind, string> = {
@@ -37,6 +40,7 @@ export const KIND_NAME: Record<NodeKind, string> = {
   variable: 'Variable',
   flow: 'Flow',
   note: 'Note',
+  block: 'Block',
 };
 
 /** A pin: a triangle for execution, a circle for data. */
@@ -104,6 +108,13 @@ export class WstFlowNode extends LitElement {
     :host([kind='variable']) header { --head: var(--wst-variable, #3b6a3a); }
     :host([kind='flow']) header { --head: var(--wst-flow, #4f3d7a); }
     :host([kind='note']) header { --head: var(--wst-note, #6a5d2a); }
+    :host([kind='block']) { width: 250px; border-color: var(--wst-block-edge, #5b6fb0); }
+    :host([kind='block']) header { --head: var(--wst-block, #34499a); font-size: 13px; padding: 7px 9px; }
+    .emits { padding: 2px 9px 4px; color: var(--wst-muted, #8f9bb0); font-size: 11px; }
+    .emits b { color: var(--wst-text, #dde3ee); font-weight: 600; }
+    .actions { padding: 4px 9px 8px; display: flex; gap: 6px; }
+    .actions button { font: inherit; color: inherit; background: var(--wst-field, #12161d); border: 1px solid var(--wst-node-edge, #343c4b); border-radius: 4px; padding: 2px 8px; cursor: pointer; }
+    .actions button:hover { border-color: var(--wst-selected, #ffd92c); }
     .icon { opacity: 0.85; width: 14px; text-align: center; }
     .title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .sub { font-weight: 400; opacity: 0.7; font-size: 10px; }
@@ -148,6 +159,8 @@ export class WstFlowNode extends LitElement {
       </header>
       ${settings.length ? html`<div class="settings">${settings.map((c) => this.setting(c))}</div>` : nothing}
       ${rowsHtml}
+      ${m.emits?.length ? html`<div class="emits" title="Events this block raises: add an event block with the same name to react to them">raises ${m.emits.map((e, i) => html`${i ? ', ' : ''}<b>${e}</b>`)}</div>` : nothing}
+      ${m.actions?.length ? html`<div class="actions">${m.actions.map((a) => html`<button title=${a.title} @pointerdown=${stop} @dblclick=${stop} @click=${() => this.callbacks?.action(this.data.id, a.key)}>${a.label}</button>`)}</div>` : nothing}
       ${m.problem ? html`<div class="problem">${m.problem}</div>` : nothing}`;
   }
 
@@ -239,6 +252,7 @@ export class WstFlowPalette extends LitElement {
     button[data-kind='variable'] { --c: var(--wst-variable, #3b6a3a); }
     button[data-kind='flow'] { --c: var(--wst-flow, #4f3d7a); }
     button[data-kind='note'] { --c: var(--wst-note, #6a5d2a); }
+    button[data-kind='block'] { --c: var(--wst-block, #34499a); }
   `;
 
   render() {
@@ -248,7 +262,7 @@ export class WstFlowPalette extends LitElement {
     return html`
       <input type="search" placeholder="Search nodes…" .value=${this.filter} @input=${(e: Event) => (this.filter = (e.target as HTMLInputElement).value)}>
       <div class="list">${groups.map(
-        (g) => html`<details ?open=${!!filter || g === 'Events' || g === 'Flow'}><summary>${g}</summary>${shown
+        (g) => html`<details ?open=${!!filter || g === 'Blocks' || g === 'Events' || g === 'Flow'}><summary>${g}</summary>${shown
           .filter((i) => i.group === g)
           .map(
             (i) => html`<button data-kind=${i.kind} ?disabled=${!!i.disabled} title=${i.disabled ?? i.doc}

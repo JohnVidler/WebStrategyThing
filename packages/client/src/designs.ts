@@ -14,6 +14,7 @@ import {
   type ServerMessage,
 } from '@wst/engine';
 import type { ClientState } from './state';
+import { GAME_VERSION } from './version';
 
 /*
  * Keeps the player's classes (parts + programs) in the browser between sessions,
@@ -116,6 +117,30 @@ function chosenMine(form: HTMLElement, items: readonly ClassifiedDesign[]): Set<
   return mine;
 }
 
+/*
+ * Saved files carry the git hash of the game they were last accepted under. Until the player
+ * has answered the "game was updated" question, saves keep the old stamp (the menu designer
+ * saves too, and must not hide the question from the match).
+ */
+let stamp: string | undefined;
+
+function currentStamp(): string {
+  if (stamp === undefined) {
+    const text = readStorage();
+    try {
+      stamp = text ? parseDesignFile(JSON.parse(text)).game : GAME_VERSION;
+    } catch {
+      stamp = GAME_VERSION;
+    }
+  }
+  return stamp;
+}
+
+/** The player has dealt with this game version's changes to the defaults. */
+function acceptGameVersion(): void {
+  stamp = GAME_VERSION;
+}
+
 /** The player's current classes as a design file (superseded copies left out). */
 export function snapshotDesigns(state: ClientState): DesignFile {
   const mine = state.blueprints.ownedBy(state.myId);
@@ -125,6 +150,7 @@ export function snapshotDesigns(state: ClientState): DesignFile {
       // A retired class whose name lives on in an active class was replaced (new parts): drop it.
       .filter((b) => !(b.retired && activeNames.has(b.name)))
       .map((b) => ({ name: b.name, parts: b.parts, program: state.programs.get(b.id) ?? '', retired: b.retired })),
+    currentStamp(),
   );
 }
 
@@ -170,6 +196,7 @@ export class DesignStore {
     ].filter(Boolean);
     const errors = msg.errors.length ? ` — ${msg.errors.length} problem(s): ${msg.errors.join('; ')}` : '';
     this.host.notify(`${what}${counts.length ? ` (${counts.join(', ')})` : ''}${errors}`, msg.errors.length === 0);
+    if (msg.reason !== 'session') acceptGameVersion(); // an upload or reset settles the question too
     this.ready = true;
     this.scheduleSave();
   }
@@ -272,7 +299,31 @@ export class DesignStore {
     const classified = classifyDesigns(saved);
     const needChoice = classified.filter((c) => c.status === 'conflict' || c.status === 'invalid');
     let mine = new Set<string>(needChoice.map((c) => c.entry.name));
-    if (needChoice.length) {
+    // Default classes that differ from this build's defaults (not the player's own classes).
+    const differing = classified.filter((c) => c.status === 'outdated' || c.status === 'modified' || c.status === 'conflict');
+    let replaceAll = false;
+    let keepAll = false;
+    if (saved.game !== GAME_VERSION && differing.length) {
+      // The game was updated since these designs were saved: ask how to treat the default classes.
+      const known = saved.game ? `<code>${esc(saved.game)}</code>` : 'an older version';
+      const label = (c: ClassifiedDesign) =>
+        `<li><b>${esc(c.entry.name)}</b> <small class="muted">${{ outdated: 'unchanged by you, the default has been improved', modified: 'your edit; the default is the same as before', conflict: 'your edit, and the default has changed too' }[c.status as 'outdated' | 'modified' | 'conflict']}</small></li>`;
+      const { value, form } = await dialog(
+        'The game has been updated',
+        `<p>Your designs were saved with ${known}; this is <code>${esc(GAME_VERSION)}</code>. The default units and buildings below differ from your saved versions:</p>
+         <ul class="design-plan">${differing.map(label).join('')}</ul>
+         <p><b>Merge</b> takes the new default for every class you never changed, keeps your edits, and asks about the ones both of you changed. <b>Replace</b> puts all the new defaults in place of your versions of these classes. <b>Keep mine</b> changes nothing. Your own classes are never touched.</p>
+         ${choiceTable(needChoice.filter((c) => c.status === 'conflict'))}`,
+        [
+          { label: 'Keep mine', value: 'keep' },
+          { label: 'Replace with new defaults', value: 'replace', kind: 'danger' },
+          { label: 'Merge', value: 'merge', kind: 'primary' },
+        ],
+      );
+      if (value === 'replace') replaceAll = true;
+      else if (value === 'keep' || value === 'cancel') keepAll = true;
+      else mine = chosenMine(form, needChoice);
+    } else if (needChoice.length) {
       const { value, form } = await dialog(
         'Your saved designs differ from this version',
         `<p>Some of the designs saved in this browser were made for a different version of the game. Choose which to keep:</p>
@@ -286,7 +337,14 @@ export class DesignStore {
       if (value === 'defaults') mine = new Set();
       else if (value === 'apply') mine = chosenMine(form, needChoice);
     }
-    const entries = resolveDesigns(classified, (name) => mine.has(name));
+    acceptGameVersion();
+    const entries = classified.flatMap((c) => {
+      if (c.status !== 'invalid' && c.status !== 'custom') {
+        if (replaceAll && c.fallback) return [c.fallback];
+        if (keepAll) return [c.entry];
+      }
+      return resolveDesigns([c], (name) => mine.has(name));
+    });
     if (this.plan(entries, true) === '') {
       // Nothing differs from what the server just gave us.
       this.ready = true;

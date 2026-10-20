@@ -13,6 +13,15 @@ export const CHANGELOG: readonly ChangelogEntry[] = [
   {
     date: '2026-10-20',
     changes: [
+      'Your saved designs now remember which version of the game they were made with. After an update that changes the default units, you are asked whether to merge the new defaults with your edits, replace your versions, or keep yours.',
+      'Factories now limit unit size: a building needs 1 factory module for a light chassis, 2 for a medium and 3 for a heavy one. The HQ has two; new Light Factory, Vehicle Factory and Heavy Factory buildings are specialised producers.',
+      'The graph editor shows blocks as cards with their settings and an Expand button, has a Blocks group in the palette and a Template chooser for new classes; the Docs have a new page on blocks and your own events.',
+      'Starter units are now built from ready-made behaviour blocks (orders, recharging, harvesting, building, repairing, fighting), written as use(HarvestLoop, { minMatter: 10 }) and expandable into plain events to edit.',
+      'Radio and Laser link modules: units and buildings of a team can now talk. radioSend(channel, value) reaches allies with a radio within 12 tiles (even through rock); laserSend reaches allies with a laser link up to 40 tiles away, but only along a clear line of sight. Receivers react in a new Message event block.',
+      "Text can now be joined with +, for example alert('HP: ' + hp(), 2000); numbers and true/false values are turned into text for you.",
+      'Scripts can now raise events of their own: emit(Name, values) and an on(Name) block in the same unit react to each other, in text and as nodes in the graph.',
+      'New alert(text, duration_ms) function: a speech bubble with your text appears over the unit for a set time, visible to anyone who can see the unit.',
+      'Long jobs (walking, harvesting, docking, building, repairing) now report how they ended through outcome pins instead of being polled, so busy units cost almost no CPU.',
       'Flak: a new anti-missile weapon that bursts every enemy missile near its target and never misses, with a Flak Truck and a Flak Turret. You can now also order any armed unit to shoot a missile down by right-clicking it.',
       'Fast units and a lightning discharge: a Turbo motor, the Dart and Pathfinder light units that are twice as quick as a Scout, and a visible tesla discharge.',
       'The designer opened from the main menu now has Download, Upload and Reset-to-defaults buttons for your saved designs, like the in-game menu.',

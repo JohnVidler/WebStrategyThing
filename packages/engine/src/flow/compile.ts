@@ -1,8 +1,10 @@
+import { checkBlocks } from './blocks';
 import { buttonName, checkDoc, type MemoryUse } from './check';
 import { COST, STATEMENT_COST, VARIABLE_READ_COST, WIRED_NODE_COST, LOCAL_READ_COST } from './cost';
-import { EVENT_BY_NAME, EventId, type EventDef } from './events';
+import { CUSTOM_EVENT_BASE, customEventDef, customEventNames, EVENT_BY_NAME, EventId, type EventDef } from './events';
 import type { FlowHost } from './host';
-import { FlowError, parseDoc, type ConfigValue, type Expr, type FlowDoc, type Handler, type Stmt } from './ir';
+import { expandBlocks } from './text';
+import { FlowError, isBoolExpr, isTextExpr, parseDoc, textParts, type ConfigValue, type Expr, type FlowDoc, type Handler, type Stmt } from './ir';
 
 /**
  * Programs compile to a flat instruction list of [op, arg, cost] triples. Control flow
@@ -43,6 +45,10 @@ export const Op = {
   Latent: 27,
   /** Data for the Latent before it: the outcome table's index. */
   Cont: 28,
+  /** Raises an event of the program's own: pops four values, the arg is the event id. */
+  Emit: 29,
+  /** Joins text and numbers: pops the template's number slots, pushes the text's handle. The arg is the template index. */
+  Concat: 30,
 } as const;
 
 export const OP_STRIDE = 3;
@@ -95,6 +101,8 @@ export interface FlowProgram {
   readonly tableHandler: readonly number[];
   /** Text written in quotes in the program; a text argument is passed to a builtin as an index into this. */
   readonly strings: readonly string[];
+  /** Text built at run time (`'HP: ' + hp`): each is its pieces in order, a string or the kind of number to print (0 whole number, 1 true/false). */
+  readonly templates: readonly (readonly (string | 0 | 1)[])[];
 }
 
 /** Every problem found in a program, as one error (the first is the message). */
@@ -122,9 +130,12 @@ export function compileProgram(source: string, host: FlowHost, reservedKeys?: Re
   return compileDoc(parseDoc(source), host, source, reservedKeys);
 }
 
-export function compileDoc(doc: FlowDoc, host: FlowHost, source: string, reservedKeys?: ReadonlyMap<string, string>): FlowProgram {
+export function compileDoc(written: FlowDoc, host: FlowHost, source: string, reservedKeys?: ReadonlyMap<string, string>): FlowProgram {
+  // Built-in blocks expand into plain variables and event blocks first, so they cost what the expanded program costs.
+  const doc = expandBlocks(written, host);
   const analysis = checkDoc(doc, host, reservedKeys);
-  if (analysis.errors.length) throw new FlowCompileError(analysis.errors);
+  const problems = [...checkBlocks(written), ...analysis.errors];
+  if (problems.length) throw new FlowCompileError(problems);
 
   const apiIndex = new Map(host.api.map((b, i) => [b.name, i]));
   const varIndex = new Map(doc.vars.map((v, i) => [v.name, i]));
@@ -138,15 +149,18 @@ export function compileDoc(doc: FlowDoc, host: FlowHost, source: string, reserve
     code[at * OP_STRIDE + 1] = target;
   };
 
+  const custom = customEventNames(doc);
+  const defOf = (name: string): EventDef => EVENT_BY_NAME.get(name) ?? customEventDef(name, custom.indexOf(name));
   const handlers: CompiledHandler[] = [];
   const tables: Int32Array[] = [];
   const strings: string[] = [];
+  const templates: (string | 0 | 1)[][] = [];
   const tableHandler: number[] = [];
   let nLocals = 0;
   const errors: FlowError[] = [];
 
   for (const h of doc.handlers) {
-    const def = EVENT_BY_NAME.get(h.event)!;
+    const def = defOf(h.event);
     const handlerIndex = handlers.length;
     /** Chains that run later, when a long-running call ends; compiled after the handler's own code. */
     const deferred: (() => void)[] = [];
@@ -184,6 +198,20 @@ export function compileDoc(doc: FlowDoc, host: FlowHost, source: string, reserve
           emit(e.op === '-' ? Op.Neg : Op.Not, 0, WIRED_NODE_COST);
           break;
         case 'bin':
+          if (isTextExpr(e)) {
+            const parts = textParts(e);
+            const template: (string | 0 | 1)[] = [];
+            for (const part of parts) {
+              if (part.k === 'str') template.push(part.v);
+              else {
+                expr(part);
+                template.push(isBoolExpr(part) ? 1 : 0);
+              }
+            }
+            templates.push(template);
+            emit(Op.Concat, templates.length - 1, (parts.length - 1) * WIRED_NODE_COST);
+            break;
+          }
           if (e.op === '&&' || e.op === '||') {
             expr(e.a);
             const skip = emit(e.op === '&&' ? Op.Jz : Op.Jnz, 0, WIRED_NODE_COST);
@@ -258,6 +286,13 @@ export function compileDoc(doc: FlowDoc, host: FlowHost, source: string, reserve
             else emit(Op.Pop);
             break;
           }
+          case 'emit': {
+            emit(Op.Stmt, 0, STATEMENT_COST);
+            for (const a of s.args) expr(a);
+            for (let k = s.args.length; k < 4; k++) emit(Op.Push, 0);
+            emit(Op.Emit, CUSTOM_EVENT_BASE + custom.indexOf(s.event));
+            break;
+          }
           case 'set':
             emit(Op.Stmt, 0, STATEMENT_COST);
             expr(s.value);
@@ -330,6 +365,7 @@ export function compileDoc(doc: FlowDoc, host: FlowHost, source: string, reserve
     tables,
     tableHandler,
     strings,
+    templates,
   };
 }
 

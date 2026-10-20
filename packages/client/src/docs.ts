@@ -1,6 +1,8 @@
 import './docs.css';
 import {
   API_GROUPS,
+  BLOCKS,
+  configToText,
   ANTENNA_THROUGHPUT_PER_TILE,
   BASE_LINK_RANGE,
   BUILD_RANGE,
@@ -107,6 +109,7 @@ on(Free, { repeat: 50 }, () => {
         <li><a href="#/events">Events</a> — what starts a block, and how to configure the sensor.</li>
         <li><a href="#/cost">CPU cost &amp; memory</a> — what programs cost to run and to store.</li>
         <li><a href="#/orders">Orders &amp; activities</a> — how player orders reach your programs, and how jobs run.</li>
+        <li><a href="#/blocks">Blocks &amp; your own events</a> — ready-made behaviours with settings, and events your program raises itself.</li>
         <li><a href="#/examples">Starter programs</a> — the programs your starting classes run.</li>
       </ul>`,
   },
@@ -158,7 +161,9 @@ on(Detected, { watch: [ENEMY], range: 6, interval: 5 }, (kind, h) => {
       </table>
       <p class="note">An action inside an expression, such as <code>if (fire(h))</code>, is an error: write <code>const hit = fire(h); if (hit) { ... }</code>.</p>
       <p>The one place text exists is where a function takes it, such as <code>alert('Enemy!', 2000)</code>, a speech bubble over the unit
-      for 2 seconds (up to ${MAX_TEXT} characters; each distinct text takes one memory slot). In the graph, type the text straight into the input.</p>
+      for 2 seconds (up to ${MAX_TEXT} characters; each distinct text takes one memory slot). Join text, whole numbers and true/false values with <code>+</code>,
+      as <code>alert('HP: ' + hp() + ' low=' + (hp() &lt; 20), 2000)</code>: the text is built when the call runs and cut at ${MAX_TEXT} characters. Joined text is only allowed where a function takes text.
+      In the graph, type the text straight into the input, or wire an Add node.</p>
       <h2>Names</h2>
       <p>Variables, event parameters and bound results cannot reuse a built-in name (so no variable called <code>x</code> or <code>hp</code>), and
       <code>const</code> results only live inside the block they are written in. Constants such as <code>MOVE</code> or <code>URGENT</code> are built in — see <a href="#/constants">Constants</a>.</p>
@@ -310,6 +315,41 @@ on(EnergyLow, { below: 25 }, () => {
 });`)}
       <p class="note"><code>EnergyLow</code> repeats while the store stays low, so a recharge that was cut short is tried again. The client draws the route of a unit's
       current job for your selected units.</p>`,
+  },
+  {
+    id: 'blocks',
+    title: 'Blocks & your own events',
+    section: 'Guide',
+    render: () => `
+      <h1>Blocks &amp; your own events</h1>
+      <p>Most classes do the same few things: obey orders, recharge when low, harvest, fight. Those are <b>blocks</b>: named behaviours with settings, written as one line of text
+      or one card in the graph. Every starter class is built from them.</p>
+      ${code(`use(TakeOrders, { types: [MOVE, STOP, CHARGE], urgent: REPLACE });
+use(RechargeWhenLow, { below: 25 });
+use(HarvestLoop, { minMatter: 10 });`)}
+      <p>A block is a template: it expands into ordinary variables and event blocks when the program is checked, so it costs exactly what the expanded program costs, and
+      each block can be used once. In the graph press <b>Expand</b> on a card (or write the events yourself) to turn it into plain event blocks you can change; that is one way, like ejecting.
+      Variables a block makes are named after it (<code>harvestLoop_x</code>), and a problem inside a block is shown on its card. New classes can start from a
+      <b>Template</b> in the graph toolbar.</p>
+      <h2>Your own events</h2>
+      <p>A program can raise events of its own and react to them: <code>emit(Delivered, load)</code> raises <code>Delivered</code> for this unit's <code>on(Delivered, (load) => { ... })</code>
+      blocks. Names start with a capital letter and are not built-in events; a class can have up to 16 of them, each carrying up to 4 numbers. Raising an event nobody handles costs only the statement.
+      Blocks raise events too, so you can react to them without touching the block:</p>
+      ${code(`use(HarvestLoop);
+
+let delivered = 0;
+on(Delivered, (load) => {
+  delivered = delivered + load;
+});`)}
+      <h2>The blocks</h2>
+      <table>
+        <tr><th>Block</th><th>What it does</th><th>Settings (default)</th><th>Raises</th></tr>
+        ${BLOCKS.map(
+          (b) => `<tr><td><code>${b.name}</code><br><span class="muted">${b.group}</span></td><td>${b.doc}</td><td>${
+            b.settings.map((f) => `<code>${f.name}</code> (${configToText(b.name, f, undefined, FLOW_HOST) || "''"}): ${f.doc}`).join('<br>') || '—'
+          }</td><td>${b.emits?.map((e) => `<code>${e}</code>`).join(', ') ?? '—'}</td></tr>`,
+        ).join('')}
+      </table>`,
   },
   {
     id: 'fog',

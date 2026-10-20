@@ -4,6 +4,44 @@ Changes to the codebase, grouped by day (newest first).
 
 ## 2026-10-20
 
+### Game version stamp in saved designs; update prompt
+- Vite defines `__GIT_HASH__` (`GIT_HASH` env, else `git rev-parse --short HEAD`; the Dockerfile has a `GIT_HASH` build arg since the image has no .git). `client/src/version.ts` exports `GAME_VERSION`. Design files get a `game` field (engine `DesignFile.game`, `makeDesignFile(classes, game)`).
+- In a match, if the saved `game` differs from `GAME_VERSION` and some default-named class differs from this build's default, a dialog "The game has been updated" offers Keep mine / Replace with new defaults / Merge (new default for unchanged classes, your edits kept, per-class choice for both-changed ones). Own classes are never touched. Saves keep the old stamp until the question is answered (so the menu designer cannot hide it); upload and reset also settle it.
+- The main menu (and the name screen) shows "Version: <branch> / <hash>" (`GIT_BRANCH` env or `git rev-parse --abbrev-ref HEAD`; Docker build arg `GIT_BRANCH`) fixed in the top-right corner (`.lobby-version`).
+- Not tried in a browser; no automated test for the dialog (it lives in the DOM).
+
+### M12: graph pass for blocks (client)
+- Block cards: `GNode` kind `block` (settings as text fields with constant names, "raises ..." line, Expand button, problem shown on the card); `NodeCallbacks.action`. Ops `addBlock` (each block once), `setBlockSetting` (validated), `expandBlock` (via `expandOne`), `deleteNode` knows blocks, `ownEvents` includes what the blocks in use raise, so `on(Delivered)` can be added from the palette at once. `configFromText` accepts block settings.
+- Palette: new first group "Blocks" (open by default), then Events, Flow...; "Your events" group for events of your own. Graph toolbar: Template... chooser (`CLASS_TEMPLATES`: Blank, Worker, Builder, Medic, Fighter, Turret, Storage, Factory) that replaces the program after a confirm. Layout: block cards in rows of three at the top, event chains (event left, what it starts to its right, outcomes as branches) below.
+- Problems found inside a block's expansion are mapped to the block (`FlowDocument.findProblems`). Docs: page "Blocks & your own events" generated from the registry; editor completion has `use <Block>` snippets.
+- Tests: graph tests for cards, settings, add/expand/delete round trip; `vite build` succeeds. Not yet looked at in a browser: how the cards and the template chooser look is for you to review (the readability review in M12 is yours).
+
+### Factory size follows factory modules; specialised factories
+- `BlueprintStats.factoryModules` counts working factory modules; `enqueueProduction` refuses a unit whose chassis size needs more (`factoryModulesFor(size) = size + 1`: 1 light, 2 medium, 3 heavy). The HQ and the bot Assembler now have two factory modules (so everything below heavy is still built there); new starter buildings Light Factory (1), Vehicle Factory (2) and Heavy Factory (3), each running `use(RallyPoint)`. The production panel dims classes that do not fit, with a tooltip saying why. More modules also use more energy while producing (`factoryUse` sums).
+- Tests: `factory.test.ts`. PLAN.md has a new "Unit size tiers" section (plan only): a longer chassis ladder (micro to colossus) on the same part catalogue, `radius` per chassis, tier-aware factory rule, optional clearance pathing, milestones S1-S4.
+
+### M11: built-in block library (engine side)
+- `flow/blocks.ts`: 13 blocks as text templates with typed settings. `FlowDoc.blocks` (`BlockUse`), text `use(Block, { ... })` (parse, print, id alignment), `expandBlocks` (check and compile run on the expanded program, so cost is the expanded cost), `expandOne` (Expand), `checkBlocks` (unknown block, used twice, unknown or out-of-range setting). Block variables are prefixed (`harvestLoop_x`). Blocks emit `Charged` (RechargeWhenLow) and `Delivered(amount)` (HarvestLoop).
+- All starter classes are now a few `use(...)` lines; a test checks that no starter has event blocks of its own and none hooks `Idle` once expanded. The silo scenario test now waits 2 ticks and refills the fields so it no longer depends on the random sequence. Tests: `blocks.test.ts`; 246 tests pass.
+- Client graph cards for blocks are M12 (not started): until then the graph editor does not draw `use` blocks.
+
+### Joining text with + (playtest bug)
+- A `+` with text on either side is a join (`isTextExpr` / `textParts` in `ir.ts`); whole numbers print as digits, comparisons and logic as `true` / `false`, left to right like JavaScript (`'a' + 1 + 2` is `a12`, `1 + 2 + 'a'` is `3a`). Only allowed where a built-in takes text (`alert`); elsewhere the checker refuses it.
+- Compiler: `Op.Concat` with a per-program template (`FlowProgram.templates`); the join is built at run time into `running.dynamic` (cleared at the next statement) and passed to the built-in as a handle past the static strings (`textAt`). Result cut at `MAX_TEXT` (40). Cost: one node + wire per `+`, so the graph's cost model still matches.
+- Tests: `alert.test.ts` (join result, misuse errors, 40-character cut).
+
+### Radio and laser link modules
+- New slot `comms` (module kind `M_COMMS`, 18, switchable) and parts `radio.basic` (mass 1, 12 tiles, 1 energy per message, ignores terrain) and `radio.laser` (mass 3, 40 tiles, 3 energy, needs open ground: rock blocks the line, buildings and units do not). Stats `radioRange/laserRange/radioUse/laserUse`; capabilities `HAS_RADIO`, `HAS_LASER`.
+- Language: actions `radioSend(channel, value)` and `laserSend(channel, value)` (group Communication; return how many received it, -1 without a working module or energy); event `Message(channel, value, sender, link)` with settings `channels` (filter) and `link` (RADIO / LASER, 0 either); constants `RADIO`, `LASER`. Receiving needs the same kind of module on a unit or building of the same team, and a `Message` block; receiving costs nothing.
+- `Simulation.transmit` / `clearLine`. Designer lists the modules under Sensors & weapons.
+- Tests: `comms.test.ts` (range, through rock, laser line of sight, allies only, channel filter, sending from a program).
+
+### M10: events of the program's own (`emit` / `on(Name)`)
+- IR: statement `{ k: 'emit', event, args }`; a handler may name any capitalised event that is not built in (`isCustomEventName`, up to 16 per class, up to 4 values each). Text: `emit(Greeted, 7, 3);` and `on(Greeted, (who, times) => { ... })`; `emit` and `use` are now reserved words. Checker: emitting a built-in event is an error; an emit nobody handles is allowed (blocks will emit events the player may hook).
+- Compiler/runtime: custom events get ids from 64 (`CUSTOM_EVENT_BASE`) in order of first use; new `Op.Emit` pops four values and `raise`s the event on the unit's own queue, so it costs the statement plus its argument wires and nothing when no block handles it.
+- Graph: `emit` node (event name, 0-4 values; value pins take the receiving block's names), own-event blocks (name control renames everywhere, values control), palette group "Your events" (`New event block...`, `emit (new event)`); ops `setEmitEvent`, `setEmitArgs`, `renameEvent`, `setHandlerParams`, `newEventName`, `ownEvents`.
+- Tests: `custom-events.test.ts` (round trip, two blocks talking, errors) and graph tests; existing tests that used `on(Nope, ...)` as the unknown event now use a lower-case name. 234 tests pass; typecheck clean.
+
 ### Flak, shooting missiles by order, designer file buttons
 - **Gap found**: only sentries could target missiles. `issueOrder`/`issueCommand(Attack)` required a `Unit` target and the client `pick` ignored missiles, so a player could not click one. Now an enemy missile is a valid Attack target (engine) and `Renderer.pick(sx, sy, true)` returns enemy missiles (drawn lifted above the shadow) for right-click and aimed actions; own missiles are never picked.
 - **Flak**: `flak.cannon` (mass 3, range 10, 12 damage, cooldown 3, 2 energy): `combatSystem` bursts every enemy missile within `FLAK_BURST_RADIUS` (1.5 tiles) of its target, no hit roll; it only locks on missiles (clears any other target before spending). New `DetectKind.Missile` / `MISSILE` constant for `Detected`. Starters **Flak Truck** (medium, motor.small, short sensor, one cell) and **Flak Turret** (small frame, battery bank). Art: twin-barrel turret; sound tag `combat.shot.flak`.

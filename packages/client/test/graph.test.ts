@@ -3,6 +3,9 @@ import { FLOW_HOST, parseText, printText, serialize, type FlowDoc } from '@wst/e
 import { buildGraph, slotForInput } from '../src/flow/graphModel';
 import { estimateHeight, layout, NODE_WIDTH } from '../src/flow/layout';
 import {
+  addBlock,
+  expandBlock,
+  setBlockSetting,
   addExpression,
   addHandler,
   addStatement,
@@ -15,9 +18,13 @@ import {
   disconnectExec,
   emptyScratch,
   exprNodeId,
+  newEventName,
   OpError,
+  renameEvent,
   scratchOf,
   setConfig,
+  setEmitArgs,
+  setHandlerParams,
   setLiteral,
   withScratch,
   type Program,
@@ -227,7 +234,7 @@ describe('graph operations keep the program expressible as text', () => {
   it('adds variables and event blocks under the same rules as the text', () => {
     let p = program('on(Idle, () => {});\n');
     expect(() => addHandler(p, 'Idle')).toThrow(/only have one Idle/);
-    expect(() => addHandler(p, 'Nope')).toThrow(/Unknown event/);
+    expect(() => addHandler(p, 'nope')).toThrow(/Unknown event/);
     p = addHandler(p, 'Order').program;
     expect(p.doc.handlers.map((h) => h.event)).toEqual(['Idle', 'Order']);
     expect(p.doc.handlers[1].params).toEqual(['type', 'tx', 'ty', 'target']);
@@ -274,5 +281,73 @@ describe('layout', () => {
     const ev = p.doc.handlers[0].id;
     const set = p.doc.handlers[0].body[0].id;
     expect(a[set][0]).toBeGreaterThan(a[ev][0]);
+  });
+});
+
+describe('events of your own in the graph', () => {
+  const OWN = ['on(Spawned, () => {', '  emit(Greeted, 7);', '});', '', 'on(Greeted, (who) => {', '  fire(who);', '});', ''].join('\n');
+
+  it('draws an emit node with a pin per value, named after the receiving block, and an event block with its values', () => {
+    const g = buildGraph(program(OWN), FLOW_HOST);
+    const emit = g.nodes.find((n) => n.title === 'emit')!;
+    expect(emit.subtitle).toBe('Greeted');
+    expect(emit.inputs.map((i) => i.label)).toEqual(['', 'who']);
+    const block = g.nodes.find((n) => n.kind === 'event' && n.title === 'Greeted')!;
+    expect(block.subtitle).toBe('own event');
+    expect(block.outputs.map((o) => o.label)).toEqual(['', 'who']);
+  });
+
+  it('adds, resizes and renames events, keeping the text in step', () => {
+    let p = program(OWN);
+    const name = newEventName(p);
+    expect(name).toBe('MyEvent');
+    const added = addStatement(p, { k: 'emit', event: name, argc: 0 });
+    expect(added.program.scratch.chains).toHaveLength(1);
+    p = connectExec(added.program, { k: 'next', stmt: p.doc.handlers[0].body[0].id }, added.id);
+    p = setEmitArgs(p, added.id, 2);
+    expect(textOf(p)).toContain('emit(MyEvent, 0, 0);');
+    p = renameEvent(p, 'Greeted', 'Hello');
+    expect(textOf(p)).toContain('emit(Hello, 7);');
+    expect(textOf(p)).toContain('on(Hello, (who) => {');
+    expect(() => renameEvent(p, 'Hello', 'Idle')).toThrow(OpError);
+    expect(() => setEmitArgs(p, added.id, 5)).toThrow(OpError);
+    p = setHandlerParams(p, p.doc.handlers[1].id, 'who, b');
+    roundTrips(p);
+    p = addHandler(p, 'MyEvent').program;
+    expect(textOf(p)).toContain('on(MyEvent, () => {');
+  });
+});
+
+describe('built-in blocks in the graph', () => {
+  const BLOCKS_TEXT = ['use(TakeOrders);', "use(HarvestLoop, { minMatter: 12 });", ''].join('\n');
+
+  it('draws each block as one card with its settings, what it raises, and an Expand button', () => {
+    const g = buildGraph(program(BLOCKS_TEXT), FLOW_HOST);
+    const cards = g.nodes.filter((n) => n.kind === 'block');
+    expect(cards.map((n) => n.title)).toEqual(['TakeOrders', 'HarvestLoop']);
+    const harvest = cards[1];
+    expect(harvest.controls.find((c) => c.key === 'set:minMatter')?.value).toBe('12');
+    expect(harvest.controls.find((c) => c.key === 'set:fieldsToChooseFrom')?.value).toBe('4');
+    expect(harvest.emits).toEqual(['Delivered']);
+    expect(harvest.actions?.map((a) => a.key)).toEqual(['expand']);
+    expect(cards[0].controls.find((c) => c.key === 'set:types')?.value).toBe('MOVE, STOP, CHARGE');
+  });
+
+  it('adds a block once, changes its settings, deletes it, and expands it into plain event blocks', () => {
+    let p = program('');
+    const added = addBlock(p, 'HarvestLoop');
+    p = added.program;
+    expect(() => addBlock(p, 'HarvestLoop')).toThrow(/already in the program/);
+    p = setBlockSetting(p, added.id, 'minMatter', 25);
+    expect(textOf(p)).toBe('use(HarvestLoop, { minMatter: 25 });\n');
+    expect(() => setBlockSetting(p, added.id, 'minMatter', 5000)).toThrow(OpError);
+    // The events a block raises can be hooked straight away.
+    p = addHandler(p, 'Delivered').program;
+    expect(textOf(p)).toContain('on(Delivered, () => {');
+    const expanded = expandBlock(p, added.id, FLOW_HOST);
+    expect(expanded.doc.blocks).toBeUndefined();
+    expect(textOf(expanded)).toContain('swapOrder(HARVEST, 0, 0, randomResource(4, 25));');
+    roundTrips(expanded);
+    expect(deleteNode(p, added.id).doc.blocks).toBeUndefined();
   });
 });

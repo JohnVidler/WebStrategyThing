@@ -7,6 +7,7 @@ import {
   type Blueprint,
   EnergyView,
   FAULT_NAMES,
+  factoryModulesFor,
   Health,
   Modules,
   PARTS,
@@ -105,7 +106,7 @@ export class Ui {
   private credits = 0;
   /** Rebuild buttons/toggles only when these change, so clicks aren't lost to DOM churn. */
   private productionKey = '';
-  private productionCosts: { btn: HTMLButtonElement; cost: number }[] = [];
+  private productionCosts: { btn: HTMLButtonElement; cost: number; fits: boolean }[] = [];
   private modulesKey = '';
 
   constructor(
@@ -724,7 +725,8 @@ export class Ui {
     const buildable = blueprints.ownedBy(this.state.myId).filter((bp) => !bp.stats.structure && !bp.retired);
     // The buttons are only rebuilt when the building or the class list changes: rebuilding them as
     // the matter total moves would swallow clicks (the element is replaced between press and release).
-    const key = `${b}|${buildable.map((bp) => bp.id).join(',')}`;
+    const modules = blueprints.get(world.store(Unit).f.blueprint[b])?.stats.factoryModules ?? 0;
+    const key = `${b}|${modules}|${buildable.map((bp) => bp.id).join(',')}`;
     if (key !== this.productionKey) {
       this.productionKey = key;
       this.productionButtons.innerHTML = '';
@@ -732,7 +734,11 @@ export class Ui {
       for (const bp of buildable) {
         const btn = document.createElement('button');
         btn.className = 'action';
-        btn.title = `${bp.name}: ◆${bp.stats.cost} + ϟ${bp.stats.buildEnergy}, ${(bp.stats.buildTime / 10).toFixed(1)}s. Click to queue one.`;
+        const need = factoryModulesFor(bp.stats.size);
+        const fits = modules >= need;
+        btn.title = fits
+          ? `${bp.name}: ◆${bp.stats.cost} + ϟ${bp.stats.buildEnergy}, ${(bp.stats.buildTime / 10).toFixed(1)}s. Click to queue one.`
+          : `${bp.name} is too big for this building: it needs a factory with ${need} factory modules (this one has ${modules}).`;
         const img = document.createElement('img');
         img.alt = '';
         this.actions.iconFor(bp.id).then((src) => (img.src = src)).catch(() => img.remove());
@@ -743,7 +749,7 @@ export class Ui {
         btn.dataset.sound = 'none';
         btn.onclick = () => this.actions.produce(b, bp.id);
         this.productionButtons.appendChild(btn);
-        this.productionCosts.push({ btn, cost: bp.stats.cost });
+        this.productionCosts.push({ btn, cost: bp.stats.cost, fits });
       }
     }
     this.updateAffordability();
@@ -751,7 +757,7 @@ export class Ui {
 
   /** Greys out production buttons the player can't pay for, in place. */
   private updateAffordability(): void {
-    for (const { btn, cost } of this.productionCosts) btn.disabled = cost > this.credits;
+    for (const { btn, cost, fits } of this.productionCosts) btn.disabled = !fits || cost > this.credits;
   }
 
   updateClasses(): void {

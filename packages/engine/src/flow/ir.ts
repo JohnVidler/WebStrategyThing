@@ -24,6 +24,20 @@ export type Expr =
   /** A query (reads state, no effect). Actions are statements. */
   | { readonly k: 'call'; readonly fn: string; readonly args: readonly Expr[] };
 
+/** True for text: a quoted string, or a `+` with text on either side (`'HP: ' + hp`). Only allowed where a built-in takes text. */
+export function isTextExpr(e: Expr): boolean {
+  return e.k === 'str' || (e.k === 'bin' && e.op === '+' && (isTextExpr(e.a) || isTextExpr(e.b)));
+}
+
+/** The pieces of a text expression in order, left to right: `'a' + 1 + 2` is ['a', 1, 2]; `1 + 2 + 'a'` is [1 + 2, 'a']. */
+export function textParts(e: Expr): Expr[] {
+  if (e.k === 'bin' && e.op === '+' && isTextExpr(e)) return [...(isTextExpr(e.a) ? textParts(e.a) : [e.a]), ...(isTextExpr(e.b) ? textParts(e.b) : [e.b])];
+  return [e];
+}
+
+/** True for a value that prints as true / false: a comparison, logic or `!`. */
+export const isBoolExpr = (e: Expr): boolean => (e.k === 'un' && e.op === '!') || (e.k === 'bin' && ['==', '!=', '<', '<=', '>', '>=', '&&', '||'].includes(e.op));
+
 export type Stmt =
   /** An action, runtime setting or (discarded) query. `result` names a local bound to the return value. */
   | {
@@ -38,6 +52,8 @@ export type Stmt =
   | { readonly id: string; readonly k: 'set'; readonly name: string; readonly value: Expr }
   | { readonly id: string; readonly k: 'if'; readonly cond: Expr; readonly then: readonly Stmt[]; readonly else: readonly Stmt[] }
   | { readonly id: string; readonly k: 'while'; readonly cond: Expr; readonly body: readonly Stmt[] }
+  /** Raises an event of the program's own (up to four values) for this unit's `on(Name)` blocks. */
+  | { readonly id: string; readonly k: 'emit'; readonly event: string; readonly args: readonly Expr[] }
   | { readonly id: string; readonly k: 'comment'; readonly text: string };
 
 /** Event source configuration: constants only. */
@@ -72,11 +88,23 @@ export interface FlowViews {
   };
 }
 
+/** A use of a built-in block (`use(HarvestLoop, { minMatter: 10 })`): a template that expands into plain variables and event blocks. */
+export interface BlockUse {
+  readonly id: string;
+  readonly block: string;
+  /** Only the settings the program wrote; the block's defaults fill in the rest. */
+  readonly settings: Readonly<Record<string, ConfigValue>>;
+  /** Comment lines written above the `use`. */
+  readonly note?: string;
+}
+
 export interface FlowDoc {
   readonly format: typeof FLOW_FORMAT;
   readonly version: number;
   readonly vars: readonly VarDecl[];
   readonly handlers: readonly Handler[];
+  /** Built-in blocks in use; they expand into more variables and handlers when the program is checked and compiled. */
+  readonly blocks?: readonly BlockUse[];
   readonly views?: FlowViews;
 }
 
@@ -148,6 +176,7 @@ export function idGenerator(doc?: FlowDoc, reserved: Iterable<string> = []): () 
     }
   };
   for (const h of doc?.handlers ?? []) (seen(h.id), walk(h.body));
+  for (const b of doc?.blocks ?? []) seen(b.id);
   for (const id of reserved) seen(id);
   return () => `n${++max}`;
 }

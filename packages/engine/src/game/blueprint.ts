@@ -23,6 +23,8 @@ export const Caps = {
   Build: 1024,
   Radar: 2048,
   Repair: 4096,
+  Radio: 8192,
+  Laser: 16384,
 } as const;
 
 export class BlueprintError extends Error {
@@ -65,6 +67,8 @@ export interface BlueprintStats {
   /** Tiles per side (0 for mobile units). */
   readonly footprint: number;
   readonly factory: boolean;
+  /** Working factory modules: the biggest unit it can produce is one with a chassis of size `factoryModules - 1`. */
+  readonly factoryModules: number;
   readonly depot: boolean;
   readonly chargeRate: number;
   /** Resources the building's silos hold. */
@@ -85,6 +89,11 @@ export interface BlueprintStats {
   readonly sensorUse: number;
   /** Most energy one radar pulse may spend; 0 without a working radar. */
   readonly radarMaxEnergy: number;
+  /** Radio and laser link reach (sub-tile units; 0 without a working one) and the energy each message costs. */
+  readonly radioRange: number;
+  readonly radioUse: number;
+  readonly laserRange: number;
+  readonly laserUse: number;
   readonly cargoUse: number;
   readonly factoryUse: number;
   readonly builderUse: number;
@@ -164,8 +173,8 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
   let hp = 0, mass = 0, memory = 0, stack = BASE_STACK, energy = 0, fullCycles = 0;
   let cycles = 0, cpuUse = 0, thrust = 0, motorUse = 0, flying = false;
   let sensor = 0, sensorUse = 0, sensorTier = 0, cargo = 0, rate = 0, cargoUse = 0;
-  let factory = false, factoryUse = 0, silo = 0, charge = 0, solar = 0, wind = 0, antenna = 0, antennas = 0, banks = 0;
-  let buildRate = 0, builderUse = 0, radarMax = 0, buildEnergy = 0, repairRate = 0, repairUse = 0, armorHp = 0;
+  let factory = false, factoryModules = 0, factoryUse = 0, silo = 0, charge = 0, solar = 0, wind = 0, antenna = 0, antennas = 0, banks = 0;
+  let radioRange = 0, radioUse = 0, laserRange = 0, laserUse = 0, buildRate = 0, builderUse = 0, radarMax = 0, buildEnergy = 0, repairRate = 0, repairUse = 0, armorHp = 0;
   let weapon: BlueprintStats['weapon'] = null;
 
   defs.forEach((d, i) => {
@@ -217,6 +226,7 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
         break;
       case 'factory':
         factory = true;
+        factoryModules++;
         factoryUse += d.use ?? 0;
         break;
       case 'charger':
@@ -232,6 +242,15 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
         break;
       case 'radar':
         radarMax = Math.max(radarMax, d.radarMaxEnergy ?? 0);
+        break;
+      case 'comms':
+        if (d.link === 'laser') {
+          laserRange = Math.max(laserRange, (d.commsRange ?? 0) * TILE);
+          laserUse = Math.max(laserUse, d.use ?? 0);
+        } else {
+          radioRange = Math.max(radioRange, (d.commsRange ?? 0) * TILE);
+          radioUse = Math.max(radioUse, d.use ?? 0);
+        }
         break;
       case 'repair':
         repairRate += d.repairRate ?? 0;
@@ -259,7 +278,9 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
     (banks > 0 ? Caps.Storage : 0) |
     (buildRate > 0 ? Caps.Build : 0) |
     (radarMax > 0 ? Caps.Radar : 0) |
-    (repairRate > 0 ? Caps.Repair : 0);
+    (repairRate > 0 ? Caps.Repair : 0) |
+    (radioRange > 0 ? Caps.Radio : 0) |
+    (laserRange > 0 ? Caps.Laser : 0);
 
   return Object.freeze({
     hp,
@@ -277,6 +298,7 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
     structure,
     footprint: structure ? (frame.footprint ?? 1) : 0,
     factory,
+    factoryModules,
     depot,
     chargeRate: charge,
     resourceCapacity: silo,
@@ -290,6 +312,10 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
     motorUse,
     sensorUse,
     radarMaxEnergy: radarMax,
+    radioRange,
+    radioUse,
+    laserRange,
+    laserUse,
     cargoUse,
     factoryUse,
     builderUse,

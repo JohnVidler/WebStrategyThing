@@ -1,10 +1,10 @@
 import { FREE_LITERALS } from './cost';
-import { EVENT_BY_NAME, type ConfigField, type EventDef } from './events';
+import { customEventDef, customEventNames, EVENT_BY_NAME, isCustomEventName, MAX_CUSTOM_EVENTS, MAX_CUSTOM_PARAMS, type ConfigField, type EventDef } from './events';
 import type { FlowHost } from './host';
-import { FlowError, type ConfigValue, type Expr, type FlowDoc, type Handler, type Stmt } from './ir';
+import { FlowError, isTextExpr, textParts, type ConfigValue, type Expr, type FlowDoc, type Handler, type Stmt } from './ir';
 
 export const RESERVED_WORDS: ReadonlySet<string> = new Set([
-  'on', 'config', 'let', 'const', 'var', 'if', 'else', 'while', 'for', 'return', 'true', 'false', 'function', 'break', 'continue',
+  'on', 'emit', 'use', 'config', 'let', 'const', 'var', 'if', 'else', 'while', 'for', 'return', 'true', 'false', 'function', 'break', 'continue',
 ]);
 
 export const MAX_BUTTONS = 12;
@@ -60,14 +60,16 @@ export function checkDoc(doc: FlowDoc, host: FlowHost, reservedKeys?: ReadonlyMa
     vars.add(v.name);
   }
 
+  const custom = customEventNames(doc);
+  if (custom.length > MAX_CUSTOM_EVENTS) fail(`At most ${MAX_CUSTOM_EVENTS} events of your own per class (found ${custom.length})`);
   const seen = new Set<string>();
   const buttons = new Set<string>();
   let maxLocals = 0;
 
   for (const h of doc.handlers) {
-    const def = EVENT_BY_NAME.get(h.event);
+    const def = EVENT_BY_NAME.get(h.event) ?? (isCustomEventName(h.event) ? customEventDef(h.event) : undefined);
     if (!def) {
-      fail(`Unknown event '${h.event}'`, h.id);
+      fail(`Unknown event '${h.event}' (your own events start with a capital letter)`, h.id);
       continue;
     }
     if (!def.multi && seen.has(def.name)) fail(`A class can only have one ${def.name} block`, h.id);
@@ -85,7 +87,8 @@ export function checkDoc(doc: FlowDoc, host: FlowHost, reservedKeys?: ReadonlyMa
     // Locals (event parameters, then call results) are scoped to their block.
     const locals = new Set<string>();
     const declared: string[] = [];
-    if (h.params.length > def.params.length) fail(`${def.name} has only ${def.params.length} parameter(s): ${def.params.join(', ') || 'none'}`, h.id);
+    if (!EVENT_BY_NAME.has(def.name) && h.params.length > MAX_CUSTOM_PARAMS) fail(`An event of your own carries at most ${MAX_CUSTOM_PARAMS} values`, h.id);
+    else if (h.params.length > def.params.length) fail(`${def.name} has only ${def.params.length} parameter(s): ${def.params.join(', ') || 'none'}`, h.id);
     for (const p of h.params) declareLocal(p, h.id);
 
     function declareLocal(name: string, node: string): void {
@@ -112,6 +115,10 @@ export function checkDoc(doc: FlowDoc, host: FlowHost, reservedKeys?: ReadonlyMa
           expr(e.a, node);
           break;
         case 'bin':
+          if (isTextExpr(e)) {
+            fail('Text in quotes is only allowed where a function takes text, such as alert()', node);
+            break;
+          }
           expr(e.a, node);
           expr(e.b, node);
           break;
@@ -135,10 +142,16 @@ export function checkDoc(doc: FlowDoc, host: FlowHost, reservedKeys?: ReadonlyMa
     const callArgs = (b: { name: string; text?: readonly number[] } | undefined, args: readonly Expr[], node: string): void => {
       args.forEach((a, i) => {
         if (!b?.text?.includes(i)) return expr(a, node);
-        if (a.k !== 'str') return fail(`Argument ${i + 1} of ${b.name}() is text: write it in quotes`, node);
-        if (a.v.length > MAX_TEXT) fail(`Text is limited to ${MAX_TEXT} characters`, node);
-        else if (/[\u0000-\u001f]/.test(a.v)) fail('Text cannot contain line breaks or control characters', node);
-        strings.add(a.v);
+        if (!isTextExpr(a)) return fail(`Argument ${i + 1} of ${b.name}() is text: write it in quotes (or join values with +, as 'HP: ' + hp)`, node);
+        for (const part of textParts(a)) {
+          if (part.k !== 'str') {
+            expr(part, node);
+            continue;
+          }
+          if (part.v.length > MAX_TEXT) fail(`Text is limited to ${MAX_TEXT} characters`, node);
+          else if (/[\u0000-\u001f]/.test(part.v)) fail('Text cannot contain line breaks or control characters', node);
+          strings.add(part.v);
+        }
       });
     };
 
@@ -166,6 +179,12 @@ export function checkDoc(doc: FlowDoc, host: FlowHost, reservedKeys?: ReadonlyMa
             if (s.result !== undefined) declareLocal(s.result, s.id);
             break;
           }
+          case 'emit':
+            if (EVENT_BY_NAME.has(s.event)) fail(`${s.event} is a built-in event: emit() is for events of your own`, s.id);
+            else if (!isCustomEventName(s.event)) fail(`'${s.event}' is not a valid event name (start with a capital letter)`, s.id);
+            if (s.args.length > MAX_CUSTOM_PARAMS) fail(`emit() carries at most ${MAX_CUSTOM_PARAMS} values`, s.id);
+            for (const a of s.args) expr(a, s.id);
+            break;
           case 'set':
             if (!vars.has(s.name)) fail(`Only variables can be assigned; '${s.name}' is not one (declare it with let)`, s.id);
             expr(s.value, s.id);
@@ -213,7 +232,7 @@ function checkConfig(h: Handler, def: EventDef, fail: (m: string, node?: string)
   }
 }
 
-function configProblem(field: ConfigField, value: ConfigValue): string | null {
+export function configProblem(field: ConfigField, value: ConfigValue): string | null {
   if (field.type === 'string') return typeof value === 'string' ? null : 'needs text';
   if (field.type === 'ints') {
     return Array.isArray(value) && value.every((n) => Number.isInteger(n)) ? null : 'needs a list of whole numbers, such as [MOVE]';

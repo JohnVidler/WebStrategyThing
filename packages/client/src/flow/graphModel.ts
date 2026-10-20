@@ -1,7 +1,9 @@
 import {
+  BLOCK_BY_NAME,
   COST,
   configToText,
   EVENT_BY_NAME,
+  MAX_CUSTOM_PARAMS,
   LOCAL_READ_COST,
   STATEMENT_COST,
   VARIABLE_READ_COST,
@@ -37,7 +39,9 @@ export type NodeKind =
   /** Branch, While, Set: grey-violet. */
   | 'flow'
   /** A note. */
-  | 'note';
+  | 'note'
+  /** A built-in block: a card with settings that stands for several event blocks. */
+  | 'block';
 
 export type PortType = 'exec' | 'data';
 
@@ -71,6 +75,10 @@ export interface GNode {
   readonly loose: boolean;
   readonly doc?: string;
   readonly problem?: string;
+  /** Buttons on the card (a block's Expand). */
+  readonly actions?: readonly { readonly key: string; readonly label: string; readonly title: string }[];
+  /** Events a block raises, for the player's own blocks to hook. */
+  readonly emits?: readonly string[];
 }
 
 export interface GEdge {
@@ -240,6 +248,26 @@ export function buildGraph(program: Program, host: FlowHost, problems: ReadonlyM
           if (s.result !== undefined) scope.set(s.result, { node: id, key: 'result' });
           break;
         }
+        case 'emit': {
+          const controls: Control[] = [
+            { key: 'event', label: 'event', type: 'text', value: s.event, hint: 'The event to raise: your own, starting with a capital letter' },
+            { key: 'values', label: 'values', type: 'select', value: String(s.args.length), options: Array.from({ length: MAX_CUSTOM_PARAMS + 1 }, (_, n) => String(n)) },
+          ];
+          const names = program.doc.handlers.find((h) => h.event === s.event)?.params ?? [];
+          const inputs: Port[] = [{ key: 'in', label: '', type: 'exec' }];
+          s.args.forEach((a, i) => {
+            const label = names[i] ?? `value ${i + 1}`;
+            inputs.push({ key: argKey(i), label, type: 'data' });
+            const c = feed(a, id, `args.${i}`, { node: id, key: argKey(i) }, here, loose);
+            if (c) controls.push({ ...c, label });
+          });
+          node = {
+            id, kind: 'action', title: 'emit', subtitle: s.event, inputs, outputs: [{ key: 'next', label: '', type: 'exec' }],
+            controls, cost: STATEMENT_COST, loose, doc: `Raises ${s.event}: every block of that event in this unit runs`, problem,
+          };
+          nodes.push(node);
+          break;
+        }
         case 'set': {
           const controls: Control[] = [{ key: 'var', label: '', type: 'select', value: s.name, options: vars }];
           const c = feed(s.value, id, 'value', { node: id, key: 'value' }, here, loose);
@@ -287,6 +315,15 @@ export function buildGraph(program: Program, host: FlowHost, problems: ReadonlyM
     }
   };
 
+  for (const u of program.doc.blocks ?? []) {
+    const def = BLOCK_BY_NAME.get(u.block);
+    nodes.push({
+      id: u.id, kind: 'block', title: u.block, subtitle: def?.group ?? 'unknown block', inputs: [], outputs: [],
+      controls: (def?.settings ?? []).map((f) => ({ key: `set:${f.name}`, label: f.name, type: 'text' as const, value: configToText(u.block, f, u.settings[f.name], host), hint: f.doc })),
+      actions: [{ key: 'expand', label: 'Expand', title: 'Turn this block into the plain event blocks it is made of, so you can change anything (it cannot be turned back)' }],
+      emits: def?.emits, cost: 0, loose: false, doc: def?.doc, problem: problems.get(u.id),
+    });
+  }
   for (const h of program.doc.handlers) {
     const scope = new Map<string, Source>(h.params.map((p) => [p, { node: h.id, key: paramKey(p) }]));
     nodes.push(eventNode(h, host, problems.get(h.id)));
@@ -310,16 +347,22 @@ export function buildGraph(program: Program, host: FlowHost, problems: ReadonlyM
 
 function eventNode(h: Handler, host: FlowHost, problem: string | undefined): GNode {
   const def = EVENT_BY_NAME.get(h.event);
-  const controls: Control[] = (def?.config ?? []).map((f) => ({
+  const own: Control[] = def
+    ? []
+    : [
+        { key: 'evname', label: 'name', type: 'text', value: h.event, hint: 'The name of this event (renames it everywhere)' },
+        { key: 'evparams', label: 'values', type: 'text', value: h.params.join(', '), hint: 'Names for the values an emit passes, up to four' },
+      ];
+  const controls: Control[] = own.concat((def?.config ?? []).map((f) => ({
     key: `cfg:${f.name}`,
     label: f.name,
     type: 'text' as const,
     value: configToText(h.event, f, h.config[f.name], host),
     hint: f.doc,
-  }));
+  })));
   return {
     id: h.id, kind: 'event', title: h.event,
-    subtitle: 'event',
+    subtitle: def ? 'event' : 'own event',
     inputs: [],
     outputs: [{ key: 'start', label: '', type: 'exec' }, ...h.params.map((p) => ({ key: paramKey(p), label: p, type: 'data' as const }))],
     controls, cost: 0, loose: false, doc: def?.doc, problem,
@@ -349,6 +392,7 @@ export function handlerWorstCase(h: Handler, host: FlowHost): number {
           total += STATEMENT_COST + (api.get(s.fn)?.cost ?? 0) + s.args.reduce((n, a) => n + exprCost(a, locals), 0);
           if (s.result) locals.add(s.result);
           break;
+        case 'emit': total += STATEMENT_COST + s.args.reduce((n, a) => n + exprCost(a, locals), 0); break;
         case 'set': total += STATEMENT_COST + exprCost(s.value, locals); break;
         case 'if': total += STATEMENT_COST + exprCost(s.cond, locals) + Math.max(list(s.then, new Set(locals)), list(s.else, new Set(locals))); break;
         case 'while': total += STATEMENT_COST + exprCost(s.cond, locals) + list(s.body, new Set(locals)); break;

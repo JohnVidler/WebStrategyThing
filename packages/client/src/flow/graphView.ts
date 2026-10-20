@@ -1,5 +1,8 @@
 import { LitPlugin, Presets as LitPresets, type LitArea2D } from '@retejs/lit-plugin';
 import {
+  BLOCK_BY_NAME,
+  BLOCKS,
+  CLASS_TEMPLATES,
   configFromText,
   EVENT_BY_NAME,
   EVENTS,
@@ -16,6 +19,7 @@ import type { NodeCallbacks, PaletteItem, VariableRow, WstFlowPalette, WstFlowVa
 import type { FlowDocument } from './FlowDocument';
 import { buildGraph, OP_TITLE, slotForInput, type GNode, type GraphModel } from './graphModel';
 import {
+  addBlock,
   addExpression,
   addHandler,
   addStatement,
@@ -26,12 +30,20 @@ import {
   deleteVariable,
   disconnectData,
   disconnectExec,
+  expandBlock,
   isExprNodeId,
+  newEventName,
   OpError,
+  ownEvents,
+  renameEvent,
   scratchOf,
   setAssignTarget,
+  setBlockSetting,
   setComment,
   setConfig,
+  setEmitArgs,
+  setEmitEvent,
+  setHandlerParams,
   setLiteral,
   setOperator,
   setResultName,
@@ -97,14 +109,27 @@ export interface GraphHost {
 }
 
 /** What the palette offers: everything a program can contain. */
-export function paletteItems(host: FlowHost, vars: readonly string[], existing: ReadonlySet<string>): PaletteItem[] {
+export function paletteItems(host: FlowHost, vars: readonly string[], existing: ReadonlySet<string>, own: readonly string[] = [], blocksUsed: ReadonlySet<string> = new Set()): PaletteItem[] {
   const items: PaletteItem[] = [];
+  for (const b of BLOCKS) {
+    items.push({ id: `bl:${b.name}`, label: b.name, group: 'Blocks', kind: 'block', doc: b.doc, disabled: blocksUsed.has(b.name) ? `${b.name} is already in the program` : undefined });
+  }
   for (const e of EVENTS) {
     items.push({
       id: `ev:${e.name}`, label: e.name, group: 'Events', kind: 'event', doc: e.doc,
       disabled: !e.multi && existing.has(e.name) ? `A class can only have one ${e.name} block` : undefined,
     });
   }
+  for (const name of own) {
+    items.push(
+      { id: `ev:${name}`, label: `on ${name}`, group: 'Your events', kind: 'event', doc: `A block that runs when this unit raises ${name}` },
+      { id: `st:emit:${name}`, label: `emit ${name}`, group: 'Your events', kind: 'action', doc: `Raises ${name} for this unit's blocks` },
+    );
+  }
+  items.push(
+    { id: 'ev:new', label: 'New event block…', group: 'Your events', kind: 'event', doc: 'A block for an event of your own, raised with emit' },
+    { id: 'st:emit:new', label: 'emit (new event)', group: 'Your events', kind: 'action', doc: 'Raises an event of your own' },
+  );
   items.push(
     { id: 'st:if', label: 'Branch (if)', group: 'Flow', kind: 'flow', doc: 'Runs one of two chains, then continues' },
     { id: 'st:while', label: 'While loop', group: 'Flow', kind: 'flow', doc: 'Repeats a chain while a condition holds' },
@@ -167,7 +192,7 @@ export class GraphView {
   /** Zoom to fit once the next rebuild has finished (after a program is loaded). */
   private wantFit = false;
   private toastTimer = 0;
-  private readonly callbacks: NodeCallbacks = { control: (id, key, value) => this.control(id, key, value) };
+  private readonly callbacks: NodeCallbacks = { control: (id, key, value) => this.control(id, key, value), action: (id, key) => this.action(id, key) };
 
   constructor(private readonly g: GraphHost) {
     this.element = document.createElement('div');
@@ -178,6 +203,7 @@ export class GraphView {
         <div class="graph-toolbar">
           <button data-act="undo" title="Undo (Ctrl+Z)">↶ Undo</button>
           <button data-act="redo" title="Redo (Ctrl+Y)">↷ Redo</button>
+          <select data-act="template" title="Start the class from a template made of blocks"><option value="">Template…</option>${CLASS_TEMPLATES.map((t) => `<option value="${t.name}" title="${t.about}">${t.name}</option>`).join('')}</select>
           <button data-act="tidy" title="Lay the whole program out again">Tidy</button>
           <button data-act="fit" title="Zoom to fit everything">Fit</button>
           <button data-act="delete" title="Delete the selected nodes (Delete)">Delete</button>
@@ -207,6 +233,11 @@ export class GraphView {
     this.redoBtn = click('redo');
     click('undo').onclick = () => this.undo();
     click('redo').onclick = () => this.redo();
+    const chooser = this.element.querySelector<HTMLSelectElement>('[data-act="template"]')!;
+    chooser.onchange = () => {
+      this.applyTemplate(chooser.value);
+      chooser.value = '';
+    };
     click('tidy').onclick = () => void this.tidy();
     click('fit').onclick = () => this.fit();
     click('delete').onclick = () => this.deleteSelected();
@@ -422,6 +453,16 @@ export class GraphView {
     if (!node) return;
     this.edit(() => {
       const p = this.program();
+      if (key.startsWith('set:')) {
+        const def = BLOCK_BY_NAME.get(node.title);
+        const field = def?.settings.find((f) => f.name === key.slice(4));
+        if (!def || !field) throw new OpError('Unknown setting');
+        try {
+          return setBlockSetting(p, nodeId, field.name, configFromText(def.name, field, value, this.g.host));
+        } catch (err) {
+          throw new OpError(err instanceof Error ? err.message : String(err));
+        }
+      }
       if (key.startsWith('cfg:')) {
         const def = EVENT_BY_NAME.get(node.title);
         const field = def?.config.find((f) => f.name === key.slice(4));
@@ -432,6 +473,10 @@ export class GraphView {
           throw new OpError(err instanceof Error ? err.message : String(err));
         }
       }
+      if (key === 'evname') return renameEvent(p, node.title, value.trim());
+      if (key === 'evparams') return setHandlerParams(p, nodeId, value);
+      if (key === 'event') return setEmitEvent(p, nodeId, value.trim());
+      if (key === 'values') return setEmitArgs(p, nodeId, Number(value));
       if (key === 'var') return node.kind === 'variable' ? setVariableRef(p, nodeId, value) : setAssignTarget(p, nodeId, value);
       if (key === 'op') return setOperator(p, nodeId, value as BinOp);
       if (key === 'text') return setComment(p, nodeId, value);
@@ -439,18 +484,40 @@ export class GraphView {
     });
   }
 
+  private action(nodeId: string, key: string): void {
+    if (key !== 'expand') return;
+    this.edit(() => {
+      const next = expandBlock(this.program(), nodeId, this.g.host);
+      delete this.pos[nodeId];
+      return next;
+    });
+    this.say('The block is now plain event blocks: change anything. (Undo brings the block back.)', true);
+  }
+
+  /** Replaces the program with a starting point for a new class (asks first when there is something to lose). */
+  private applyTemplate(name: string): void {
+    const t = CLASS_TEMPLATES.find((x) => x.name === name);
+    if (!t) return;
+    if (!this.g.doc.isEmpty && !window.confirm(`Replace the whole program with the "${t.name}" template?`)) return;
+    this.pos = {};
+    this.g.doc.loadText(t.text, {}, 'load');
+    this.say(`Started from the ${t.name} template: ${t.about}`, true);
+  }
+
   private addNode(id: string): void {
     const [kind, ...rest] = id.split(':');
     this.edit(() => {
       const p = this.program();
       let added: { program: Program; id: string };
-      if (kind === 'ev') added = addHandler(p, rest[0]);
+      if (kind === 'bl') added = addBlock(p, rest[0]);
+      else if (kind === 'ev') added = addHandler(p, rest[0] === 'new' ? newEventName(p) : rest[0]);
       else if (kind === 'st') {
         const what = rest[0];
         if (what === 'call') {
           const b = this.g.host.api.find((x) => x.name === rest[1]);
           added = addStatement(p, { k: 'call', fn: rest[1], argc: b?.argc ?? 0 });
-        } else if (what === 'set') added = addStatement(p, { k: 'set', name: p.doc.vars[0]?.name ?? '' });
+        } else if (what === 'emit') added = addStatement(p, { k: 'emit', event: rest[1] === 'new' ? newEventName(p) : rest[1], argc: 0 });
+        else if (what === 'set') added = addStatement(p, { k: 'set', name: p.doc.vars[0]?.name ?? '' });
         else if (what === 'if') added = addStatement(p, { k: 'if' });
         else if (what === 'while') added = addStatement(p, { k: 'while' });
         else added = addStatement(p, { k: 'comment', text: 'note' });
@@ -538,7 +605,7 @@ export class GraphView {
     this.canvas.classList.toggle('frozen', !doc.syntaxOk);
     if (!doc.syntaxOk) this.banner.textContent = `The text has a syntax error, so the graph is showing the last valid program and is read-only until the text is fixed: ${doc.errors[0]?.message ?? ''}`;
     const p = this.program();
-    this.palette.items = paletteItems(this.g.host, p.doc.vars.map((v) => v.name), new Set(p.doc.handlers.map((h) => h.event)));
+    this.palette.items = paletteItems(this.g.host, p.doc.vars.map((v) => v.name), new Set(p.doc.handlers.map((h) => h.event)), ownEvents(p), new Set((p.doc.blocks ?? []).map((b) => b.block)));
     this.variables.vars = p.doc.vars.map((v): VariableRow => ({ name: v.name, init: v.init, used: variableUsed(p, v.name) }));
   }
 

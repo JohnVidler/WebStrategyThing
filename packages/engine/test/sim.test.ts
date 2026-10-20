@@ -660,10 +660,11 @@ describe('construction and resources', () => {
       .slice(0, 4);
     const picked = new Set<number>();
     for (let i = 0; i < 12; i++) {
+      for (const f of nearest) sim.resource.f.amount[f] = 500; // earlier harvesters must not run a field dry
       const harvester = sim.spawnUnit(passiveHarvester, sim.pos.f.x[silo], sim.pos.f.y[silo]);
       run(sim, 3);
       expect(sim.dock(harvester, silo)).toBe(true);
-      run(sim, 8);
+      run(sim, 2); // long enough for the silo to react, too short for the harvester to finish (and drop) the order
       const queue = sim.tasks[harvester]!;
       expect(queue.type(queue.count - 1)).toBe(TaskType.Harvest);
       const target = sim.world.resolve(queue.target(queue.count - 1));

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { applyTick, encodeTick, FLOW_HOST, parseText, printText, GAME_COMPONENTS, Simulation, TILE, World } from '../src';
 import { prog } from './helpers';
 
+const lines = (...l: string[]): string => l.join('\n');
 const unit = ['chassis.light', 'cpu.basic', 'battery.cell'];
 
 describe('alert(text, duration_ms)', () => {
@@ -39,5 +40,26 @@ describe('alert(text, duration_ms)', () => {
     expect(info.alerts).toEqual([{ e, ticks: 26, text: 'hello there' }]);
     sim.commit();
     expect(sim.alerts).toEqual([]);
+  });
+
+  it('joins text, numbers and true/false with +, at run time', () => {
+    const sim = new Simulation({ width: 20, height: 20, seed: 1 });
+    const bp = sim.blueprints.define(1, 'Talker', unit);
+    sim.setProgram(bp.id, prog(lines("let life = 42;", "on(Spawned, () => {", "  alert('HP: ' + life + ' ok=' + (life > 10) + ' ' + 1 + 2, 1000);", "});")));
+    sim.spawnUnit(bp, 5 * TILE, 5 * TILE);
+    sim.step();
+    expect(sim.alerts.map((a) => a.text)).toEqual(['HP: 42 ok=true 12']);
+  });
+
+  it('keeps joined text to where text belongs, and cuts it at 40 characters', () => {
+    const errors = (src: string) => parseText(src, FLOW_HOST).errors.map((e) => e.message);
+    expect(errors(lines('let n = 0;', 'on(Spawned, () => {', "  moveTo('a' + n, 1);", '});'))[0]).toMatch(/only allowed where a function takes text/);
+    expect(errors(lines('let n = 0;', 'on(Spawned, () => {', "  n = 'a' + 1;", '});'))[0]).toMatch(/only allowed where a function takes text/);
+    const sim = new Simulation({ width: 20, height: 20, seed: 1 });
+    const bp = sim.blueprints.define(1, 'Talker', unit);
+    sim.setProgram(bp.id, prog(lines('let n = 123456;', 'on(Spawned, () => {', `  alert('${'x'.repeat(38)}' + n, 1000);`, '});')));
+    sim.spawnUnit(bp, 5 * TILE, 5 * TILE);
+    sim.step();
+    expect(sim.alerts[0].text).toBe('x'.repeat(38) + '12');
   });
 });

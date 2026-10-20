@@ -1,3 +1,4 @@
+import { MAX_TEXT } from './check';
 import { COST } from './cost';
 import { EventId } from './events';
 import { configInt, configInts, OP_STRIDE, Op, STACK_SIZE, handles, type FlowProgram } from './compile';
@@ -281,7 +282,10 @@ const EVENT_ARGS = new Int32Array(4);
  * Returns the cycles consumed this tick.
  */
 /** The text of the program that is running, for builtins that take text (an argument is an index into this). */
-export const running: { strings: readonly string[] } = { strings: [] };
+export const running: { strings: readonly string[]; dynamic: string[] } = { strings: [], dynamic: [] };
+
+/** The text a text argument stands for: written in the program, or joined while it ran (valid until the next statement). */
+export const textAt = (handle: number): string => (handle < running.strings.length ? running.strings[handle] : running.dynamic[handle - running.strings.length]) ?? '';
 
 export function runFlow<Ctx>(fs: FlowState, api: HostApi<Ctx>, ctx: Ctx, cyclesPerTick: number, tick: number, hooks?: RunHooks): number {
   if (fs.fault) return 0;
@@ -373,6 +377,7 @@ export function runFlow<Ctx>(fs: FlowState, api: HostApi<Ctx>, ctx: Ctx, cyclesP
           finished = true;
           break run;
         case Op.Stmt:
+          if (running.dynamic.length) running.dynamic.length = 0;
           break;
         case Op.Push:
           if (sp >= STACK_SIZE) { fault = Fault.StackOverflow; break run; }
@@ -466,6 +471,27 @@ export function runFlow<Ctx>(fs: FlowState, api: HostApi<Ctx>, ctx: Ctx, cyclesP
             used += b.cost;
             fs.handlerCycles += b.cost;
           }
+          break;
+        }
+        case Op.Concat: {
+          const template = p.templates[arg];
+          let numbers = 0;
+          for (const piece of template) if (typeof piece !== 'string') numbers++;
+          if (sp < numbers) { fault = Fault.StackUnderflow; break run; }
+          let at = sp - numbers;
+          let text = '';
+          for (const piece of template) {
+            text += typeof piece === 'string' ? piece : piece === 1 ? (stack[at++] !== 0 ? 'true' : 'false') : String(stack[at++]);
+          }
+          sp -= numbers;
+          if (sp >= STACK_SIZE) { fault = Fault.StackOverflow; break run; }
+          stack[sp++] = p.strings.length + running.dynamic.push(text.slice(0, MAX_TEXT)) - 1;
+          break;
+        }
+        case Op.Emit: {
+          if (sp < 4) { fault = Fault.StackUnderflow; break run; }
+          sp -= 4;
+          raise(fs, arg, stack[sp], stack[sp + 1], stack[sp + 2], stack[sp + 3]);
           break;
         }
         case Op.Call: {
