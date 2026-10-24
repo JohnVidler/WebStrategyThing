@@ -141,6 +141,120 @@ function acceptGameVersion(): void {
   stamp = GAME_VERSION;
 }
 
+type SavedReview =
+  | { kind: 'none' }
+  | { kind: 'unreadable' }
+  | { kind: 'ok'; entries: DesignEntry[]; saved: DesignFile; asked: boolean };
+
+/**
+ * Reads the designs saved in this browser and, if they diverge from this build's defaults,
+ * asks the player what to do. Used by the main menu and again when a match starts, so the
+ * question comes at whichever comes first; answering it re-stamps the file (see below).
+ */
+async function reviewSavedDesigns(notify: (text: string, ok: boolean) => void): Promise<SavedReview> {
+  const text = readStorage();
+  if (!text) return { kind: 'none' };
+  let saved: DesignFile;
+  try {
+    saved = parseDesignFile(JSON.parse(text));
+  } catch {
+    notify('Your saved designs could not be read; starting from the defaults.', false);
+    return { kind: 'unreadable' };
+  }
+  if (saved.migrated?.length) {
+    // Saved with the old text language: keep a copy of the file and say what was replaced.
+    try {
+      localStorage.setItem(LEGACY_BACKUP_KEY, text);
+    } catch {
+      // no room for a backup: the notice still tells the player
+    }
+    const names = saved.migrated.slice(0, 6).join(', ') + (saved.migrated.length > 6 ? ', …' : '');
+    notify(
+      `Programs are now event blocks, so the old text programs of ${saved.migrated.length} saved class(es) (${names}) were replaced by the current default program. The old designs file is kept in this browser under "${LEGACY_BACKUP_KEY}".`,
+      true,
+    );
+  }
+  // An earlier save made before the programs had arrived left default classes with empty
+  // programs, which would switch every unit of the class off: use the default instead.
+  saved = {
+    ...saved,
+    classes: saved.classes.map((c) => {
+      const template = DEFAULT_DESIGNS.get(c.name);
+      return template && !c.program.trim() && template.program.trim() ? { ...c, program: template.program } : c;
+    }),
+  };
+  const classified = classifyDesigns(saved);
+  const needChoice = classified.filter((c) => c.status === 'conflict' || c.status === 'invalid');
+  let mine = new Set<string>(needChoice.map((c) => c.entry.name));
+  // Default classes that differ from this build's defaults (not the player's own classes).
+  const differing = classified.filter((c) => c.status === 'outdated' || c.status === 'modified' || c.status === 'conflict');
+  let replaceAll = false;
+  let keepAll = false;
+  let asked = false;
+  if (saved.game !== GAME_VERSION && differing.length) {
+    asked = true;
+    // The game was updated since these designs were saved: ask how to treat the default classes.
+    const known = saved.game ? `<code>${esc(saved.game)}</code>` : 'an older version';
+    const label = (c: ClassifiedDesign) =>
+      `<li><b>${esc(c.entry.name)}</b> <small class="muted">${{ outdated: 'unchanged by you, the default has been improved', modified: 'your edit; the default is the same as before', conflict: 'your edit, and the default has changed too' }[c.status as 'outdated' | 'modified' | 'conflict']}</small></li>`;
+    const { value, form } = await dialog(
+      'The game has been updated',
+      `<p>Your designs were saved with ${known}; this is <code>${esc(GAME_VERSION)}</code>. The default units and buildings below differ from your saved versions:</p>
+       <ul class="design-plan">${differing.map(label).join('')}</ul>
+       <p><b>Merge</b> takes the new default for every class you never changed, keeps your edits, and asks about the ones both of you changed. <b>Replace</b> puts all the new defaults in place of your versions of these classes. <b>Keep mine</b> changes nothing. Your own classes are never touched.</p>
+       ${choiceTable(needChoice.filter((c) => c.status === 'conflict'))}`,
+      [
+        { label: 'Keep mine', value: 'keep' },
+        { label: 'Replace with new defaults', value: 'replace', kind: 'danger' },
+        { label: 'Merge', value: 'merge', kind: 'primary' },
+      ],
+    );
+    if (value === 'replace') replaceAll = true;
+    else if (value === 'keep' || value === 'cancel') keepAll = true;
+    else mine = chosenMine(form, needChoice);
+  } else if (needChoice.length) {
+    asked = true;
+    const { value, form } = await dialog(
+      'Your saved designs differ from this version',
+      `<p>Some of the designs saved in this browser were made for a different version of the game. Choose which to keep:</p>
+       ${choiceTable(needChoice)}`,
+      [
+        { label: 'Use all new defaults', value: 'defaults' },
+        { label: 'Keep all mine', value: 'mine' },
+        { label: 'Apply my choices', value: 'apply', kind: 'primary' },
+      ],
+    );
+    if (value === 'defaults') mine = new Set();
+    else if (value === 'apply') mine = chosenMine(form, needChoice);
+  }
+  acceptGameVersion();
+  const entries = classified.flatMap((c) => {
+    if (c.status !== 'invalid' && c.status !== 'custom') {
+      if (replaceAll && c.fallback) return [c.fallback];
+      if (keepAll) return [c.entry];
+    }
+    return resolveDesigns([c], (name) => mine.has(name));
+  });
+  return { kind: 'ok', entries, saved, asked };
+}
+
+/**
+ * Main-menu check: if the saved designs were made for another build (or need a decision),
+ * ask now and save the answer under this build's stamp, so joining a match doesn't ask again.
+ */
+export async function checkSavedDesignsOnMenu(): Promise<void> {
+  const review = await reviewSavedDesigns((text, ok) => void dialog(ok ? 'Designs updated' : 'Designs', `<p>${esc(text)}</p>`, [{ label: 'OK', value: 'ok', kind: 'primary' }]));
+  if (review.kind !== 'ok' || (!review.asked && review.saved.game === GAME_VERSION)) return;
+  writeStorage(
+    JSON.stringify(
+      makeDesignFile(
+        review.entries.map((e) => ({ name: e.name, parts: e.parts, program: e.program, retired: e.retired })),
+        GAME_VERSION,
+      ),
+    ),
+  );
+}
+
 /** The player's current classes as a design file (superseded copies left out). */
 export function snapshotDesigns(state: ClientState): DesignFile {
   const mine = state.blueprints.ownedBy(state.myId);
@@ -260,91 +374,17 @@ export class DesignStore {
 
   /** Brings back the designs saved in this browser, asking about anything that diverged from this build. */
   private async restoreSession(): Promise<void> {
-    const text = readStorage();
-    if (!text) {
+    const review = await reviewSavedDesigns((text, ok) => this.host.notify(text, ok));
+    if (review.kind === 'none') {
       this.ready = true;
       this.scheduleSave();
       return;
     }
-    let saved: DesignFile;
-    try {
-      saved = parseDesignFile(JSON.parse(text));
-    } catch {
-      this.host.notify('Your saved designs could not be read; starting from the defaults.', false);
+    if (review.kind === 'unreadable') {
       this.ready = true;
       return; // keep the unreadable copy until the next change overwrites it
     }
-    if (saved.migrated?.length) {
-      // Saved with the old text language: keep a copy of the file and say what was replaced.
-      try {
-        localStorage.setItem(LEGACY_BACKUP_KEY, text);
-      } catch {
-        // no room for a backup: the notice still tells the player
-      }
-      const names = saved.migrated.slice(0, 6).join(', ') + (saved.migrated.length > 6 ? ', …' : '');
-      this.host.notify(
-        `Programs are now event blocks, so the old text programs of ${saved.migrated.length} saved class(es) (${names}) were replaced by the current default program. The old designs file is kept in this browser under "${LEGACY_BACKUP_KEY}".`,
-        true,
-      );
-    }
-    // An earlier save made before the programs had arrived left default classes with empty
-    // programs, which would switch every unit of the class off: use the default instead.
-    saved = {
-      ...saved,
-      classes: saved.classes.map((c) => {
-        const template = DEFAULT_DESIGNS.get(c.name);
-        return template && !c.program.trim() && template.program.trim() ? { ...c, program: template.program } : c;
-      }),
-    };
-    const classified = classifyDesigns(saved);
-    const needChoice = classified.filter((c) => c.status === 'conflict' || c.status === 'invalid');
-    let mine = new Set<string>(needChoice.map((c) => c.entry.name));
-    // Default classes that differ from this build's defaults (not the player's own classes).
-    const differing = classified.filter((c) => c.status === 'outdated' || c.status === 'modified' || c.status === 'conflict');
-    let replaceAll = false;
-    let keepAll = false;
-    if (saved.game !== GAME_VERSION && differing.length) {
-      // The game was updated since these designs were saved: ask how to treat the default classes.
-      const known = saved.game ? `<code>${esc(saved.game)}</code>` : 'an older version';
-      const label = (c: ClassifiedDesign) =>
-        `<li><b>${esc(c.entry.name)}</b> <small class="muted">${{ outdated: 'unchanged by you, the default has been improved', modified: 'your edit; the default is the same as before', conflict: 'your edit, and the default has changed too' }[c.status as 'outdated' | 'modified' | 'conflict']}</small></li>`;
-      const { value, form } = await dialog(
-        'The game has been updated',
-        `<p>Your designs were saved with ${known}; this is <code>${esc(GAME_VERSION)}</code>. The default units and buildings below differ from your saved versions:</p>
-         <ul class="design-plan">${differing.map(label).join('')}</ul>
-         <p><b>Merge</b> takes the new default for every class you never changed, keeps your edits, and asks about the ones both of you changed. <b>Replace</b> puts all the new defaults in place of your versions of these classes. <b>Keep mine</b> changes nothing. Your own classes are never touched.</p>
-         ${choiceTable(needChoice.filter((c) => c.status === 'conflict'))}`,
-        [
-          { label: 'Keep mine', value: 'keep' },
-          { label: 'Replace with new defaults', value: 'replace', kind: 'danger' },
-          { label: 'Merge', value: 'merge', kind: 'primary' },
-        ],
-      );
-      if (value === 'replace') replaceAll = true;
-      else if (value === 'keep' || value === 'cancel') keepAll = true;
-      else mine = chosenMine(form, needChoice);
-    } else if (needChoice.length) {
-      const { value, form } = await dialog(
-        'Your saved designs differ from this version',
-        `<p>Some of the designs saved in this browser were made for a different version of the game. Choose which to keep:</p>
-         ${choiceTable(needChoice)}`,
-        [
-          { label: 'Use all new defaults', value: 'defaults' },
-          { label: 'Keep all mine', value: 'mine' },
-          { label: 'Apply my choices', value: 'apply', kind: 'primary' },
-        ],
-      );
-      if (value === 'defaults') mine = new Set();
-      else if (value === 'apply') mine = chosenMine(form, needChoice);
-    }
-    acceptGameVersion();
-    const entries = classified.flatMap((c) => {
-      if (c.status !== 'invalid' && c.status !== 'custom') {
-        if (replaceAll && c.fallback) return [c.fallback];
-        if (keepAll) return [c.entry];
-      }
-      return resolveDesigns([c], (name) => mine.has(name));
-    });
+    const entries = review.entries;
     if (this.plan(entries, true) === '') {
       // Nothing differs from what the server just gave us.
       this.ready = true;

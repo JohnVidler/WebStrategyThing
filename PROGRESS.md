@@ -2,6 +2,11 @@
 
 Changes to the codebase, grouped by day (newest first).
 
+## 2026-10-24 (saved-design update check at the main menu; agent A3)
+
+- The "The game has been updated" question (Keep mine / Replace / Merge) used to be asked only once a match had started, so a player with an old saved unit file saw nothing at the main menu. The review logic moved out of `DesignStore.restoreSession` into `reviewSavedDesigns` in `client/src/designs.ts`; `checkSavedDesignsOnMenu` runs it once per page load from `showLobby` (`lobby.ts`) and saves the answer under this build's stamp, so joining a match then finds nothing left to ask. A match still runs the same review, so a file saved by an older build in another way is caught there too.
+- Not seen in a browser; `tsc` passes for the client.
+
 ## 2026-10-24 (per-address limits behind nginx-proxy-manager; agent A3)
 
 - The server runs behind nginx-proxy-manager in front of the client container's nginx, so the earlier `X-Real-IP $remote_addr` would have shown every player as the outer proxy and the per-address limits (30 sockets, 5 rooms) would have hit all players together. `docker/nginx.conf` now uses the realip module (`set_real_ip_from` the private ranges, `real_ip_header X-Forwarded-For`, `real_ip_recursive on`) so `$remote_addr`, and therefore the `X-Real-IP` it sends the server, is the real client. The server still trusts `X-Real-IP` only from a private peer address.

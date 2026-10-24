@@ -1,6 +1,7 @@
 /** Room list shown when the page is opened without ?room=: pick a match or create one. */
 import { GAME_BRANCH, GAME_VERSION } from './version';
-import { getPlayerName, getSavedPlayerName, NAME_MAX, setPlayerName } from './playerName';
+import { checkSavedDesignsOnMenu } from './designs';
+import { getPlayerName,getSavedPlayerName, NAME_MAX, setPlayerName } from './playerName';
 import { showNews } from './newsMenu';
 import { randomHex } from './random';
 import { playSound, sound } from './sound';
@@ -191,6 +192,7 @@ let refreshTimer: ReturnType<typeof setInterval> | undefined;
 let rememberedMap = DEFAULT_MAP_ID;
 let rememberedMode: GameMode = 'versus';
 let designs: import('./localdesigns').LocalDesigns | undefined;
+let savedDesignsChecked = false;
 let popHandler: ((ev: PopStateEvent) => void) | undefined;
 
 /**
@@ -241,6 +243,11 @@ export function showLobby(apiBase: string, joinRoom?: string, preferredMapId = D
     };
     nameInput.focus();
     return;
+  }
+
+  if (!savedDesignsChecked) {
+    savedDesignsChecked = true; // the menu re-renders often; ask once per page load
+    void checkSavedDesignsOnMenu();
   }
 
   root.innerHTML = `
