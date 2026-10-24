@@ -597,6 +597,8 @@ Review of `client/src/sound.ts` found overlapping voices work (each `play()` has
 
 From the "Engine and flow pass" in `REVIEW.md`. **Done** (A2, 2026-10-24; details in `PROGRESS.md`, tests in `engine/test/hardening.test.ts` and `server/test/match.test.ts`): 1, player programs can no longer crash the server; 2, orders are never lost to a full queue; 3, the server-side hotkey check and small fixes. **Parked**: 6, script-system allocations: the sweep cache and nearest-only fast path changed nothing measurable (median tick ~0.5 ms at 256 a side); revisit only with a profile showing the script system matters.
 
+**Done 2026-10-24 (A3):** items 4 and 5 (blocked goals retarget to the nearest cell the unit fits in; smoothing gallops and bisects; planning has a deterministic per-tick work budget, `PLAN_WORK_PER_TICK`, with a straight-line stand-in route for units waiting). Open: one shared search per command batch, and `freeMoveTile`'s taken set once per batch (22 ms to issue 256 orders). The text below is the original plan.
+
 **Open: items 4-5, where the tick spikes come from.** Both touch `path.ts` / `planPath`, which are free to claim (A1 released them). Keep `findPath(..., m)` respecting `Mobility` and the squeeze-out rule (tests in `engine/test/tiers.test.ts`). Each has a waiting `it.fails` test in `engine/test/perf.test.ts`: when the fix lands the test starts passing, which `it.fails` reports as a failure; change it to `it`.
 
 4. **A\* to buildings** (`path.ts`, `planPath`): retarget a blocked goal to the nearest tile next to the target's footprint that the unit fits on (`Terrain.fits` / `nearestFit` with the unit's mobility) before searching, or cut the search off once the best h stops improving. Budget: within 10x of a path to the open tile beside it (today ~100x).
@@ -625,3 +627,30 @@ Next, in order:
 4. ~~Hand-placed terrain~~ (done 2026-10-24: `map.terrain` drawn in Tiled via `editor/`, heights 1-9 included, so drawn levels can have cliffs). What is left is the object layer (first bullet above).
 5. **Server-side progress / accounts** if saves should follow the player across browsers (today the client is trusted and progress is per browser; any level can be started by editing the URL).
 6. Campaign-specific design/unit restrictions, per-level music tags, a briefing image, and a "campaign complete" screen.
+7. **Campaign maps in Multiplayer** (done 2026-10-24: levels listed as `Campaign/Map` and playable as free-for-all or co-op, behind Options > Show alpha maps; `campaignMap` in `server/src/campaign.ts`). Open: a terrain preview (the client is not sent hand-drawn terrain: either send it on `GET /api/v1/campaigns` as `Terrain.encode()` form, or add a small preview endpoint); whether levels balanced for one human suit four players or need per-mode start layouts; scripted starts and triggers (items 1 and 3) are not run in multiplayer rooms yet. When campaigns go live, drop the alpha option and the dev gating on the Campaigns button (`devMode()` in `campaignMenu.ts`).
+
+## Security and robustness fixes (from the 2026-10-24 review; S1 to S6 done, rest open)
+
+**Done 2026-10-24 (A3, see `PROGRESS.md`):** S1 to S3 (process crashes), S4 and S5 (budgets and class cap), S6 (escaping, with a test). Still open: S7 CSP and CORS, S8 token in the URL, S9 to S12, S13 to S17. The list below is the original plan.
+
+Source: `REVIEW.md`, "Security and robustness pass" (S1 to S17). Suggested order, each with a test:
+
+1. **S1 to S3, S3b: process crashes.** A `pathOf(url)` helper that never throws (400 for HTTP, close 1008 for a WebSocket), a socket `'error'` listener on every connection, `try`/`catch` around the `message` / `close` handlers and `.catch` on the HTTP promise chains. Test: start `index.ts` on a spare port and send `GET //`, the upgrade variant and a 2 MB frame, then check a normal request still works (the server needs an `export`able `start(port)` so a test can run it in-process and close it; today it listens at import time).
+2. **S4, S5: budgets.** A per-socket token bucket (close with 1008), a cap on `pending` per player, a cap on menu sockets, per-address socket and room-creation limits (nginx sets `X-Real-IP`; trust it only from the proxy), a cap on total classes including retired ones. Add the limits to `docs/server.md`, since `AGENTS.md` asks for them.
+3. **S6: `esc(bp.name)`**, plus a test that fails when an `innerHTML` assignment interpolates a `.name` / `.label` without `esc(` (S15), and one shared `esc` in `client/src/util/html.ts` that also escapes `'`.
+4. **S7, S8, S10: web hardening.** nginx headers (and a tested CSP), the token out of the URL (first message, or keep it out of the access log), per-job workflow permissions. S9, S11, S12: pin `tsx` / `ws`, one `cleanName` rule, a short manifest cache.
+5. **Consistency (S13 to S17)** with the next change that touches the renderer or the CPU-profile chain; S14 goes away with `SimEvent.Damage`.
+
+Open question: also add a process-level `uncaughtException` handler that logs and keeps serving? It would hide bugs and can leave a match half-updated; prefer fixing the causes and keeping per-match isolation (`Match.crash`).
+
+## Menus, tabs and dev tools (2026-10-24)
+
+Done (details in `PROGRESS.md`, conventions in `STYLE.md`): the Multiplayer screen is two glass tabs (Games, Create a room) with an animated, keyed room list (`growRow` / `shrinkRow`); a reusable glass tab look (`.glass-tabs`); a wider Options panel with a Show alpha maps toggle; a compact play sidebar (no Controls accordion or selection text, one-row 8-slot production queue); Dev Options and Dev Rooms panels; and all dev-only client code gated on one compile-time constant, `__WST_DEV_TOOLS__` (from `WST_DEV_TOOLS=1` at build time), verified absent from a production build and checked by the Dockerfile.
+
+Open:
+- **Room list push instead of polling**: the list refreshes every 3 s (`REFRESH_MS`); rooms appearing and vanishing animate, but a pushed update (WebSocket on the menu presence socket) would be instant and cheaper. Keep the keyed rows.
+- **Move the other tabs to the glass look**: the designer (`.designer-tabs`) and the Code tab's view switch still use their own tab styles; migrate them to `.glass-tabs` if the look works in play (needs the join with the panel checked in a browser first).
+- **Server dev code in the image**: the server runs from TypeScript source via `tsx`, so `game/dev.ts`, `net/dev.ts` and `Match.dev` ship in the image, unreachable (`devToolsEnabled()` is false under `NODE_ENV=production`). To remove them entirely, bundle the server with a build step that defines the flag and drops the modules, and have `protocol.ts` drop the `dev` message in that build. Not worth it unless the threat model changes.
+- **Dev styles in production CSS**: the `#dev-panel` rules ship in `style.css` (inert). Could move them to a dev-only stylesheet imported by the dev modules.
+- **Dead code from the sidebar change**: `UiActions.requestCpuProfile` (`ui.ts`, `main.ts`) and `cpuLines` (`cpuPanel.ts`) are no longer used by the play UI now the selection text is gone, though the server still answers `cpuProfile` and `state.cpuProfiles` is still filled. Either show the per-event CPU readout somewhere (the Dev Options panel is the cheapest home; the designer already shows it for test runs) or delete the lot.
+- **Dev Rooms could grow**: example rooms are client-only; a server-side "fake player" option (real rooms with bot-driven or scripted joiners) would test the waiting room, join and spectate paths, behind `devToolsEnabled()`.

@@ -151,10 +151,8 @@ on(Damaged, (amount, attacker) => {
     expect(performance.now() - start).toBeLessThan(100 * SLACK);
   }, 60_000);
 
-  // Known regression (REVIEW.md, 2026-10-24 engine pass): every unit of a group order plans its own A* path in the
-  // same tick, so the tick after a 256-unit order across the map takes ~460 ms, stalling every match in the server
-  // process. When planning is spread over ticks (or shared), this passes and `it.fails` fails: change it to `it`.
-  it.fails('does not stall the tick after a 256-unit group order across the map', () => {
+  // Routes are planned under a per-tick work budget (`PLAN_WORK_PER_TICK`); the rest of the group heads straight for the goal until its turn.
+  it('does not stall the tick after a 256-unit group order across the map', () => {
     const sim = armies(0);
     const scout = sim.blueprints.find(1, SCOUT_CLASS.name)!;
     const units = Array.from({ length: 256 }, (_, i) => sim.spawnUnit(scout, (20 + (i % 16) * 2) * TILE, (20 + Math.floor(i / 16) * 2) * TILE));
@@ -163,10 +161,9 @@ on(Damaged, (amount, attacker) => {
     expect(Math.max(...tickTimes(sim, 10))).toBeLessThan(100 * SLACK);
   }, 60_000);
 
-  // Known regression (REVIEW.md, 2026-10-24 engine pass): a goal inside a building (docking, charging, approach to a
-  // building) is unwalkable, so A* floods every reachable tile before giving up: ~100x the cost of an open goal.
-  // When findPath bounds this, the expectation holds and `it.fails` starts failing: change it to `it`.
-  it.fails('plans a path to a building about as fast as to the open tile next to it', () => {
+  // A goal inside a building (docking, charging, approach to a building) is unwalkable: findPath retargets it to the
+  // nearest cell the unit fits in instead of flooding every reachable tile.
+  it('plans a path to a building about as fast as to the open tile next to it', () => {
     const sim = createMatch(9, 'great-plains');
     setUpPlayer(sim, 1, CORNERS[0], 500);
     const t = sim.terrain;

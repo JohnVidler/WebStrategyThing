@@ -36,9 +36,9 @@ import {
 } from './components';
 import { missileSystem, type MissileFlight } from './missile';
 import { PARTS, SWITCHABLE, TILE } from './parts';
-import { findPath } from './path';
+import { findPath, searchWork } from './path';
 import { emptyNetwork, powerLinks, powerNetworks, powerTopology, type PowerNetwork, type PowerNode } from './power';
-import { factoryCanBuild, FACTORY_TIER_NAMES, BASE_LINK_RANGE, BUILD_RANGE, BUILDING_BUILD_RANGE, BUILDING_TRANSFER_RANGE, DEMOLISH_REFUND, DOCK_RANGE, HARVEST_RANGE, MAX_PRODUCTION_QUEUE, MAX_SITES_PER_PLAYER, RADAR_COOLDOWN_TICKS, RADAR_ENERGY_PER_TILE, SITE_START_HP, UNIT_TRANSFER_RANGE } from './rules';
+import { factoryCanBuild, FACTORY_TIER_NAMES, BASE_LINK_RANGE, BUILD_RANGE, BUILDING_BUILD_RANGE, BUILDING_TRANSFER_RANGE, DEMOLISH_REFUND, DOCK_RANGE, HARVEST_RANGE, MAX_PRODUCTION_QUEUE, MAX_SITES_PER_PLAYER, PLAN_WORK_PER_TICK, RADAR_COOLDOWN_TICKS, RADAR_ENERGY_PER_TILE, SITE_START_HP, UNIT_TRANSFER_RANGE } from './rules';
 import { SpatialGrid } from './spatial';
 import { inVision, viewersOf } from './vision';
 import {
@@ -239,6 +239,10 @@ export class Simulation {
   readonly tasks: (TaskQueue | undefined)[] = [];
   /** Remaining waypoints in sub-tile units [x, y, ...]. */
   readonly paths: (number[] | undefined)[] = [];
+  /** Path-search work (cells expanded) left this tick; when it runs out, new routes wait their turn in `planWaiting`. */
+  private planWork = PLAN_WORK_PER_TICK;
+  /** Units heading somewhere on a straight-line stand-in route until the planner reaches them (insertion order: oldest first). */
+  private readonly planWaiting = new Set<number>();
   readonly stuckTicks: number[] = [];
   readonly lastDistance: number[] = [];
   /** CPU energy owed, in hundredths of an energy unit (cycles × use, billed per 100). */
@@ -607,6 +611,7 @@ export class Simulation {
     this.activeUnits.delete(e);
     this.tasks[e] = undefined;
     this.paths[e] = undefined;
+    this.planWaiting.delete(e);
     this.visiting[e] = -1;
     this.productionQueue[e] = undefined;
     this.invested[e] = 0;
@@ -872,8 +877,26 @@ export class Simulation {
     m.arrived[e] = 0;
     this.stuckTicks[e] = 0;
     this.lastDistance[e] = Infinity;
-    this.paths[e] = this.planPath(e, x, y, s.flying);
+    if (this.planWork <= 0 && !s.flying) {
+      // A big group order: head straight for the goal until the planner gets to this unit.
+      this.paths[e] = [x, y];
+      this.planWaiting.add(e);
+    } else {
+      this.planWaiting.delete(e);
+      this.paths[e] = this.planPath(e, x, y, s.flying);
+    }
     return 1;
+  }
+
+  /** Plans routes for units that were over the per-tick budget, oldest first, until the budget is spent. */
+  private planWaitingRoutes(): void {
+    for (const e of this.planWaiting) {
+      if (this.planWork <= 0) return;
+      this.planWaiting.delete(e);
+      const m = this.motion.f;
+      if (!this.motion.has(e) || !m.moving[e]) continue;
+      this.paths[e] = this.planPath(e, m.tx[e], m.ty[e], this.stats(e).flying);
+    }
   }
 
   halt(e: number): void {
@@ -882,6 +905,7 @@ export class Simulation {
     m.moving[e] = 0;
     m.arrived[e] = 0;
     this.paths[e] = undefined;
+    this.planWaiting.delete(e);
     this.ensureLanded(e);
   }
 
@@ -909,7 +933,9 @@ export class Simulation {
       return cell ? [cell[0] * TILE + TILE / 2, cell[1] * TILE + TILE / 2] : [x, y];
     }
     const s = this.stats(e);
+    const before = searchWork();
     const tiles = findPath(this.terrain, this.tileX(this.pos.f.x[e]), this.tileY(this.pos.f.y[e]), gx, gy, s);
+    this.planWork -= searchWork() - before;
     const out: number[] = [];
     for (let i = 0; i < tiles.length; i += 2) out.push(tiles[i] * TILE + TILE / 2, tiles[i + 1] * TILE + TILE / 2);
     const n = out.length;
@@ -1478,6 +1504,7 @@ export class Simulation {
 
   /** Advance one tick. Read world changes / events afterwards, then call commit(). */
   step(): void {
+    this.planWaitingRoutes();
     this.spatial.rebuild(this.pos.f.x, this.pos.f.y, this.pos.dense, this.world.capacity);
     cheatSystem(this);
     powerSystem(this);
@@ -1496,6 +1523,7 @@ export class Simulation {
     decaySystem(this);
     deathSystem(this);
     energyViewSystem(this);
+    this.planWork = PLAN_WORK_PER_TICK; // commands applied before the next tick start with a full budget
     this.tick++;
   }
 

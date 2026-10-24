@@ -206,6 +206,10 @@ export const FACTORY_TIER_NAMES = ['micro', 'light', 'medium', 'heavy', 'super-h
 export const MAX_UNITS_PER_PLAYER = 256;
 /** Includes the starter classes (34), so players have room for a dozen of their own. */
 export const MAX_CLASSES_PER_PLAYER = 48;
+/** Retired classes keep their id for good, so redefining over and over would fill the id space: this caps every class an owner ever made. */
+export const MAX_CLASSES_EVER_PER_PLAYER = 256;
+/** Path-search work (A* cells expanded, and tiles of line-of-sight tested while smoothing) the planner may do per tick; routes beyond it wait for later ticks, so one big group order cannot stall the server. */
+export const PLAN_WORK_PER_TICK = 12_000;
 
 // --- Match set-up ------------------------------------------------------------------
 

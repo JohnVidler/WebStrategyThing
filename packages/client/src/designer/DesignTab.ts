@@ -210,7 +210,7 @@ export class DesignTab {
     for (const cat of CATEGORIES) {
       const details = document.createElement('section');
       details.className = 'part-group';
-      details.innerHTML = `<h3>${cat.title}</h3>`;
+      details.innerHTML = `<h3>${esc(cat.title)}</h3>`;
       const grid = document.createElement('div');
       grid.className = 'part-grid';
       details.appendChild(grid);

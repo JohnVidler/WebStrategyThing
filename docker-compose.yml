@@ -10,6 +10,9 @@ services:
       PORT: "8080"
       MUSIC_DIR: /app/music
       SOUND_DIR: /app/sound
+      # Per client address, 0 = no limit. Behind a proxy that hides the real address, raise or disable these.
+      WST_MAX_SOCKETS_PER_ADDRESS: ${WST_MAX_SOCKETS_PER_ADDRESS:-30}
+      WST_MAX_ROOMS_PER_ADDRESS: ${WST_MAX_ROOMS_PER_ADDRESS:-5}
     volumes:
       # Background music is distributed separately: a folder with music_manifest.json and the audio files.
       - ${MUSIC_PATH:-./music}:/app/music:ro

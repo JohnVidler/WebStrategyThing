@@ -46,6 +46,9 @@ const RECONNECT_GRACE_MS = 60_000;
 /** How often (ticks) power network totals are reported to their owners. */
 const NETWORK_REPORT_TICKS = 5;
 
+/** How many messages one player may have waiting for the next tick; the rest are dropped. */
+const MAX_QUEUED_PER_PLAYER = 500;
+
 /** Anything that owns forces and is scored: a connected player or a bot. */
 interface Side {
   readonly id: number;
@@ -72,6 +75,8 @@ interface Player extends Side {
   defeated: boolean;
   /** Sees the whole map (fog lifted) and gives no orders. */
   spectating: boolean;
+  /** Messages queued for the next tick. */
+  queued: number;
 }
 
 export interface MatchOptions {
@@ -263,6 +268,7 @@ export class Match {
       lastNetworks: '',
       defeated: false,
       spectating: false,
+      queued: 0,
     };
     player.name = `Player ${player.id}`;
     // A token already held by a connected player (a second tab) can't be used to reconnect.
@@ -393,7 +399,10 @@ export class Match {
     if (msg.t === 'resign') this.resign(player);
     else if (msg.t === 'forfeit') this.forfeit(player);
     else if (msg.t === 'leave') this.leaveForGood(player);
-    else this.pending.push({ kind: 'msg', player, msg });
+    else if (player.queued < MAX_QUEUED_PER_PLAYER) {
+      player.queued++;
+      this.pending.push({ kind: 'msg', player, msg });
+    }
   }
 
   private tick(): void {
@@ -710,13 +719,16 @@ export class Match {
         return;
       }
       case 'msg':
+        player.queued--;
         try {
           this.handle(player, cmd.msg);
         } catch (err) {
           if (err instanceof BlueprintError || err instanceof FlowError || err instanceof CommandError) {
             this.send(player, { t: 'error', message: err.message });
           } else {
-            throw err;
+            // A bug reached by one player's message: it ends neither the match nor the server.
+            console.error(`Message "${cmd.msg.t}" failed at tick ${this.sim.tick}:`, err);
+            this.send(player, { t: 'error', message: 'The server could not process that request.' });
           }
         }
         return;

@@ -4,6 +4,20 @@ Findings from reviewing the uncommitted changes (2026-10-18), for later actionin
 
 Status after the first fixing pass (2026-10-18): items marked **Done** are implemented and covered by `npm test` and `npm run typecheck`, but nothing was checked in a browser. **Partly done** and **Open** items need a design decision or a play-test. One item was **Closed** as not a bug.
 
+## Security and robustness pass (2026-10-24)
+
+Found by reproducing against a real server on a spare port. Each is covered by [`server/test/http.test.ts`](packages/server/test/http.test.ts). The server limits are written up in `docs/server.md` ("Limits").
+
+- [x] **S1 `GET //` crashed the process** (`new URL()` threw in the request handler). Now `parseTarget` never throws: 400 for HTTP, close 1008 for a WebSocket. Promise chains in the handler have a `.catch`.
+- [x] **S2 the same target as a WebSocket upgrade crashed it** (`connection` handler). Fixed with the same helper and a `try`/`catch` around the whole connection set-up.
+- [x] **S3 a frame over 1 MB crashed it** (`Max payload size exceeded`, no `'error'` listener on game sockets). An `'error'` listener is now the first thing added to every socket, and the message and close handlers are wrapped.
+- [x] **S4 no budgets.** Per-connection message and byte token buckets (close 1008), a cap of 500 queued messages per player, 2000 menu sockets, 30 sockets and 5 open rooms per client address (`X-Real-IP` from nginx, trusted only from a private address). `Match.apply` no longer lets a bug reached by one player's message end the match.
+- [x] **S5 retired classes were never freed**, and only active classes were capped, so a player could fill a room's 65,535 class ids. Every class an owner ever made is capped at `MAX_CLASSES_EVER_PER_PLAYER` (256).
+- [x] **S6 `ui.ts` `buildingButton` wrote `bp.name` into `innerHTML` unescaped.** Now `esc()`, as are the action hotkey and the designer's category title. `client/test/html.test.ts` fails if an `innerHTML` assignment interpolates a `.name`, `.label`, `.title` or `.message` without `esc(`.
+- [x] **S7 (partly)** nginx now sends `X-Content-Type-Options`, `X-Frame-Options` and `Referrer-Policy`. Not done: a Content-Security-Policy (needs a check in a browser), and the open CORS header on the room list.
+- [ ] **S8 the reconnect token is in the WebSocket URL** (low: 128 random bits, usable only in the 60 s grace). Not done.
+- [ ] **S9, S10, S11, S12** (pin `tsx` / `ws` in the server package, per-job workflow permissions, one name rule for players and classes, a short manifest cache), and the consistency items S13 to S17 (per-frame renderer allocations, health tracked twice on the client, `esc()` copied into ten files, dead CPU-profile code, `Math.random` for the start corner). Not done.
+
 ## Engine and flow pass (2026-10-24)
 
 Review of the engine after the flowcode migration (commits d9a5d54..15998c8): `engine/src/flow/*` (compiler, checker, VM), the script host (`game/api.ts`, `activity.ts`, `sensor.ts`), and the tick path in `simulation.ts` / `systems.ts` / `path.ts`. Every item marked **Confirmed** was reproduced; each has a test in [`engine/test/hardening.test.ts`](packages/engine/test/hardening.test.ts) (fixed 2026-10-24, now plain tests) or [`engine/test/perf.test.ts`](packages/engine/test/perf.test.ts), written as `it.fails`. When you fix one, its test starts passing and `it.fails` reports that as a failure: change it to `it` (and move it next to that code's other tests). Fix plans are in `PLAN.md` ("Engine review fixes, 2026-10-24").
@@ -12,28 +26,33 @@ Review of the engine after the flowcode migration (commits d9a5d54..15998c8): `e
 
 The match loop (`Match.start` → `tick()`, `server/src/match.ts:176`) runs from `setTimeout` without a try/catch, and `Match.apply` re-throws anything that is not a Flow, Blueprint or Command error. Any other exception from `sim.step()` or a command is an uncaught exception, so Node exits and every match on the server ends.
 
-- [ ] **A stored program nested a few thousand levels deep crashes the server.** Confirmed. [`flow/check.ts:102`](packages/engine/src/flow/check.ts#L102) `checkDoc` → `expr`, and `compile.ts` `expr`, `text.ts` `expandBlocks`
+- [x] **A stored program nested a few thousand levels deep crashes the server.** Confirmed. [`flow/check.ts:102`](packages/engine/src/flow/check.ts#L102) `checkDoc` → `expr`, and `compile.ts` `expr`, `text.ts` `expandBlocks`
+  - **Fixed (2026-10-24):** `parseDoc` checks shape and nesting depth without recursion; the tick is wrapped so a bug ends only its own match (`Match.crash`).
   - Problem: the checker and compiler recurse once per nesting level. A `loadDesigns` message of about 120 KB (the WebSocket limit is 1 MB) holding a 5,000-deep `-(-(-(...)))` throws `RangeError: Maximum call stack size exceeded`, not a `FlowError`.
   - Fix: limit nesting depth while checking (one depth counter in `expr` and in `block`; refuse past, say, 64 with a `FlowError`), before anything else recurses. The stack-depth item below needs the same walk.
   - Also: wrap `tick()` in a try/catch that ends only that match (log it, tell its players), so the next engine bug cannot take the whole server down.
 
-- [ ] **A chain started from a Visitor handler points the visitor queries at entity 0, and `visitorCaps()` then crashes `step()`.** Confirmed. [`game/systems.ts:174`](packages/engine/src/game/systems.ts#L174) `scriptSystem` hooks, [`flow/run.ts:327`](packages/engine/src/flow/run.ts#L327)
+- [x] **A chain started from a Visitor handler points the visitor queries at entity 0, and `visitorCaps()` then crashes `step()`.** Confirmed. [`game/systems.ts:174`](packages/engine/src/game/systems.ts#L174) `scriptSystem` hooks, [`flow/run.ts:327`](packages/engine/src/flow/run.ts#L327)
+  - **Fixed (2026-10-24):** chains start with event arguments of -1, and `currentVisitor` checks the unit is alive and on the building's side.
   - Problem: when a continuation starts, `runFlow` calls `hooks.start` with zeroed event arguments. For a Visitor chain, the hook sets `sim.visiting[b] = 0`, which is the handle of entity 0 generation 0, the first thing `createMatch` spawns (a resource field). `visitorCaps()` then calls `sim.stats(0)` on a resource and throws a `TypeError`. `order()` would push to whatever entity 0 is, without checking its owner.
   - Example: `on(Visitor, (r, who) => { goTo(1, 1, { blocked: () => { c = visitorCaps(); } }); })` on any building.
   - Fix: for a continuation, give the hook the first four slots of the saved frame (they hold the event's arguments), or record the visitor in `Pending`. In `api.ts`, `currentVisitor` should also check `sim.unit.has(v)`, and `order()` should check that `v` belongs to the building's owner.
 
 ### Correctness
 
-- [ ] **A full event queue drops an Order, and the unit then ignores every later order.** Confirmed. [`flow/run.ts:206`](packages/engine/src/flow/run.ts#L206) `raise`, [`game/simulation.ts:994`](packages/engine/src/game/simulation.ts#L994) `raiseFrontOrder`
+- [x] **A full event queue drops an Order, and the unit then ignores every later order.** Confirmed. [`flow/run.ts:206`](packages/engine/src/flow/run.ts#L206) `raise`, [`game/simulation.ts:994`](packages/engine/src/game/simulation.ts#L994) `raiseFrontOrder`
+  - **Fixed (2026-10-24):** queued entries are ranked; orders and chains evict lesser entries, and `raise` counts only what was really queued.
   - Problem: `raise` counts a handler as having taken the event even when `enqueue` dropped it. `raiseFrontOrder` sees `taken > 0` and leaves the order at the front, but no handler will ever run for it. New orders queue behind it and are never raised. Only an urgent `REPLACE` order or a reboot clears it. A basic CPU holds 16 events, so a burst of hits with a `Damaged` block, or `Message` spam, is enough to fill it.
   - Same problem: `enqueueContinuation` dropping a chain for an order-context activity (`finish` in `activity.ts`) also leaves the order unfinished.
   - Fix: `raise` returns how many were really queued. `Order` (and chains) should evict any non-Order event when the queue is full, not only periodic ones: an order is the player's intent and must not be lost to `Damaged` noise.
 
-- [ ] **The server compile path does not check Button hotkeys.** Confirmed. [`flow/compile.ts:136`](packages/engine/src/flow/compile.ts#L136)
+- [x] **The server compile path does not check Button hotkeys.** Confirmed. [`flow/compile.ts:136`](packages/engine/src/flow/compile.ts#L136)
+  - **Fixed (2026-10-24):** `compileDoc` falls back to `host.reservedKeys`.
   - Problem: `compileDoc` passes its own `reservedKeys` argument (undefined from `compileUnitProgram`) to `checkDoc`, instead of `host.reservedKeys`. The editor and the text path check hotkeys, but an uploaded design file can give a Button the key `M`, `A`, `S`, ... and shadow a common action.
   - Fix: `checkDoc(doc, host, reservedKeys ?? host.reservedKeys)`.
 
-- [ ] **Expressions deeper than the 32-slot stack compile, then crash-loop the unit.** Confirmed. [`flow/compile.ts:56`](packages/engine/src/flow/compile.ts#L56)
+- [x] **Expressions deeper than the 32-slot stack compile, then crash-loop the unit.** Confirmed. [`flow/compile.ts:56`](packages/engine/src/flow/compile.ts#L56)
+  - **Fixed (2026-10-24):** `compileDoc` measures the stack each statement needs and refuses one over `STACK_SIZE`.
   - Problem: the comment says deeper expressions are rejected at compile time, but nothing measures depth. Such a program faults with `stack overflow` on its first run, reboots, and faults again every other tick. `Op.Call` / `Op.Latent` push their result without an overflow check (a zero-argument call at depth 32 writes past the typed array and leaves `sp` at 33).
   - Fix: compute the maximum stack depth per statement in `compile.ts` (each `emit` of a push/pop adjusts a counter) and report a `FlowError` on the node. Then the runtime overflow checks only guard against bugs.
 
@@ -41,11 +60,13 @@ The match loop (`Match.start` → `tick()`, `server/src/match.ts:176`) runs from
 
 Budgets now run in CI with `npm test` (see `perf.test.ts`). Measured on a desktop, 2026-10-24, Great Plains with 256 units a side: mean tick 1.9 ms, p95 9.5 ms, max 14 ms. Almost all of the spikes come from A*.
 
-- [ ] **A path to a building floods the whole map.** Confirmed, 99% of path-planning time. [`game/path.ts:83`](packages/engine/src/game/path.ts#L83) `findPath`
+- [x] **A path to a building floods the whole map.** Confirmed, 99% of path-planning time. [`game/path.ts:83`](packages/engine/src/game/path.ts#L83) `findPath`
+  - **Fixed (2026-10-24):** `findPath` retargets a goal the unit cannot stand on to the nearest cell it fits in (within 8 tiles) before searching. The `perf.test.ts` case is now a plain `it`.
   - Problem: dock, take, charge, repair and approach aim at a building's centre, which is inside its footprint and so unwalkable. A* then expands every reachable tile before falling back to the closest one. Measured over 300 ticks: 86 plans to blocked goals took 396 ms (4.6 ms each, 13 ms worst); 240 plans to open goals took 4 ms in all. It gets worse on bigger maps.
   - Fix: before searching, move a blocked goal to the nearest walkable tile next to the footprint (`Terrain.nearestWalkable`, or the footprint's ring), or stop the search once the open list can no longer get closer than the best tile found. The `it.fails` test "plans a path to a building about as fast as to the open tile next to it" covers this.
 
-- [ ] **A big group order stalls the server for about half a second.** Confirmed. `issueOrder` → `pushOrder` → `goTo` → `setDestination` → `planPath` for each unit, all in one tick
+- [x] **A big group order stalls the server for about half a second.** Confirmed. `issueOrder` → `pushOrder` → `goTo` → `setDestination` → `planPath` for each unit, all in one tick
+  - **Fixed (2026-10-24):** the cost was mostly path smoothing (a line test per cell), not A*. Smoothing now gallops and bisects instead of testing every cell, and planning has a deterministic per-tick work budget (`PLAN_WORK_PER_TICK`); units over it head straight for the goal until their turn. The tick after a 256-unit order across Great Plains went from ~450 ms to ~18 ms (all routes planned within 11 ticks). Not done: building `freeMoveTile`'s taken set once per batch (17 ms to issue 256 orders).
   - Problem: ordering 256 scouts across Great Plains costs 17 ms to issue, then 464 ms in the next tick, because 256 independent A* searches run back to back. The server is single-threaded, so every match in the process stalls.
   - Fix: a per-tick planning budget (units wait in a queue for a plan; a unit with no plan yet walks straight towards the goal), and/or one shared search (flow field or reverse Dijkstra from the goal) for units given the same order in the same tick. `freeMoveTile` also scans every unit's order list for each unit ordered (O(n²): 17 ms for 256), so build the "taken" set once per command batch.
 
@@ -58,7 +79,8 @@ Budgets now run in CI with `npm test` (see `perf.test.ts`). Measured on a deskto
 ### Minor
 
 - [ ] Per-entity side tables are not all reset when an index is reused: `repairCarry` (a new repairer inherits up to one matter of credit), and the `chargeFlow` map (a new pad inherits the old smoothed rate, which only affects the pulse effect). `radarReady` is keyed by handle and never pruned, so it grows over a long match. Clear them in `destroyEntity` / `addCommon`.
-- [ ] `CONFIG_NAMES['Detected.watch']` (`flow/config.ts:9`) lacks `MISSILE`, although `DetectKind.Missile` exists and `EngageEnemies.watch` lists it, so the editor shows `4` instead of the name.
+  - **Partly done (2026-10-24):** `repairCarry` and `radarReady` are cleared; `chargeFlow` (cosmetic) is not.
+- [x] `CONFIG_NAMES['Detected.watch']` (`flow/config.ts:9`) lacks `MISSILE`, although `DetectKind.Missile` exists and `EngageEnemies.watch` lists it, so the editor shows `4` instead of the name.
 - [ ] The spatial grid is rebuilt once at the start of `step()`. Missiles and units spawned during the tick are not in it until the next tick, and destroyed indices stay in it (every callback checks `has`, so nothing breaks today). Worth a comment on `SpatialGrid.rebuild` so nobody relies on it being current.
 
 ### Checked and fine

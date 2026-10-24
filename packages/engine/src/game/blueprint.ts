@@ -1,6 +1,6 @@
 import type { FlowProgram } from '../flow/compile';
 import { PARTS, SLOT_CODES, SWITCHABLE, TIER_NAMES, type PartDef, type WeaponKind } from './parts';
-import { ANTENNA_THROUGHPUT_PER_TILE, BASE_LINK_RANGE, BASE_STACK, MODULE_HP_BASE, MODULE_HP_PER_MASS, BUILD_TIME_BASE, BUILD_TIME_PER_MASS, COST_PER_MASS, CYCLE_COST, factoryTierBit, PRODUCTION_ENERGY_BY_SLOT, PRODUCTION_ENERGY_PER_MODULE, REPAIR_ARMOR_MULTIPLIER, REPAIR_MATTER_PER_HP, sizeCostMultiplier, SPEED_FACTOR, TILE } from './rules';
+import { ANTENNA_THROUGHPUT_PER_TILE, BASE_LINK_RANGE, BASE_STACK, MAX_CLASSES_EVER_PER_PLAYER, MODULE_HP_BASE, MODULE_HP_PER_MASS, BUILD_TIME_BASE, BUILD_TIME_PER_MASS, COST_PER_MASS, CYCLE_COST, factoryTierBit, PRODUCTION_ENERGY_BY_SLOT, PRODUCTION_ENERGY_PER_MODULE, REPAIR_ARMOR_MULTIPLIER, REPAIR_MATTER_PER_HP, sizeCostMultiplier, SPEED_FACTOR, TILE } from './rules';
 import { TESLA_COOLDOWN, TESLA_RANGE, type MissileTuning } from './rules';
 
 /** Converts total thrust / mass into sub-tile units per tick. */
@@ -440,6 +440,9 @@ export class BlueprintRegistry {
   define(owner: number, name: string, parts: readonly string[]): Blueprint {
     const id = this.list.length;
     if (id > 0xffff) throw new BlueprintError('Blueprint limit reached');
+    if (this.ownedBy(owner).length >= MAX_CLASSES_EVER_PER_PLAYER) {
+      throw new BlueprintError(`At most ${MAX_CLASSES_EVER_PER_PLAYER} classes can be made in one match, counting retired ones`);
+    }
     return this.register({ id, owner, name, parts });
   }
 

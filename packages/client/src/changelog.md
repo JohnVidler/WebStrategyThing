@@ -5,8 +5,13 @@
 # Other lines starting with # and blank lines are ignored.
 
 ## 2026-10-24
-### Bigger units, leaner sidebar
-Micro, Super-heavy and Colossus units, climbing walkers and factory tiers expand your options, while the match sidebar now fits resource graphs and the full production queue into less space. Servers are sturdier, and victory and defeat choices are easier to scan.
+### Security and resilience patch, plus bigger units
+This update hardens the game servers: malformed or malicious requests, floods of messages and booby-trapped class names or programs can no longer take a server down, and a server error now ends only the one match it happens in. Alongside it come Micro, Super-heavy and Colossus units, climbing walkers and specialised factories, smoother big group orders, and a leaner match sidebar.
+
+- Sturdier servers: a malformed request, an oversized message or a broken or malicious class program can no longer bring a server down for everyone. If a match ever does hit a server error, only that match ends (with a message) instead of every game on the server.
+- Flood protection: a client that sends far more messages than a real player could is disconnected, and there are now limits on how many connections and rooms one address can hold open.
+- Class names are now safely displayed in the build menu and designer, so a crafted name can no longer disturb the page.
+- One thing to know: a match now allows at most 256 classes per player in total, counting retired ones, on top of the existing limit of 48 active classes.
 
 - Legs now have a price: they climb rock, but they are fragile. Every hit also damages one of the target's modules, and when a module has taken enough it breaks and does nothing until a repair module mends it. Broken legs leave a walker stuck where it stands; a broken gun cannot fire. Armour, batteries and memory soak up some of the hits. Repair beams fix broken modules first. The module list of a selected unit shows what is broken.
 - Programs can aim: `config.aim(M_MOTOR)` (or `M_WEAPON`, `M_CPU`, ... or `M_ANY` for a random module each hit, the default) chooses which kind of module a weapon goes for. New queries `moduleBroken(i)` and `brokenOf(h)` tell you what is broken.
@@ -20,11 +25,12 @@ Micro, Super-heavy and Colossus units, climbing walkers and factory tiers expand
 - A factory now animates while it works, so you can see which enemy factories are busy. The production panel shows the queue as eight slots with a picture of each unit and a filling bar on the one being built; click a slot to cancel it and get the matter back.
 - Balance change: units now get exponentially more expensive as their hull grows. Micro, light and medium units cost what they did; each size above medium multiplies the matter and the production energy by 2.5 (heavy ×2.5, super-heavy ×6.25, colossus about ×15.6), so a Juggernaut now costs around 5,000 matter and a Colossus around 17,000. Designs you saved keep working; check the cost shown in the designer.
 - Legs: light legs climb onto the rim of rock outcrops, heavy legs two levels in, and colossus legs stride over anything, cliffs included. Units on legs move at half speed on rock.
+- Sending a whole army across the map no longer makes the game hitch: every unit sets off at once, and its exact route is worked out over the next moments.
+- Units heading for a building to dock, charge or repair now find their way there much faster.
 - The map now has heights: rock is higher the deeper inside an outcrop, and some outcrops are cliffs (marked with a sandy rim) that only colossus legs and flying units cross.
 - Heavy modules for the big hulls: Huge motor, Siege cannon, Rotary gun, Heavy armour, Cargo hold and Large battery. New starter units Mite, Strider, Walker, Juggernaut and Colossus.
 - Programs can ask size(), climb(), unitSize(h) and heightAt(x, y).
 - See where your CPU goes: event blocks and block cards show the most one run can cost, and a test run lists cycles by event block and paints a heat map on the graph.
-- Steadier servers: a broken or malicious class program can no longer bring the server down, and if a match ever does hit a server error, only that match ends (with a message) instead of every game on the server.
 - Your orders always get through: a unit flooded with events (taking many hits at once, say) used to drop an order and then ignore every order after it.
 - Expressions too deep for the CPU are now refused with a clear message when you save the program, instead of crashing the unit while it runs. Button hotkeys taken by Move, Attack and the other common actions are refused for uploaded designs too.
 - A building that runs a long action from its Visitor block (for example goTo with a chain) can no longer pick up the wrong visitor when the chain runs.

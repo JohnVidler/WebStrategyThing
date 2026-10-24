@@ -207,7 +207,8 @@ export class Terrain {
     for (let s = 0; s <= steps; s++) {
       const px = x0 + Math.trunc((dx * s) / steps);
       const py = y0 + Math.trunc((dy * s) / steps);
-      for (const k of [0, 1, -1]) {
+      for (let side = 0; side < 3; side++) {
+        const k = side === 2 ? -1 : side; // centre line first, then the two offset lines
         if (!this.fits(Math.floor((px + k * ox) / TILE), Math.floor((py + k * oy) / TILE), m)) return false;
       }
     }

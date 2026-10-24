@@ -451,7 +451,7 @@ export class Ui {
         const btn = document.createElement('button');
         btn.className = a.custom ? 'action custom' : 'action';
         btn.dataset.id = a.id;
-        btn.innerHTML = `<span class="icon">${esc(a.icon)}</span><span class="label">${esc(a.label)}</span>${a.key ? `<kbd>${a.key}</kbd>` : ''}`;
+        btn.innerHTML = `<span class="icon">${esc(a.icon)}</span><span class="label">${esc(a.label)}</span>${a.key ? `<kbd>${esc(a.key)}</kbd>` : ''}`;
         btn.onclick = (ev) => this.actions.press(a.id, ev.ctrlKey || ev.metaKey || ev.shiftKey);
         this.actionGrid.appendChild(btn);
       }
@@ -581,7 +581,7 @@ export class Ui {
     img.alt = '';
     this.actions.iconFor(bp.id).then((src) => (img.src = src)).catch(() => img.remove());
     const label = document.createElement('span');
-    label.innerHTML = `${bp.name}<small>◆${bp.stats.cost} ϟ${buildEnergyCost(bp.stats.area)}</small>`;
+    label.innerHTML = `${esc(bp.name)}<small>◆${bp.stats.cost} ϟ${buildEnergyCost(bp.stats.area)}</small>`;
     btn.append(img, label);
     btn.onclick = () => this.actions.place(bp.id);
     return btn;
