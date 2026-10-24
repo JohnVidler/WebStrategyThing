@@ -3,6 +3,7 @@ import {
   COST,
   configToText,
   EVENT_BY_NAME,
+  expandBlocks,
   MAX_CUSTOM_PARAMS,
   LOCAL_READ_COST,
   STATEMENT_COST,
@@ -79,6 +80,11 @@ export interface GNode {
   readonly actions?: readonly { readonly key: string; readonly label: string; readonly title: string }[];
   /** Events a block raises, for the player's own blocks to hook. */
   readonly emits?: readonly string[];
+  /** Event blocks and block cards: the most cycles one run can cost (its most expensive path). */
+  readonly worst?: number;
+  /** After a test run: times this ran (a statement started, an event block ran), and that as a share of the busiest node (0..1). */
+  readonly hits?: number;
+  readonly heat?: number;
 }
 
 export interface GEdge {
@@ -86,6 +92,9 @@ export interface GEdge {
   readonly type: PortType;
   readonly from: { readonly node: string; readonly key: string };
   readonly to: { readonly node: string; readonly key: string };
+  /** After a test run, execution wires: times execution followed it (the runs of the node it leads to), and the share of the busiest (0..1). */
+  readonly hits?: number;
+  readonly heat?: number;
 }
 
 export interface GraphModel {
@@ -116,7 +125,11 @@ interface Source {
   readonly key: string;
 }
 
-export function buildGraph(program: Program, host: FlowHost, problems: ReadonlyMap<string, string> = new Map()): GraphModel {
+/**
+ * `heat`, when given, is a test run's hit counts by node id (statements, event blocks, block cards): nodes and
+ * execution wires then carry `hits` and `heat` for the heat map.
+ */
+export function buildGraph(program: Program, host: FlowHost, problems: ReadonlyMap<string, string> = new Map(), heat?: ReadonlyMap<string, number> | null): GraphModel {
   const api = new Map(host.api.map((b) => [b.name, b]));
   const vars = program.doc.vars.map((v) => v.name);
   const nodes: GNode[] = [];
@@ -321,12 +334,12 @@ export function buildGraph(program: Program, host: FlowHost, problems: ReadonlyM
       id: u.id, kind: 'block', title: u.block, subtitle: def?.group ?? 'unknown block', inputs: [], outputs: [],
       controls: (def?.settings ?? []).map((f) => ({ key: `set:${f.name}`, label: f.name, type: 'text' as const, value: configToText(u.block, f, u.settings[f.name], host), hint: f.doc })),
       actions: [{ key: 'expand', label: 'Expand', title: 'Turn this block into the plain event blocks it is made of, so you can change anything (it cannot be turned back)' }],
-      emits: def?.emits, cost: 0, loose: false, doc: def?.doc, problem: problems.get(u.id),
+      emits: def?.emits, cost: 0, loose: false, doc: def?.doc, problem: problems.get(u.id), worst: blockWorstCase(program, u.id, host),
     });
   }
   for (const h of program.doc.handlers) {
     const scope = new Map<string, Source>(h.params.map((p) => [p, { node: h.id, key: paramKey(p) }]));
-    nodes.push(eventNode(h, host, problems.get(h.id)));
+    nodes.push({ ...eventNode(h, host, problems.get(h.id)), worst: handlerWorstCase(h, host) });
     chain(h.body, { node: h.id, key: 'start' }, scope, false);
   }
   for (const c of program.scratch.chains) chain(c, undefined, new Map(), true);
@@ -342,7 +355,26 @@ export function buildGraph(program: Program, host: FlowHost, problems: ReadonlyM
       nodes.push(exprNode(x.expr, id, x.id, '', new Map(), true));
     }
   }
-  return { nodes, edges };
+  if (!heat) return { nodes, edges };
+  // Loose pieces never run, so they stay cold; everything else is scaled against the busiest node.
+  let max = 0;
+  for (const n of nodes) if (!n.loose) max = Math.max(max, heat.get(n.id) ?? 0);
+  const level = (v: number) => (max > 0 ? v / max : 0);
+  const hot = nodes.map((n): GNode => (n.loose || n.kind === 'logic' || n.kind === 'variable' || n.kind === 'note' ? n : { ...n, hits: heat.get(n.id) ?? 0, heat: level(heat.get(n.id) ?? 0) }));
+  const hotEdges = edges.map((e): GEdge => (e.type === 'exec' && !isExprNodeId(e.to.node) ? { ...e, hits: heat.get(e.to.node) ?? 0, heat: level(heat.get(e.to.node) ?? 0) } : e));
+  return { nodes: hot, edges: hotEdges };
+}
+
+/** Most cycles one run of any of a built-in block's event blocks can cost (blocks expand into plain event blocks). */
+function blockWorstCase(program: Program, id: string, host: FlowHost): number | undefined {
+  const use = program.doc.blocks?.find((b) => b.id === id);
+  if (!use || !BLOCK_BY_NAME.has(use.block)) return undefined;
+  try {
+    const expanded = expandBlocks({ ...program.doc, vars: [], handlers: [], blocks: [use] }, host);
+    return expanded.handlers.reduce((n, h) => Math.max(n, handlerWorstCase(h, host)), 0);
+  } catch {
+    return undefined; // a block whose settings do not make a program yet
+  }
 }
 
 function eventNode(h: Handler, host: FlowHost, problem: string | undefined): GNode {

@@ -1,0 +1,19 @@
+{
+    "automappingRulesFile": "",
+    "commands": [
+        {
+            "name": "Save into a campaign level",
+            "executable": "node",
+            "arguments": "editor/tiled-to-level.mjs %mapfile",
+            "workingDirectory": "${projectPath}/..",
+            "shell": false,
+            "saveBeforeExecute": true
+        }
+    ],
+    "compatibilityVersion": 1100,
+    "extensionsPath": "extensions",
+    "folders": [
+        "."
+    ],
+    "propertyTypes": []
+}

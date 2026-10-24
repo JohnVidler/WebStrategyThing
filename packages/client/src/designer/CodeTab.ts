@@ -1,4 +1,4 @@
-import { FlowError, FLOW_HOST, testRun, type TestRunOptions } from '@wst/engine';
+import { FlowError, FLOW_HOST, testRun, type TestProfile, type TestRunOptions } from '@wst/engine';
 import { diffLines, withContext } from '../diff';
 import { createTextView, type TextView } from '../editor';
 import { FlowDocument, sourceToText, type Draft } from '../flow/FlowDocument';
@@ -289,8 +289,12 @@ export class CodeTab {
     const ms = Math.round(performance.now() - started);
     if (result.error) {
       this.testOut.innerHTML = `<div class="bad">Could not run: ${esc(result.error)}</div>`;
+      this.doc.setHeat(null);
       return;
     }
+    const profile = result.profile;
+    // The graph's heat map: how often each statement and event block ran (cleared when the program changes).
+    this.doc.setHeat(profile ? new Map(Object.entries(profile.hits)) : null);
     const rows = result.samples
       .map(
         (s) =>
@@ -301,7 +305,25 @@ export class CodeTab {
     this.testOut.innerHTML = `
       <ul>${result.notes.map((n) => `<li${n.startsWith('⚠') ? ' class="bad"' : ''}>${esc(n)}</li>`).join('')}</ul>
       ${buttons}
+      ${profile ? this.profileTable(profile) : ''}
       <table><tr><th>Time</th><th>Tile</th><th>HP</th><th>Energy</th><th>CPU</th><th>Cycles</th><th>Tasks</th><th>Cargo</th></tr>${rows}</table>
       <p class="muted">Sandbox computed in ${ms} ms.</p>`;
+    this.testOut.querySelector<HTMLButtonElement>('[data-role="heat-clear"]')?.addEventListener('click', () => this.doc.setHeat(null));
+  }
+
+  /** Where the CPU went, by event block: runs, cycles, cycles per run and share, busiest first. */
+  private profileTable(p: TestProfile): string {
+    const total = p.handlers.reduce((n, h) => n + h.cycles, 0);
+    const rows = [...p.handlers]
+      .sort((a, b) => b.cycles - a.cycles || b.runs - a.runs)
+      .map((h) => {
+        const share = total > 0 ? Math.round((100 * h.cycles) / total) : 0;
+        return `<tr${h.runs ? '' : ' class="muted"'}><td>${esc(h.label)}</td><td>${h.runs}</td><td>${Math.round(h.cycles)}</td><td>${h.runs ? (h.cycles / h.runs).toFixed(1) : '–'}</td><td>${share}%</td></tr>`;
+      })
+      .join('');
+    const perTick = p.ticks > 0 ? (total / p.ticks).toFixed(2) : '0';
+    return `<h3>CPU by event block</h3>
+      <p class="muted">${Math.round(total)} cycles in ${p.ticks} ticks (${perTick} per tick)${p.dropped ? `, <span class="bad">${p.dropped} event(s) dropped</span>` : ''}. The graph shows how often each block ran as a heat map. <button data-role="heat-clear" type="button">Clear heat map</button></p>
+      <table><tr><th>Event block</th><th>Runs</th><th>Cycles</th><th>Per run</th><th>Share</th></tr>${rows}</table>`;
   }
 }

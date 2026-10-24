@@ -1,5 +1,5 @@
 import { TILE } from './parts';
-import type { Terrain } from './terrain';
+import { WHEELS, type Mobility, type Terrain } from './terrain';
 
 const STRAIGHT = 10;
 const DIAGONAL = 14;
@@ -75,8 +75,12 @@ const octile = (dx: number, dy: number) => {
  * waypoints [x, y, ...] excluding the start. If the goal is blocked or
  * unreachable, the path ends at the reachable cell closest to it.
  * The result is string-pulled so units walk straight wherever they can.
+ *
+ * `m` is the unit's mobility: legs may cross rock up to their climb, and a big hull only uses cells
+ * it fits in. A unit that starts somewhere too tight for it may squeeze out through tight cells, but
+ * never steps from a cell it fits in into one it does not.
  */
-export function findPath(t: Terrain, sx: number, sy: number, gx: number, gy: number): number[] {
+export function findPath(t: Terrain, sx: number, sy: number, gx: number, gy: number, m: Mobility = WHEELS): number[] {
   const w = t.width;
   ensure(w * t.height);
   if (++search === 0xffffffff) {
@@ -93,6 +97,10 @@ export function findPath(t: Terrain, sx: number, sy: number, gx: number, gy: num
   stamp[start] = search;
   push(start);
   let best = start;
+  const big = m.clearance > 0;
+  const loose: Mobility = { climb: m.climb, clearance: 0 };
+  // From a cell it fits in, a unit only goes where it fits; from a tight one it may also squeeze through cells it can enter.
+  const ok = (x: number, y: number, tight: boolean) => (m.climb === 0 && !big ? t.walkable(x, y) : t.fits(x, y, m) || (tight && t.fits(x, y, loose)));
 
   while (heap.length) {
     const n = pop();
@@ -102,11 +110,12 @@ export function findPath(t: Terrain, sx: number, sy: number, gx: number, gy: num
     const x = n % w;
     const y = (n - x) / w;
     if (x === gx && y === gy) break;
+    const tight = big && !t.fits(x, y, m);
     for (const [dx, dy] of DIRS) {
       const nx = x + dx;
       const ny = y + dy;
-      if (!t.walkable(nx, ny)) continue;
-      if (dx !== 0 && dy !== 0 && (!t.walkable(x + dx, y) || !t.walkable(x, y + dy))) continue;
+      if (!ok(nx, ny, tight)) continue;
+      if (dx !== 0 && dy !== 0 && (!ok(x + dx, y, tight) || !ok(x, y + dy, tight))) continue;
       const m = ny * w + nx;
       if (closed[m] === search) continue;
       const cost = g[n] + (dx !== 0 && dy !== 0 ? DIAGONAL : STRAIGHT);
@@ -123,10 +132,11 @@ export function findPath(t: Terrain, sx: number, sy: number, gx: number, gy: num
   const cells: number[] = [];
   for (let n = best; n !== start && n >= 0; n = parent[n]) cells.push(n);
   cells.reverse();
-  return smooth(t, sx, sy, cells);
+  // Smoothed with the real mobility: while squeezing out of a tight spot no shortcut fits, so those steps stay cell by cell.
+  return smooth(t, sx, sy, cells, m);
 }
 
-function smooth(t: Terrain, sx: number, sy: number, cells: number[]): number[] {
+function smooth(t: Terrain, sx: number, sy: number, cells: number[], m: Mobility): number[] {
   const w = t.width;
   const centre = (n: number) => [(n % w) * TILE + TILE / 2, Math.floor(n / w) * TILE + TILE / 2];
   const out: number[] = [];
@@ -138,7 +148,7 @@ function smooth(t: Terrain, sx: number, sy: number, cells: number[]): number[] {
     let j = i;
     while (j + 1 < cells.length) {
       const [nx, ny] = centre(cells[j + 1]);
-      if (!t.lineWalkable(ax, ay, nx, ny)) break;
+      if (!t.lineWalkable(ax, ay, nx, ny, m)) break;
       j++;
     }
     const n = cells[j];

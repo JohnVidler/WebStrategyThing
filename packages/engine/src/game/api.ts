@@ -4,7 +4,7 @@ import { addTimer, textAt } from '../flow/run';
 import { ACTIVITY_OUTCOMES, ActivityKind, cancelActivity, resumeActivity, startActivity, suspendActivity } from './activity';
 import type { Builtin, CallKind, HostApi } from '../flow/host';
 import { Caps, type Blueprint, type BlueprintStats } from './blueprint';
-import { PARTS, SLOT_CODES, TILE } from './parts';
+import { PARTS, SLOT_CODES, TIER_NAMES, TILE } from './parts';
 import { daylight, StorageMode, wind } from './power';
 import type { Simulation } from './simulation';
 import { TaskFlag, TaskType } from './tasks';
@@ -90,10 +90,12 @@ export const SCRIPT_CONSTANT_DOCS: readonly (readonly [string, number, string])[
   ['IS_CHARGER', Caps.Charger, 'Capability: charges units'],
   ['IS_GENERATOR', Caps.Generator, 'Capability: generates power'],
   ['IS_STORAGE', Caps.Storage, 'Capability: has battery banks'],
+  ...TIER_NAMES.map((name, tier) => [`SIZE_${name.toUpperCase().replace('-', '_')}`, tier, `Chassis size tier ${tier}: ${name} (compare with size() and unitSize(h))`] as const),
   ['NORMAL', StorageMode.Normal, 'Storage mode: refill first, like any consumer'],
   ['CHARGE_STORE', StorageMode.Charge, 'Storage mode: absorb surplus power only'],
   ['DISCHARGE', StorageMode.Discharge, 'Storage mode: supply the network when short'],
   ['HOLD', StorageMode.Hold, 'Storage mode: neither take nor give'],
+  ['M_ANY', 0, 'Aim at any module: a random one each hit'],
   ...Object.entries(SLOT_CODES).map(
     ([slot, code]) => [`M_${slot.toUpperCase()}`, code, `Module kind: ${slot}`] as const,
   ),
@@ -135,9 +137,10 @@ function scanUnits(c: UnitContext, enemy: boolean): number {
   return t < 0 ? -1 : sim.world.handle(t);
 }
 
-/** The unit this building may currently order, or -1. */
+/** The unit this building may currently order, or -1: still alive, a unit, and on the building's side. */
 function currentVisitor(c: UnitContext): number {
-  return c.sim.world.resolve(c.sim.visiting[c.e] ?? -1);
+  const v = c.sim.world.resolve(c.sim.visiting[c.e] ?? -1);
+  return v >= 0 && c.sim.unit.has(v) && c.sim.unit.f.owner[v] === c.sim.unit.f.owner[c.e] ? v : -1;
 }
 
 const handleOf = (c: UnitContext, t: number) => (t < 0 ? -1 : c.sim.world.handle(t));
@@ -166,7 +169,7 @@ const ACTIONS: ReadonlySet<string> = new Set([
   'nextOrder', 'swapOrder', 'clearOrders',
 ]);
 /** Runtime settings: persistent standing settings of a module or the CPU, written config.name(...). */
-const SETTINGS: ReadonlySet<string> = new Set(['rest', 'laserPower', 'setModule', 'storageMode']);
+const SETTINGS: ReadonlySet<string> = new Set(['rest', 'laserPower', 'aim', 'setModule', 'storageMode']);
 const kindOf = (name: string): CallKind => (SETTINGS.has(name) ? 'config' : ACTIONS.has(name) ? 'action' : 'query');
 
 /**
@@ -342,6 +345,15 @@ export const UNIT_API: HostApi<UnitContext> = [
       sim.weapon.f.power[e] = p;
       return p > 0 ? p : w.use;
     }),
+  api('Actions', 'aim(kind)', 1,
+    "Aim shots at one kind of module of the target (M_MOTOR, M_WEAPON, M_CPU, ...), or at M_ANY (the default) for a random module each hit. A module that takes enough damage breaks and does nothing until it is repaired; legs break easily. If the target has no working module of that kind, the hit lands on a random one. Returns the kind now aimed at, or -1 without a weapon.",
+    (c, a) => {
+      const { sim, e } = c;
+      if (!c.stats.weapon || !sim.weapon.has(e)) return -1;
+      const kind = a[0] > 0 && a[0] <= 255 ? Math.floor(a[0]) : 0;
+      sim.weapon.f.aim[e] = kind;
+      return kind;
+    }),
   api('Actions', 'cargo()', 0, 'Resources carried.', (c) => (c.sim.cargo.has(c.e) ? c.sim.cargo.f.amount[c.e] : 0)),
   api('Actions', 'cargoMax()', 0, 'Cargo capacity (0 if the cargo bay is off).', (c) => c.stats.cargo),
   // --- Construction & resources ---------------------------------------------------
@@ -380,8 +392,18 @@ export const UNIT_API: HostApi<UnitContext> = [
   api('Energy & modules', 'moduleCount()', 0, 'Number of parts, including the chassis (index 0..n-1).', (c) => c.bp.parts.length),
   api('Energy & modules', 'moduleKind(i)', 0, 'Kind of part i as an M_* constant (0 if out of range).',
     (c, a) => { const id = c.bp.parts[a[0]]; return id ? SLOT_CODES[PARTS[id].slot] : 0; }),
-  api('Energy & modules', 'moduleOn(i)', 0, '1 if part i is switched on (passive parts are always on).',
-    (c, a) => (a[0] >= 0 && a[0] < c.bp.parts.length && !((c.sim.modules.f.off[c.e] >>> a[0]) & 1) ? 1 : 0)),
+  api('Energy & modules', 'moduleOn(i)', 0, '1 if part i is switched on and not broken (passive parts are always on).',
+    (c, a) => (a[0] >= 0 && a[0] < c.bp.parts.length && !(((c.sim.modules.f.off[c.e] | c.sim.modules.f.broken[c.e]) >>> a[0]) & 1) ? 1 : 0)),
+  api('Energy & modules', 'moduleBroken(i)', 0, '1 if part i has been broken by damage: it does nothing until a repair module mends it.',
+    (c, a) => (a[0] >= 0 && a[0] < c.bp.parts.length && (c.sim.modules.f.broken[c.e] >>> a[0]) & 1 ? 1 : 0)),
+  api('Energy & modules', 'brokenOf(h)', 0, 'Number of broken modules of an own unit or building (0 if none, -1 if it is not yours): worth a visit from a repair module.',
+    (c, a) => {
+      const t = c.sim.world.resolve(a[0]);
+      if (t < 0 || !c.sim.modules.has(t) || c.sim.unit.f.owner[t] !== c.sim.unit.f.owner[c.e]) return -1;
+      let n = 0;
+      for (let m = c.sim.modules.f.broken[t]; m !== 0; m &= m - 1) n++;
+      return n;
+    }),
   api('Energy & modules', 'setModule(i, on)', 2,
     'Switch part i on (1) or off (0). Only energy-using modules switch; a script cannot switch off its last CPU. Returns 1 on success.',
     (c, a) => (c.sim.setModule(c.e, a[0], a[1] !== 0, true) ? 1 : 0)),
@@ -434,6 +456,18 @@ export const UNIT_API: HostApi<UnitContext> = [
     if (t < 0 || !c.sim.health.has(t) || c.sim.unit.f.owner[t] !== c.sim.unit.f.owner[c.e]) return -1;
     return Math.floor((100 * c.sim.health.f.hp[t]) / Math.max(1, c.sim.stats(t).hp));
   }),
+
+  // --- Size tiers and terrain height ----------------------------------------------
+  api('Movement', 'size()', 0, 'Chassis size tier of this unit: SIZE_MICRO (0) up to SIZE_COLOSSUS (5); 0 for a building.', (c) => c.stats.size),
+  api('Sensing', 'unitSize(h)', 0, 'Chassis size tier of a unit this unit knows about (0 micro to 5 colossus), or -1 (unknown, or a building).', (c, a) => {
+    const t = locate(c, a[0]);
+    if (t < 0 || !c.sim.unit.has(t)) return -1;
+    const s = c.sim.stats(t);
+    return s.structure ? -1 : s.size;
+  }),
+  api('Movement', 'climb()', 0, 'Highest rock this unit can walk onto: 0 on wheels or tracks, 1 light legs, 2 heavy legs, 9 colossus legs (flying units: 0).', (c) => (c.stats.flying ? 0 : c.stats.climb)),
+  api('Sensing', 'heightAt(x, y)', 0, 'Terrain height of tile (x, y): 0 open ground, 1-9 rock (higher deeper inside an outcrop; cliffs are 3 or more from their edge), 10 off the map.',
+    (c, a) => c.sim.terrain.heightAt(a[0], a[1])),
 ];
 
 /** The owner's producible classes, in definition order. */

@@ -14,7 +14,7 @@ import { FlowError, isBoolExpr, isTextExpr, parseDoc, textParts, type ConfigValu
  */
 export const Op = {
   End: 0,
-  /** Start of a statement: the only place a handler may pause. */
+  /** Start of a statement: the only place a handler may pause. The arg is the statement's index in `stmtIds` (for profiling). */
   Stmt: 1,
   Push: 2,
   Load: 3,
@@ -103,6 +103,10 @@ export interface FlowProgram {
   readonly strings: readonly string[];
   /** Text built at run time (`'HP: ' + hp`): each is its pieces in order, a string or the kind of number to print (0 whole number, 1 true/false). */
   readonly templates: readonly (readonly (string | 0 | 1)[])[];
+  /** Ids of the program's statements, by the index each `Stmt` instruction carries (block statements are `<block id>~<id>`). */
+  readonly stmtIds: readonly string[];
+  /** The built-in blocks the program uses, by the id their handlers and statements are prefixed with. */
+  readonly blockNames: Readonly<Record<string, string>>;
 }
 
 /** Every problem found in a program, as one error (the first is the message). */
@@ -121,6 +125,40 @@ export function configValue(h: { readonly event: EventDef; readonly config: Read
 export const configInt = (h: Parameters<typeof configValue>[0], name: string): number => configValue(h, name) as number;
 export const configInts = (h: Parameters<typeof configValue>[0], name: string): readonly number[] => configValue(h, name) as readonly number[];
 
+/** Most expression-stack slots evaluating `e` needs (an upper bound): each argument stays pushed while the next is worked out. */
+function stackNeed(e: Expr): number {
+  switch (e.k) {
+    case 'un':
+      return stackNeed(e.a);
+    case 'bin':
+      if (isTextExpr(e)) return Math.max(1, ...textParts(e).filter((p) => p.k !== 'str').map((p, i) => i + stackNeed(p)));
+      return Math.max(stackNeed(e.a), 1 + stackNeed(e.b));
+    case 'cond':
+      return Math.max(stackNeed(e.c), stackNeed(e.a), stackNeed(e.b));
+    case 'call':
+      return argsNeed(e.args);
+    default:
+      return 1;
+  }
+}
+const argsNeed = (args: readonly Expr[]): number => Math.max(1, ...args.map((a, i) => i + stackNeed(a)));
+/** Stack a statement's own expressions need (its nested blocks are separate statements); an emit always pushes four values. */
+function stmtNeed(s: Stmt): number {
+  switch (s.k) {
+    case 'call':
+      return argsNeed(s.args);
+    case 'emit':
+      return Math.max(4, argsNeed(s.args));
+    case 'set':
+      return stackNeed(s.value);
+    case 'if':
+    case 'while':
+      return stackNeed(s.cond);
+    default:
+      return 0;
+  }
+}
+
 const BIN_OPS: Record<string, number> = {
   '+': Op.Add, '-': Op.Sub, '*': Op.Mul, '/': Op.Div, '%': Op.Mod, '==': Op.Eq, '!=': Op.Ne, '<': Op.Lt, '<=': Op.Le, '>': Op.Gt, '>=': Op.Ge, '&': Op.BitAnd, '|': Op.BitOr,
 };
@@ -133,7 +171,7 @@ export function compileProgram(source: string, host: FlowHost, reservedKeys?: Re
 export function compileDoc(written: FlowDoc, host: FlowHost, source: string, reservedKeys?: ReadonlyMap<string, string>): FlowProgram {
   // Built-in blocks expand into plain variables and event blocks first, so they cost what the expanded program costs.
   const doc = expandBlocks(written, host);
-  const analysis = checkDoc(doc, host, reservedKeys);
+  const analysis = checkDoc(doc, host, reservedKeys ?? host.reservedKeys);
   const problems = [...checkBlocks(written), ...analysis.errors];
   if (problems.length) throw new FlowCompileError(problems);
 
@@ -156,6 +194,9 @@ export function compileDoc(written: FlowDoc, host: FlowHost, source: string, res
   const strings: string[] = [];
   const templates: (string | 0 | 1)[][] = [];
   const tableHandler: number[] = [];
+  const stmtIds: string[] = [];
+  /** The marker every statement starts with: where a handler may pause, and what a profile counts. */
+  const stmt = (id: string): number => emit(Op.Stmt, stmtIds.push(id) - 1, STATEMENT_COST);
   let nLocals = 0;
   const errors: FlowError[] = [];
 
@@ -249,11 +290,12 @@ export function compileDoc(written: FlowDoc, host: FlowHost, source: string, res
     const block = (list: readonly Stmt[]): void => {
       const mark = live.length;
       for (const s of list) {
+        if (stmtNeed(s) > STACK_SIZE) errors.push(new FlowError(`This statement is too deeply nested to work out (it needs more than ${STACK_SIZE} values at once): split it up with variables`, undefined, undefined, s.id));
         switch (s.k) {
           case 'comment':
             break;
           case 'call': {
-            emit(Op.Stmt, 0, STATEMENT_COST);
+            stmt(s.id);
             for (const a of s.args) expr(a);
             const idx = apiIndex.get(s.fn)!;
             const sig = host.api[idx];
@@ -287,19 +329,19 @@ export function compileDoc(written: FlowDoc, host: FlowHost, source: string, res
             break;
           }
           case 'emit': {
-            emit(Op.Stmt, 0, STATEMENT_COST);
+            stmt(s.id);
             for (const a of s.args) expr(a);
             for (let k = s.args.length; k < 4; k++) emit(Op.Push, 0);
             emit(Op.Emit, CUSTOM_EVENT_BASE + custom.indexOf(s.event));
             break;
           }
           case 'set':
-            emit(Op.Stmt, 0, STATEMENT_COST);
+            stmt(s.id);
             expr(s.value);
             emit(Op.Store, varIndex.get(s.name)!);
             break;
           case 'if': {
-            emit(Op.Stmt, 0, STATEMENT_COST);
+            stmt(s.id);
             expr(s.cond);
             const toElse = emit(Op.Jz);
             block(s.then);
@@ -314,7 +356,7 @@ export function compileDoc(written: FlowDoc, host: FlowHost, source: string, res
             break;
           }
           case 'while': {
-            const top = emit(Op.Stmt, 0, STATEMENT_COST);
+            const top = stmt(s.id);
             expr(s.cond);
             const out = emit(Op.Jz);
             block(s.body);
@@ -366,7 +408,17 @@ export function compileDoc(written: FlowDoc, host: FlowHost, source: string, res
     tableHandler,
     strings,
     templates,
+    stmtIds,
+    blockNames: Object.fromEntries((written.blocks ?? []).map((b) => [b.id, b.block])),
   };
+}
+
+/** How a handler is shown in profiles: its event, and the built-in block it comes from ("Detected · EngageEnemies"). */
+export function handlerLabel(p: FlowProgram, index: number): string {
+  const h = p.handlers[index];
+  const cut = h.id.indexOf('~');
+  const block = cut > 0 ? p.blockNames[h.id.slice(0, cut)] : undefined;
+  return block ? `${h.event.name} · ${block}` : h.event.name;
 }
 
 /** True if the program has any block for the event (the "unhandled events cost nothing" test). */

@@ -35,6 +35,8 @@ export interface MissileFlight {
   owner: number;
   /** Handle of the target; it flies on straight if that is gone. */
   target: number;
+  /** Module class the launcher aimed at (0 = any). */
+  aim: number;
 }
 
 const TAU = Math.PI * 2;
@@ -68,6 +70,7 @@ export function launchMissile(sim: Simulation, e: number, target: number, w: Lau
     hitChance: m.hitChance,
     owner,
     target: sim.world.handle(target),
+    aim: sim.weapon.f.aim[e],
   };
   return id;
 }
@@ -92,7 +95,7 @@ function detonate(sim: Simulation, e: number, f: MissileFlight): void {
     const edge = Math.max(0, Math.hypot(px[o] - f.x, py[o] - f.y) - halfSize(sim, o));
     if (edge > f.blast) return;
     const share = 1 - (1 - MISSILE_EDGE_DAMAGE) * (edge / f.blast);
-    sim.damage(o, Math.max(1, Math.round(f.damage * share)), f.owner);
+    sim.damage(o, Math.max(1, Math.round(f.damage * share)), f.owner, f.aim);
   });
   sim.emit(SimEvent.Death, e, 0);
   sim.destroyEntity(e);

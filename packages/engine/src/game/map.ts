@@ -4,7 +4,7 @@ import { BASE_FIELD, BASE_LAYOUT, BASE_UNITS, NEUTRAL_CLASS, STARTER_CLASSES, ty
 import { TILE } from './parts';
 import { BASE_FIELD_PATCHES, CENTRE_FIELD_PATCHES, NEUTRAL_UNITS, RESOURCE_PATCH_AMOUNT } from './rules';
 import { Simulation } from './simulation';
-import { generateTerrain, type ClearArea, type TerrainLayout } from './terrain';
+import { generateTerrain, Terrain, type ClearArea, type TerrainLayout } from './terrain';
 
 export const MAP_SIZE = 64;
 export const NEUTRAL = 0;
@@ -20,6 +20,8 @@ export interface MapDefinition {
   readonly density?: number;
   /** Extra resource fields strung along each corner's route to the centre. Default 0. */
   readonly outposts?: number;
+  /** Hand-made terrain (a campaign level drawn in Tiled): `Terrain.encode()` form, width x height digits. Replaces generation. */
+  readonly terrain?: string;
 }
 
 export const MAPS: readonly MapDefinition[] = [
@@ -37,15 +39,17 @@ export const MAPS: readonly MapDefinition[] = [
 
 /**
  * Game modes. Versus: a four-way free-for-all, one human per corner. Co-op: up to two
- * humans on one team against a bot each (see bot.ts). Solo: co-op for one human.
+ * humans on one team against a bot each (see bot.ts). Solo: co-op for one human. Campaign: solo on a
+ * hand-made level from the campaigns/ folder (see server/src/campaign.ts).
  */
-export type GameMode = 'versus' | 'coop' | 'solo';
+export type GameMode = 'versus' | 'coop' | 'solo' | 'campaign';
 export const GAME_MODES: readonly { id: GameMode; name: string; description: string }[] = [
   { id: 'versus', name: 'Free for all', description: 'Up to four players, every one against all the others' },
   { id: 'solo', name: 'Single-player', description: 'One player against a bot that churns out waves of units (a private room)' },
+  { id: 'campaign', name: 'Campaign', description: 'A single-player level from a campaign (a private room)' },
   { id: 'coop', name: 'Co-op vs bots', description: 'Up to two players on one team, against a bot each that churns out waves of units' },
 ];
-export const parseGameMode = (id: string | null | undefined): GameMode => (id === 'coop' || id === 'solo' ? id : 'versus');
+export const parseGameMode = (id: string | null | undefined): GameMode => (id === 'coop' || id === 'solo' || id === 'campaign' ? id : 'versus');
 
 export const DEFAULT_MAP_ID = MAPS[0].id;
 export const mapById = (id: string | undefined): MapDefinition => MAPS.find((map) => map.id === id) ?? MAPS[0];
@@ -80,7 +84,23 @@ function clearAreas(width: number, height: number): ClearArea[] {
 
 export function createMapTerrain(map: MapDefinition | string, seed = 0x5eed): ReturnType<typeof generateTerrain> {
   const selected = typeof map === 'string' ? mapById(map) : map;
+  if (selected.terrain) return handMadeTerrain(selected);
   return generateTerrain(selected.width, selected.height, new Rng(seed ^ 0x51ed), clearAreas(selected.width, selected.height), selected.layout, selected.density ?? 1);
+}
+
+/** Decodes a drawn map, then forces the four base areas open so no start can be walled in. */
+function handMadeTerrain(map: MapDefinition): Terrain {
+  const t = Terrain.decode(map.width, map.height, map.terrain!);
+  for (const a of clearAreas(map.width, map.height)) {
+    for (let y = Math.floor(a.y - a.r); y <= Math.ceil(a.y + a.r); y++) {
+      for (let x = Math.floor(a.x - a.r); x <= Math.ceil(a.x + a.r); x++) {
+        if (!t.inBounds(x, y) || (x - a.x) ** 2 + (y - a.y) ** 2 > a.r * a.r) continue;
+        t.passable[y * map.width + x] = 1;
+        t.heights[y * map.width + x] = 0;
+      }
+    }
+  }
+  return t;
 }
 
 /** Terrain, resource fields and neutral wanderers; players are added with setUpPlayer(). */

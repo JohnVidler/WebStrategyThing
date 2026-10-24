@@ -14,6 +14,8 @@ import {
   SimEvent,
   TaskType,
   TICK_RATE,
+  CLIFF_HEIGHT,
+  WHEELS,
   chargeZoneRadius,
   RADAR_FADE_TICKS,
   RESOURCE_PATCH_AMOUNT,
@@ -23,13 +25,23 @@ import {
   type TickInfo,
 } from '@wst/engine';
 import { AlphaFilter, Application, Container, Graphics, Sprite, Text, type Texture } from 'pixi.js';
-import { dishAnchor, drawDish, drawLook, lookOf } from './art';
+import { dishAnchor, drawDish, drawLook, drawRotor, drawTurretSprite, GAIT_FRAMES, gaitLength, lookOf, turretAnchor, windAnchor, type Look } from './art';
+import { drawFactoryFx } from './factoryFx';
+import { reduceMotion } from './settings';
+import { burstSparks, drawSparks, expireSparks, type Spark } from './sparks';
 import { renderClassImage, TEX, TEX_RESOLUTION } from './artstudio';
 import type { ClientState } from './state';
 
 /** Textures are drawn at this many pixels per tile, then scaled to the current zoom. */
 const OWNER_COLOURS = [0x8a8f98, 0x4ea1ff, 0xff6b5b, 0x5bd68a, 0xf5c542, 0xc77dff, 0x4fd1c5, 0xff9f43];
 const RESOURCE_COLOUR = 0x7ee0b5;
+/** Sparks off a resource being mined: bright, with a few white-hot. */
+const HARVEST_SPARK_COLOURS = [0xc8ffe6, 0x7ee0b5, 0xffffff, 0xfff0a8];
+const BREAK_SPARK_COLOUR = 0xffb066;
+/** A turret keeps tracking its last target this long after the last shot. */
+const AIM_LINGER_MS = 1500;
+/** Radians per second of a wind turbine rotor in the strongest wind. */
+const ROTOR_MAX_SPEED = 9;
 const ENERGY_COLOUR = 0xf5c542;
 /** Repair beams, crosses and repair orders. */
 const REPAIR_COLOUR = 0x66ffb8;
@@ -263,6 +275,22 @@ export class Renderer {
   private readonly dishes = new Map<number, Sprite>();
   /** Entities known not to have a radar, so they are not checked every frame. */
   private readonly noDish = new Set<number>();
+  /** Walking units: how far through the gait cycle they are (cycles), where they were last frame, and when they last moved. */
+  private readonly gaits = new Map<number, { look: Look; bp: Blueprint; owner: number; phase: number; x: number; y: number; movedAt: number; poses: (Texture | undefined)[] }>();
+  /** Entities known not to walk, so they are not checked every frame. */
+  private readonly noGait = new Set<number>();
+  /** Gun turrets that swing to face their target, as child sprites of the hull (or building). */
+  private readonly turrets = new Map<number, Sprite>();
+  private readonly noTurret = new Set<number>();
+  /** Who each weapon last shot at, and until when the turret keeps tracking it. */
+  private readonly aimAt = new Map<number, { target: number; until: number }>();
+  /** Wind turbine rotors on buildings, spun by the wind. */
+  private readonly rotors = new Map<number, Sprite>();
+  private readonly noRotor = new Set<number>();
+  /** Sparks from mining and from broken modules. */
+  private sparks: Spark[] = [];
+  /** Cargo a harvester held at its last Harvest event: the difference is what it just mined. */
+  private readonly lastCargo = new Map<number, number>();
   private readonly textures = new Map<string, Texture>();
   private readonly routes = new Map<number, Route>();
   /** Sprite rotation each unit is turning towards (art faces up; 0 = up). Kept while stopped. */
@@ -447,7 +475,9 @@ export class Renderer {
         score = 1000 + Math.hypot(p.x - sx, p.y - sy);
       } else {
         const d = Math.hypot(p.x - sx, p.y - sy);
-        if (d > Math.max(7, this.scale * 0.55)) continue;
+        // Big hulls are hit anywhere on the body (a light unit's reach stays the old 0.55 tile).
+        const reach = Math.max(0.55, ((s?.radius ?? 0) / TILE) * 1.25);
+        if (d > Math.max(7, this.scale * reach)) continue;
         score = d + (res.has(e) ? 2000 : 0);
       }
       if (score < bestScore) {
@@ -481,6 +511,15 @@ export class Renderer {
     if (info.full) {
       for (const s of this.sprites.values()) s.destroy();
       this.sprites.clear();
+      this.gaits.clear();
+      this.noGait.clear();
+      this.turrets.clear();
+      this.noTurret.clear();
+      this.aimAt.clear();
+      this.rotors.clear();
+      this.noRotor.clear();
+      this.lastCargo.clear();
+      this.sparks.length = 0;
       this.facing.clear();
       this.lastHp.clear();
       this.blastRadius.clear();
@@ -491,6 +530,14 @@ export class Renderer {
       this.dishes.get(e)?.destroy();
       this.dishes.delete(e);
       this.noDish.delete(e);
+      this.gaits.delete(e);
+      this.noGait.delete(e);
+      this.turrets.delete(e); // destroyed with its parent sprite
+      this.noTurret.delete(e);
+      this.aimAt.delete(e);
+      this.rotors.delete(e);
+      this.noRotor.delete(e);
+      this.lastCargo.delete(e);
       this.sprites.get(e)?.destroy();
       this.sprites.delete(e);
       this.routes.delete(e);
@@ -629,8 +676,35 @@ export class Renderer {
         this.repairs.set(`${a}:${b}`, { a, b, last: now });
         continue;
       }
+      if (info.events[i] === SimEvent.Harvest) {
+        const a = info.events[i + 1];
+        const b = info.events[i + 2];
+        // As many sparks as the harvester just took from the resource (its cargo since the last event).
+        const held = world.store(Cargo).has(a) ? world.store(Cargo).f.amount[a] : 0;
+        const mined = Math.max(0, held - (this.lastCargo.get(a) ?? held)) || (this.state.stats(a)?.harvestRate ?? 0) * 2;
+        this.lastCargo.set(a, held);
+        if (this.sprites.has(a)) {
+          const at = this.sprites.has(b) ? b : a;
+          // Sparks leave the face of the resource that the harvester is working, spraying back towards it.
+          const heading = at === a ? undefined : Math.atan2(this.curY[a] - this.curY[b], this.curX[a] - this.curX[b]);
+          burstSparks(this.sparks, this.curX[at], this.curY[at], Math.min(14, Math.max(1, Math.round(mined * 0.8))), now, {
+            colour: HARVEST_SPARK_COLOURS[Math.floor(Math.random() * HARVEST_SPARK_COLOURS.length)],
+            heading,
+            spread: 1.1,
+            reach: [0.25, 0.65],
+            ms: [220, 420],
+          });
+        }
+        continue;
+      }
+      if (info.events[i] === SimEvent.Break) {
+        const a = info.events[i + 1];
+        if (this.sprites.has(a)) burstSparks(this.sparks, this.curX[a], this.curY[a], 18, now, { colour: BREAK_SPARK_COLOUR, reach: [0.4, 1.1], ms: [300, 650], width: 2 });
+        continue;
+      }
       if (info.events[i] !== SimEvent.Shot) continue;
       const a = info.events[i + 1];
+      this.aimAt.set(a, { target: info.events[i + 2], until: now + AIM_LINGER_MS });
       if (this.state.stats(a)?.weapon?.kind === 'missile') {
         // No instant line: the missile itself is the shot (see drawMissiles).
         this.launches.push({ e: a, born: now });
@@ -780,6 +854,97 @@ export class Renderer {
     dish.rotation = (now / 1000) * 2.4;
   }
 
+  /**
+   * Walks the legs of a legged unit: the gait advances with the distance covered, so legs move in
+   * proportion to speed and stop when the unit does. Each pose is a cached texture (a few per class).
+   */
+  private walk(e: number, s: Sprite, now: number): void {
+    let w = this.gaits.get(e);
+    if (!w) {
+      if (this.noGait.has(e)) return;
+      const unit = this.state.world.store(Unit);
+      const bp = unit.has(e) ? this.state.blueprints.get(unit.f.blueprint[e]) : undefined;
+      if (!bp) return; // class info not here yet
+      const look = lookOf(bp.parts);
+      if (look.motor !== 'legs') {
+        this.noGait.add(e);
+        return;
+      }
+      w = { look, bp, owner: unit.f.owner[e], phase: 0, x: this.tileX(e), y: this.tileY(e), movedAt: -Infinity, poses: [] };
+      this.gaits.set(e, w);
+    }
+    const x = this.tileX(e), y = this.tileY(e);
+    const d = Math.hypot(x - w.x, y - w.y);
+    w.x = x;
+    w.y = y;
+    if (d > 1e-4) {
+      w.phase = (w.phase + d / gaitLength(w.look)) % 1;
+      w.movedAt = now;
+    }
+    // Standing still (for a moment): the rest pose, kept at the end of the list. Poses are looked up
+    // once each, so a walking sprite allocates nothing per frame.
+    const pose = now - w.movedAt > 150 ? GAIT_FRAMES : Math.floor(w.phase * GAIT_FRAMES) % GAIT_FRAMES;
+    const tex = (w.poses[pose] ??= pose === GAIT_FRAMES
+      ? this.unitTexture(w.bp, w.owner)
+      : this.texture(`bp:${w.bp.id}:gait${pose}`, (g) => drawLook(g, w!.look, ownerColour(w!.owner), TEX, false, (pose / GAIT_FRAMES) * Math.PI * 2)));
+    if (s.texture !== tex) s.texture = tex;
+  }
+
+  /**
+   * Swings a gun turret (a child sprite) round to the target of the last shot, and back to the front
+   * when the weapon has been quiet for a while. `turn` is the share of the remaining angle to cover this frame.
+   */
+  private aim(e: number, s: Sprite, now: number, turn: number): void {
+    let t = this.turrets.get(e);
+    if (!t) {
+      if (this.noTurret.has(e)) return;
+      const unit = this.state.world.store(Unit);
+      const bp = unit.has(e) ? this.state.blueprints.get(unit.f.blueprint[e]) : undefined;
+      if (!bp) return; // class info not here yet
+      const look = lookOf(bp.parts);
+      const a = turretAnchor(look, TEX);
+      if (!a) {
+        this.noTurret.add(e);
+        return;
+      }
+      t = new Sprite(this.texture(`turret:${bp.id}`, (g) => drawTurretSprite(g, look, TEX)));
+      t.anchor.set(0.5);
+      t.position.set(a.x, a.y);
+      s.addChild(t);
+      this.turrets.set(e, t);
+    }
+    let want = 0;
+    const aim = this.aimAt.get(e);
+    if (aim) {
+      if (now >= aim.until || !(this.sprites.has(aim.target) || this.flying.has(aim.target))) this.aimAt.delete(e);
+      else want = Math.atan2(this.tileX(aim.target) - this.tileX(e), this.tileY(e) - this.tileY(aim.target)) - s.rotation;
+    }
+    const diff = Math.atan2(Math.sin(want - t.rotation), Math.cos(want - t.rotation));
+    t.rotation += diff * turn;
+  }
+
+  /** Spins the rotor of a wind turbine building: `step` is the angle for this frame, already scaled by the wind. */
+  private spinRotor(e: number, s: Sprite, step: number): void {
+    let rotor = this.rotors.get(e);
+    if (!rotor) {
+      if (this.noRotor.has(e)) return;
+      const unit = this.state.world.store(Unit);
+      const bp = unit.has(e) ? this.state.blueprints.get(unit.f.blueprint[e]) : undefined;
+      if (!bp) return;
+      const a = windAnchor(lookOf(bp.parts), TEX);
+      if (!a) {
+        this.noRotor.add(e);
+        return;
+      }
+      rotor = new Sprite(this.texture(`rotor:${Math.round(a.radius * 10)}`, (g) => drawRotor(g, a.radius)));
+      rotor.anchor.set(0.5);
+      rotor.position.set(a.x, a.y);
+      s.addChild(rotor);
+      this.rotors.set(e, rotor);
+    }
+    rotor.rotation = (rotor.rotation + step) % (Math.PI * 2);
+  }
+
   /** Blueprint info can arrive after units; re-skin everything (rare). */
   restyle(): void {
     const unit = this.state.world.store(Unit);
@@ -796,9 +961,13 @@ export class Renderer {
     this.alpha = Math.min(1, (now - this.lastTickAt) / this.tickMs);
     const k = this.scale / TEX;
     const turn = 1 - Math.exp(-((now - (this.lastFrameAt || now)) / 1000) * 12);
+    const spin = ((now - (this.lastFrameAt || now)) / 1000) * (this.state.wind / 100) * ROTOR_MAX_SPEED;
     this.lastFrameAt = now;
     for (const [e, s] of this.sprites) {
       this.spinDish(e, s, now);
+      this.walk(e, s, now);
+      this.aim(e, s, now, turn);
+      this.spinRotor(e, s, spin);
       const p = this.screenOf(e);
       s.position.set(p.x, p.y);
       s.scale.set(k);
@@ -1192,6 +1361,14 @@ export class Renderer {
 
     // Factory progress, harvester cargo and low-energy warnings for your own things.
     const prod = world.store(Production);
+    const fxNow = performance.now();
+    for (const e of prod.dense) {
+      if (prod.f.queued[e] === 0) continue;
+      // Everyone who can see a factory sees it working (see factoryFx.ts).
+      const fp = this.screenOf(e);
+      const size = (this.state.stats(e)?.footprint ?? 1) * this.scale;
+      drawFactoryFx(g, fp.x, fp.y, size, prod.f.progress[e], fxNow, ownerColour(this.state.world.store(Unit).f.owner[e]), e, reduceMotion());
+    }
     for (const e of prod.dense) {
       if (!this.state.isMine(e) || prod.f.queued[e] === 0) continue;
       const p = this.screenOf(e);
@@ -1226,7 +1403,7 @@ export class Renderer {
       const s = this.state.stats(e);
       if (!s || health.f.hp[e] >= s.hp || this.state.isSite(e)) continue;
       const p = this.screenOf(e);
-      const half = s.structure ? (s.footprint * this.scale) / 2 : Math.max(6, this.scale * 0.45);
+      const half = s.structure ? (s.footprint * this.scale) / 2 : Math.max(6, this.scale * Math.max(0.45, (s.radius / TILE) * 1.1));
       const w = Math.max(14, half * 1.6);
       const y = p.y - half - barH - 3;
       g.rect(p.x - w / 2, y, w, barH).fill({ color: 0x3a1d1d, alpha: 0.8 });
@@ -1239,7 +1416,7 @@ export class Renderer {
       const s = this.state.stats(e);
       const mine = this.state.isMine(e);
       const ringColour = !unit.has(e) ? RESOURCE_COLOUR : mine ? 0x5bd68a : 0xff6b5b;
-      const half = s?.structure ? (s.footprint * this.scale) / 2 + 2 : Math.max(6, this.scale * 0.55);
+      const half = s?.structure ? (s.footprint * this.scale) / 2 + 2 : Math.max(6, this.scale * Math.max(0.55, ((s?.radius ?? 0) / TILE) * 1.3));
       if (s?.structure) g.rect(p.x - half, p.y - half, half * 2, half * 2).stroke({ width: 1.5, color: ringColour });
       else g.circle(p.x, p.y, half).stroke({ width: 1.5, color: ringColour });
       if (health.has(e) && s) {
@@ -1276,6 +1453,8 @@ export class Renderer {
 
     this.explosions = this.explosions.filter((x) => now - x.born < x.ms);
     for (const x of this.explosions) this.drawExplosion(g, x, now);
+    expireSparks(this.sparks, now);
+    drawSparks(g, this.sparks, now, this.offX, this.offY, this.scale);
 
     this.drawMissiles(g, now);
 
@@ -1478,6 +1657,7 @@ export class Renderer {
     const tasks = this.state.tasks.get(e);
     if (!tasks || tasks.length === 0) return undefined;
     const flying = this.state.stats(e)?.flying ?? false;
+    const mobility = this.state.stats(e) ?? WHEELS;
     const ux = this.tileX(e);
     const uy = this.tileY(e);
     // Resolve each task's destination (targets may move).
@@ -1504,7 +1684,7 @@ export class Renderer {
     for (const d of dests) {
       const points = [fx, fy];
       if (!flying) {
-        const tiles = findPath(this.state.terrain, Math.floor(fx), Math.floor(fy), Math.floor(d.x), Math.floor(d.y));
+        const tiles = findPath(this.state.terrain, Math.floor(fx), Math.floor(fy), Math.floor(d.x), Math.floor(d.y), mobility);
         for (let i = 0; i < tiles.length - 2; i += 2) points.push(tiles[i] + 0.5, tiles[i + 1] + 0.5);
       }
       points.push(d.x, d.y);
@@ -1585,27 +1765,14 @@ export class Renderer {
     fillShape((x, y) => !open(x, y));
     g.fill(0x343b47);
 
-    // Depth into the rock: 1 at the edge, 2 where all eight neighbours are solid too, 3 where
-    // they are all depth 2 (the heart of a large outcrop). The map edge counts as solid.
-    const w = t.width;
-    const depth = new Uint8Array(w * t.height);
-    for (let i = 0; i < depth.length; i++) depth[i] = t.passable[i] ? 0 : 1;
-    const depthAt = (d: Uint8Array, x: number, y: number) => (t.inBounds(x, y) ? d[y * w + x] : 255);
-    for (let n = 2; n <= 3; n++) {
-      const prev = depth.slice();
-      for (let y = 0; y < t.height; y++) {
-        for (let x = 0; x < w; x++) {
-          if (prev[y * w + x] < n - 1) continue;
-          let deep = true;
-          for (let j = -1; j <= 1 && deep; j++) for (let i = -1; i <= 1 && deep; i++) deep = depthAt(prev, x + i, y + j) >= n - 1;
-          if (deep) depth[y * w + x] = n;
-        }
-      }
-    }
-    fillShape((x, y) => depthAt(depth, x, y) >= 2);
+    // Rock height (the terrain's height map: 1 at an outcrop's rim, higher inside it, cliffs high from
+    // the edge) shown as lighter tiers. The map edge counts as solid.
+    fillShape((x, y) => t.heightAt(x, y) >= 2);
     g.fill(0x414a58);
-    fillShape((x, y) => depthAt(depth, x, y) >= 3);
+    fillShape((x, y) => t.heightAt(x, y) >= 3);
     g.fill(0x4d5767);
+    fillShape((x, y) => t.heightAt(x, y) >= 5);
+    g.fill(0x596476);
 
     // Only the sides of solid tiles that face open ground are outlined, so walls read as shapes, not a grid.
     const s = this.scale;
@@ -1635,6 +1802,19 @@ export class Renderer {
       }
     }
     g.stroke({ width: Math.max(1.5, s * 0.12), color: 0x8a9bb5, alpha: 0.9, cap: 'square' });
+    // Cliffs: rock already CLIFF_HEIGHT high at its edge gets a heavier, warmer rim, so players see where only colossus legs climb.
+    for (let y = 0; y < t.height; y++) {
+      for (let x = 0; x < t.width; x++) {
+        if (t.heightAt(x, y) < CLIFF_HEIGHT) continue;
+        const l = this.offX + x * s;
+        const top = this.offY + y * s;
+        if (open(x, y - 1)) g.moveTo(l, top).lineTo(l + s, top);
+        if (open(x, y + 1)) g.moveTo(l, top + s).lineTo(l + s, top + s);
+        if (open(x - 1, y)) g.moveTo(l, top).lineTo(l, top + s);
+        if (open(x + 1, y)) g.moveTo(l + s, top).lineTo(l + s, top + s);
+      }
+    }
+    g.stroke({ width: Math.max(2, s * 0.2), color: 0xc8b48c, alpha: 0.85, cap: 'square' });
   }
 
   private ensureSprite(e: number, tex: Texture): Sprite {

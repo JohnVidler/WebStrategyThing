@@ -48,6 +48,10 @@ export class Designer implements DesignerModel {
   stats: BlueprintStats | undefined;
   statsError = '';
 
+  programMemory(): number {
+    return this.codeTab.doc.memory.total;
+  }
+
   constructor(
     host: HTMLElement,
     readonly state: ClientState,

@@ -116,7 +116,10 @@ body {
 }
 #standings h2 { margin: 0 0 10px; font-size: 20px; }
 #standings p { margin: 0 0 10px; }
-#standings .row { display: flex; justify-content: center; gap: 8px; }
+#standings { min-width: min(460px, calc(100vw - 32px)); }
+/* End-of-match choices: a vertical list, so the labels have room and the menu reveal can stagger them. */
+.end-actions { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.end-actions > button { width: 100%; padding: 8px 14px; text-align: center; }
 #standings table { border-collapse: collapse; margin: 0 auto 12px; }
 #standings th { color: var(--muted); font-weight: 400; padding: 2px 10px; text-align: right; }
 #standings td { padding: 2px 10px; text-align: right; }
@@ -221,29 +224,28 @@ body.spectating #buildbar, body.spectating #actions, body.spectating #action-hin
 .menu-bg-spark.h.back { background: linear-gradient(to left, transparent, #cfe8ff); }
 .menu-bg-spark.v.fwd { background: linear-gradient(to bottom, transparent, #cfe8ff); }
 .menu-bg-spark.v.back { background: linear-gradient(to top, transparent, #cfe8ff); }
-@media (prefers-reduced-motion: reduce) { .menu-bg-scroll { animation: none; } }
+html[data-reduce-motion] .menu-bg-scroll { animation: none; }
 #lobby { position: relative; z-index: 1; flex: 1; display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 10vh 16px; }
 #lobby { font-size: 1.5em; }
 /* Menu areas sit on translucent panels so the animated backdrop shows through but text stays legible. */
 #lobby section, #lobby aside, #lobby fieldset, #lobby .lobby-name-screen, #lobby .options {
-  background: rgba(22, 27, 34, 0.62);
+  background: rgba(22, 27, 34, 0.5);
   border: 1px solid var(--line);
   border-radius: 6px;
-  padding: 12px 14px;
+  padding: calc(12px + 0.25em) calc(14px + 0.25em);
   backdrop-filter: blur(3px);
   /* Soft dark halo so the grid fades out around each panel instead of meeting its edge sharply. */
   box-shadow: 0 0 22px 8px rgba(4, 6, 10, 0.6);
 }
 /* Fieldsets default to a 2px side margin and min-content width; reset so every panel frame lines up. */
 #lobby fieldset { margin: 0; min-width: 0; }
-#lobby .lobby-right { border-left: 1px solid var(--line); }
-#lobby .lobby-changes details, #lobby .lobby-room { background: rgba(22, 27, 34, 0.55); }
+#lobby .lobby-room { background: rgba(22, 27, 34, 0.55); }
 #lobby-docs { font-size: 13px; }
 #lobby h2 { font-size: 0.92em; }
 #lobby button.link { font-size: 0.92em; }
 #lobby h1, #lobby h2 { margin: 0; }
 #lobby h1 { font-size: clamp(32px, 6vw, 56px); line-height: 1.1; letter-spacing: 0.04em; text-align: center; text-shadow: 0 0 18px rgba(78, 161, 255, 0.45); }
-#lobby-rooms { width: min(420px, 100%); display: flex; flex-direction: column; gap: 6px; }
+#lobby-rooms { width: 100%; display: flex; flex-direction: column; gap: 6px; }
 .lobby-room { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 12px; padding: 6px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 4px; }
 .lobby-room .name { font-weight: 600; }
 .lobby-room .name small { display: block; font-weight: 400; color: var(--muted); }
@@ -257,17 +259,64 @@ body.spectating #buildbar, body.spectating #actions, body.spectating #action-hin
 .section-head { width: 100%; display: flex; align-items: center; gap: 12px; }
 #credits { width: min(700px, 100%); display: flex; flex-direction: column; gap: 6px; }
 #credits h3 { margin: 0 0 4px; }
+#credits-view { width: min(700px, 100%); height: 65vh; margin: 0 auto; overflow: hidden; -webkit-mask-image: linear-gradient(transparent, #000 8%, #000 92%, transparent); mask-image: linear-gradient(transparent, #000 8%, #000 92%, transparent); }
+#credits-view.muted { height: auto; }
+#credits-view.paused .credits-roll { animation-play-state: paused; }
+#credits-pause { display: block; margin: 10px auto 0; }
+html[data-reduce-motion] #credits-pause { display: none; }
+.credits-roll { display: flex; flex-direction: column; gap: 6px; padding: 65vh 0; animation: credits-roll var(--roll-s, 60s) linear infinite; }
+.credits-roll h3 { margin: 18px 0 4px; text-align: center; }
+.credits-roll .credit, .credit-person { text-align: center; }
+.credit-person { display: flex; flex-direction: column; padding: 6px 10px; }
+.credit-person b { font-size: 1.15em; }
+.credit-person span { color: var(--muted); }
+.credits-end { margin: 24px 0 0; text-align: center; color: var(--muted); }
+@keyframes credits-roll { to { transform: translateY(-100%); } }
+html[data-reduce-motion] #credits-view { overflow-y: auto; }
+html[data-reduce-motion] .credits-roll { animation: none; padding: 0; }
 .credit { padding: 6px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 4px; }
 .credit small { display: block; color: var(--muted); }
 .section-blurb { margin: 0; text-align: center; max-width: 620px; }
-.lobby-split { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; align-items: start; }
-.lobby-split h3 { margin: 0 0 8px; }
+/*
+ * Glass tabs: tab buttons joined to the top edge of a glass panel. Markup: .glass-tabs > .glass-tab-list (role="tablist" with
+ * role="tab" buttons, aria-selected on the open one) followed by .glass-tab-panel blocks. The tab strip draws the panel's top
+ * edge (each closed tab has a bottom border; the open one has none), so the open tab and the panel read as one piece.
+ */
+.glass-tabs { width: 100%; display: flex; flex-direction: column; }
+.glass-tab-list { position: relative; z-index: 1; display: flex; }
+.glass-tab-list::after { content: ''; flex: 1; border-bottom: 1px solid var(--line); }
+.glass-tab-list > button {
+  padding: 6px 20px;
+  color: var(--muted);
+  background: rgba(10, 13, 18, 0.5);
+  border: 1px solid var(--line);
+  border-radius: 6px 6px 0 0;
+  backdrop-filter: blur(3px);
+}
+.glass-tab-list > button + button { margin-left: -1px; }
+.glass-tab-list > button:hover { color: var(--text); background: rgba(22, 27, 34, 0.5); border-color: var(--line); }
+.glass-tab-list > button[aria-selected='true'] { color: var(--text); background: rgba(22, 27, 34, 0.5); border-top-color: var(--accent); border-bottom-color: transparent; }
+.glass-tab-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-sizing: border-box;
+  padding: calc(12px + 0.25em) calc(14px + 0.25em);
+  background: rgba(22, 27, 34, 0.5);
+  border: 1px solid var(--line);
+  border-top: none;
+  border-radius: 0 0 6px 6px;
+  backdrop-filter: blur(3px);
+  box-shadow: 0 0 22px 8px rgba(4, 6, 10, 0.6);
+}
 .lobby-online { margin: 0 0 10px; font-size: 0.9em; }
 .lobby-online strong { color: var(--text); }
-.lobby-left #lobby-rooms { width: 100%; }
-.lobby-right { border-left: 1px solid var(--line); }
-.lobby-right #lobby-name { width: 100%; }
-@media (max-width: 760px) { .lobby-split { grid-template-columns: 1fr; } .lobby-right { border-left: 1px solid var(--line); } }
+#lobby-rooms-note { margin: 0 0 6px; }
+#lobby-create #lobby-name { width: 100%; }
+/* In the Create a room tab the map list and its preview have the whole panel width. */
+.lobby-panel .map-layout { gap: 16px; }
+.lobby-panel .map-layout select { min-height: 18em; }
+.lobby-panel .map-preview { flex: 1.5; }
 .mode-tag { display: inline-block; margin-left: 4px; padding: 0 6px; font-size: 0.85em; font-weight: 500; border-radius: 8px; background: #26303c; color: var(--muted); vertical-align: middle; }
 .mode-tag.coop { background: #1d2b22; color: var(--good); }
 .lobby-view #lobby-create { width: 100%; }
@@ -276,10 +325,6 @@ body.spectating #buildbar, body.spectating #actions, body.spectating #action-hin
 /* The host covers the page only so the designer can fill it; it must not catch clicks once the designer is closed. */
 #lobby-designer { position: fixed; inset: 0; z-index: 25; display: flex; flex-direction: column; pointer-events: none; }
 #lobby-designer > * { pointer-events: auto; }
-.lobby-changes { width: min(900px, 100%); display: flex; flex-direction: column; gap: 6px; font-size: 1em; }
-.lobby-changes details { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 4px 10px; }
-.lobby-changes summary { cursor: pointer; color: var(--muted); }
-.lobby-changes ul { margin: 6px 0 4px; padding-left: 18px; display: flex; flex-direction: column; gap: 3px; }
 #lobby-name { width: min(320px, 100%); }
 .map-picker { min-width: 0; margin: 0; padding: 8px; border: 1px solid var(--line); }
 .map-picker legend { padding: 0 5px; color: var(--muted); font-size: 0.92em; }
@@ -360,6 +405,14 @@ button.danger { border-color: var(--bad); background: #3a1d1d; }
 }
 .action-grid .action img { width: 55%; height: 45%; object-fit: contain; }
 #production-buttons.action-grid { grid-template-columns: repeat(4, 1fr); }
+/* The factory queue: one slot per place in the queue, the one being built fills from the bottom. */
+.queue-grid { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 2px; }
+.queue-slot { position: relative; aspect-ratio: 1; padding: 2px; overflow: hidden; display: flex; align-items: center; justify-content: center; min-width: 0; }
+.queue-slot.empty { border-color: var(--muted); border-style: dashed; background: transparent; opacity: 0.75; cursor: default; }
+.queue-slot img { position: relative; width: 70%; height: 70%; object-fit: contain; }
+.queue-slot .fill { position: absolute; left: 0; right: 0; bottom: 0; background: rgba(245, 197, 66, 0.4); transition: height 0.2s linear; pointer-events: none; }
+.queue-slot.current { border-color: #f5c542; }
+.queue-slot:not(.empty):hover { border-color: var(--bad); }
 .action-grid .action .icon { font-size: 20px; line-height: 1; }
 .action-grid .action .label { font-size: 10px; line-height: 1.1; text-align: center; overflow-wrap: anywhere; }
 .action-grid .action kbd {
@@ -469,7 +522,6 @@ pre {
 
 .row-spread { display: flex; justify-content: space-between; gap: 8px; }
 .muted { color: var(--muted); }
-#selection-summary { white-space: pre-line; font-variant-numeric: tabular-nums; }
 #credits { color: #7ee0b5; font-variant-numeric: tabular-nums; }
 
 /* Global resource bars at the top of the side panel. */
@@ -540,6 +592,7 @@ header { display: flex; flex-direction: column; gap: 8px; }
 #modules .module { display: flex; align-items: center; gap: 4px; cursor: pointer; }
 #modules input { padding: 0; margin: 0; }
 #modules input:disabled + * , #modules label:has(input:disabled) { color: var(--muted); cursor: default; }
+#modules .module.broken { color: var(--warn, #ff8a5c); }
 
 /* Docs overlay: sits over the game area while the game keeps running. */
 #docs-overlay {
@@ -782,7 +835,7 @@ button.primary { border-color: var(--accent); background: #1b2a40; }
 .music.docked .music-label { flex: 1; min-width: 0; }
 
 /* Options screen. */
-#lobby .options { display: flex; flex-direction: column; gap: 14px; width: min(460px, 100%); box-sizing: border-box; margin: 16px auto; padding: 16px 20px; }
+#lobby .options { display: flex; flex-direction: column; gap: 14px; width: min(920px, 100%); box-sizing: border-box; margin: 16px auto; padding: 16px 20px; }
 .option-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .option-row input[type='range'] { width: 220px; }
 
@@ -834,3 +887,52 @@ input[type='checkbox']:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* Game build (git hash), top-right of the main menu. */
 .lobby-version { position: fixed; top: 8px; right: 12px; font-size: 12px; opacity: 0.6; user-select: text; z-index: 2; }
+
+/* Campaigns */
+.campaign-list .camp-progress { color: #7ee0b5; }
+.news-panel { width: 100%; }
+.news-panel .menu-buttons { width: 100%; }
+.news-list .news-summary { white-space: normal; line-height: 1.35; }
+.news-article p { margin: 0 0 10px; line-height: 1.5; }
+.news-article .news-lead { font-size: 1.05em; }
+.news-article h3 { margin: 16px 0 4px; }
+.news-article ul { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; }
+.menu-panel { width: min(420px, 100%); }
+.menu-panel .menu-buttons { width: 100%; }
+.campaign-panel { width: 100%; box-sizing: border-box; }
+/* Reading screens (campaigns, news) are up to 900px wide, and their header lines up with the panel. */
+.lobby-view:has(.campaign-panel, .news-panel) { width: min(900px, 100%); }
+.campaign-panel .menu-buttons { width: 100%; }
+.campaign-story, .briefing { width: 100%; box-sizing: border-box; }
+.campaign-story p { margin: 0 0 10px; line-height: 1.5; }
+.briefing h3, #lobby-view > h3 { margin: 16px 0 4px; }
+.briefing ul { margin: 0 0 8px; padding-left: 20px; }
+.briefing li { margin-bottom: 4px; }
+#camp-continue, #camp-begin { margin: 8px 0; }
+.campaign-levels { width: 100%; margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; }
+.campaign-levels button { width: 100%; display: grid; grid-template-columns: 2em 1fr auto; align-items: center; gap: 10px; text-align: left; }
+.campaign-levels .camp-num { color: var(--muted); }
+.campaign-levels small { color: var(--muted); }
+
+/* Dev Options (development builds only; see devTools.ts): a tab on the right edge of the map and a panel that leaves the map usable. */
+#dev-button { position: absolute; right: 0; top: 50%; z-index: 40; transform: translateY(-50%); writing-mode: vertical-rl; padding: 10px 6px; border-radius: 6px 0 0 6px; border: 1px dashed var(--bad); background: var(--panel); color: var(--bad); font-size: 12px; letter-spacing: 0.05em; }
+#dev-panel { position: absolute; right: 36px; top: 8px; bottom: 8px; z-index: 41; width: min(400px, calc(100% - 52px)); overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 12px; background: rgb(22 27 34 / 0.96); border: 1px dashed var(--bad); border-radius: 8px; box-shadow: 0 12px 40px rgb(0 0 0 / 0.5); font-size: 12px; }
+#dev-panel[hidden] { display: none; }
+#dev-panel .dev-head { display: flex; justify-content: space-between; align-items: center; }
+#dev-panel h2 { margin: 0; font-size: 15px; text-transform: none; letter-spacing: 0; color: var(--bad); }
+#dev-panel .dev-note { min-height: 1.4em; }
+#dev-panel .dev-note.ok { color: var(--good); }
+#dev-panel .dev-note.bad { color: var(--bad); }
+#dev-panel .dev-section { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 6px 8px 8px; border: 1px solid var(--line); border-radius: 6px; }
+#dev-panel legend { padding: 0 4px; color: var(--muted); }
+#dev-panel .dev-row { display: flex; flex-wrap: wrap; align-items: end; gap: 6px; }
+#dev-panel label { display: flex; flex-direction: column; gap: 2px; color: var(--muted); }
+#dev-panel label.dev-check { flex-direction: row; align-items: center; gap: 4px; color: var(--text); }
+#dev-panel input[type="number"] { width: 6em; }
+#dev-panel select { max-width: 11em; }
+#dev-panel button { font-size: 12px; padding: 4px 8px; }
+#dev-panel .dev-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+/* Dev Rooms (the Multiplayer screen's sidebar) sits over the page, not inside the map. */
+#dev-button.dev-lobby, #dev-panel.dev-lobby { position: fixed; }
+#dev-panel .dev-room-list { display: flex; flex-direction: column; gap: 4px; }
+#dev-panel .dev-room-item { display: flex; justify-content: space-between; align-items: center; gap: 6px; }

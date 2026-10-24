@@ -294,7 +294,16 @@ export class SoundPlayer {
         return;
       }
       this.master = this.ctx.createGain();
-      this.master.connect(this.ctx.destination);
+      // A fixed limiter after the volume control, so a big fight (many overlapping explosions and shots)
+      // is squashed instead of clipping. One native node, run by the audio thread: no per-play cost.
+      const limiter = this.ctx.createDynamicsCompressor();
+      limiter.threshold.value = -14;
+      limiter.knee.value = 10;
+      limiter.ratio.value = 12;
+      limiter.attack.value = 0.003;
+      limiter.release.value = 0.2;
+      this.master.connect(limiter);
+      limiter.connect(this.ctx.destination);
       this.applyGain();
       this.decodeAll();
     }

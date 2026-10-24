@@ -1,0 +1,15 @@
+{
+  "name": "Landfall",
+  "briefing": {
+    "title": "Chapter 1: Landfall",
+    "story": [
+      "Your drop pod hit the surface hard but whole. The ground is open and the fields are rich, which is exactly why the local fragment will come for it.",
+      "Dig in, build up and hold the position until you know what you are facing."
+    ],
+    "objectives": ["Establish your base and a steady supply of matter", "Defeat the local fragment's forces"],
+    "tips": ["Power links carry energy between your buildings; keep your base connected."]
+  },
+  "map": { "layout": "open", "width": 64, "height": 64, "density": 1, "outposts": 1, "seed": 301 },
+  "victory": { "type": "eliminate" },
+  "triggers": []
+}

@@ -1,8 +1,8 @@
 # flowcode plan: event-driven visual and textual programming
 
-Branch: `flowcode`. Status: **M0-M5 done** (see section 12 and "What changed from the plan" below); M6 (cost UI) and M7 (polish) remain. Update this file as decisions change.
+Merged into `main`. Status: **M0-M6 done** (see section 12 and "What changed from the plan" below); M7 (polish) remains. Update this file as decisions change.
 
-Decisions already made (section 14): automatic `Idle` event, configuration nodes visibly separate from actions, handlers suspend when out of cycles, literals use memory not energy, and the old text language is retired on this branch (it stays on `main`).
+Decisions already made (section 14): automatic `Idle` event, configuration nodes visibly separate from actions, handlers suspend when out of cycles, literals use memory not energy, and the old text language is retired (removed; commit `8d2f1d5` and earlier still have it). Sections 1-11 are the original design, kept as the reference for how the language works; where the build differed, see "What changed from the plan".
 
 ## 1. Goals
 
@@ -15,7 +15,7 @@ Decisions already made (section 14): automatic `Idle` event, configuration nodes
 
 Non-goals for the first milestone: multiplayer-visible graphs, user-defined functions or subgraphs (but the model must not block them, see section 10), line-of-sight sensing (the sensor events are shaped so it can arrive later, section 4).
 
-The old text language and VM are **removed on this branch**; every existing behaviour is rewritten in the new language (section 9). `main` keeps the old version.
+The old text language and VM are **removed**; every existing behaviour is rewritten in the new language (section 9).
 
 ## 2. Key decision: one model, two views
 
@@ -47,8 +47,8 @@ One JSON string, versioned, in the existing `source` fields:
 ```
 
 - Every statement and expression node has a stable string `id` (short, generated) so layout and diffs survive edits.
-- Size: the 8000 character `LIMITS.sourceLength` will be tight for graphs with layout. Plan: raise it to 32000 for flow programs, store layout compactly (integers, short ids), and strip `views` when sending to the server (the server only needs the logic; the owner's copy keeps views).
-- Legacy text-script programs (anything not starting with `{"format":"wst-flow"`) keep working through the old VM. See section 9.
+- Size: `LIMITS.sourceLength` is 32000 (was 8000) to fit graphs with layout; layout is stored compactly (integers, short ids), and `views` is stripped when sending to the server (the server only needs the logic; the owner's copy keeps views).
+- Programs that are not `wst-flow` documents (the old text language) are replaced on load; see section 9.
 
 ## 3. The text language: a TypeScript subset
 
@@ -221,7 +221,7 @@ Memory (`memorySlots` stat, raised by memory modules on the chassis) is what a p
 
 So memory never costs energy, but a program with many different magic numbers needs more memory hardware, and sharing a constant (`const RANGE = 6` as a variable) is cheaper than repeating several distinct values. The editor shows "memory used/available" live, and the Design tab stats show the same. The old `stackDepth` stat now sizes the event queue (section 4, decision P2). Event source configuration values are program data and use no memory slots.
 
-- Display: the CPU panel shows cycles per event type (rolling), which handlers fired, and the most expensive path. The sandbox test run reports the same.
+- Display (done in M6): the info panel shows cycles per second and runs by event block, and dropped events; each event block shows its worst-case cost; the sandbox test run reports cycles by event block and a heat map.
 
 A worked example: `Order` arrives, handler is Event -> Branch -> Call(moveTo) with literal args. Cost: branch `1` + its condition expression (compare `1` + two reads `2` + 2 data arcs) + 1 exec arc + moveTo `1+1` + 1 exec arc. The exact table is a unit test, and every number is a named constant in one file (`flowCost.ts`) for easy rebalancing.
 
@@ -291,11 +291,11 @@ Sync rules:
 ### Cost feedback in the editor
 
 - Node kinds are visually distinct (section 3.1): header colour, icon and pin shape per kind, configuration nodes in a separate palette group, with a tooltip saying what is a standing setting versus an action. Colours are CSS custom properties on the elements so themes can restyle them.
-- Each node shows a small cost badge (cycles if it runs) and each handler shows its worst-case path cost; the last test run overlays actual hit counts on nodes and wires (heat-map), so players see where their CPU goes.
+- Each handler shows its worst-case path cost and the last test run overlays actual hit counts on nodes and execution wires (heat map), so players see where their CPU goes (done in M6; per-node cost badges and heat on data wires were not built).
 
 ## 9. Retiring the old language
 
-The old text language is removed on this branch (it remains on `main`). There is no converter and no dual-language period.
+The old text language is removed (done in M4). There is no converter and no dual-language period.
 
 **Deleted:** `packages/engine/src/vm/*` (compiler, opcodes, vm, types), the CodeMirror unit-script language and linter in `editor.ts` (replaced by the TS-mode text view), `compileUnitProgram`, `ProgramButton` as a VM concept, the legacy sections of the docs overlay and `docs/game.md`, and `vm.test.ts`.
 
@@ -320,7 +320,7 @@ The old text language is removed on this branch (it remains on `main`). There is
 
 - **Subgraphs and functions:** IR `functions[]` with params and a result; the text is `function f(a, b) { ... }`. Graph shows it as a collapsible node. Needs recursion limits (none: no recursion).
 - **Custom node components:** the catalogue in `nodes.ts` is data plus an optional Lit element name, so new node kinds (and mod-provided ones) only add data and a component.
-- **Unit-to-unit messages:** an event `Message(from, data)` and a `send(h, data)` call, with an energy cost per message; the event model already supports it.
+- **Unit-to-unit messages:** done (2026-10-20) as radio and laser link modules: `radioSend` / `laserSend` and the `Message` event.
 - **Shared libraries of snippets** exported as `wst-flow` fragments through the existing design download.
 
 ## 11. Testing
@@ -343,7 +343,7 @@ The old text language is removed on this branch (it remains on `main`). There is
 | **M3 (done)** Runtime | `compile.ts`, `run.ts` (suspend/resume), `cost.ts`, `eventSystem` (incl. `Idle`, timers, configurable sensor sweep with part-limited options), `scriptSystem` rewrite, 1024-unit benchmark | A flow program runs in a match; costs match tests; benchmark passes **Result:** flat compiler, resumable interpreter (suspend between statements, overdraw and repay), per-unit event queue, `Idle`/`Every`/`Timer`/`Detected`/`Order`/`Button`/`Visitor`/`Arrived`/`Damaged`/`EnergyLow`/`EnergyFull`, sensor tiers (`game/sensor.ts`). 1024-unit benchmark: about 1.3 ms per tick (budget 100 ms). |
 | **M4 (done)** Port and retire | Rewrite starters, `NEW_CLASS_PROGRAM`, bot programs and tests in the new language; delete the old VM, compiler, editor language and docs; design file v2 migration; text-only Code tab (TS-mode CodeMirror, lint, completion, hover docs, diff, history, test run) | Game is fully playable on flow programs; old language gone from the branch; all tests pass **Result:** old VM, compiler, editor language and docs removed; starters, bot fighters and tests rewritten; design files version 2 (old programs replaced by the default of that name or the new-class starter); text Code tab (TS mode, lint with places, completion, hover docs, memory meter, diff of printed text, history, test run); docs regenerated. Played a short match end to end (solo room, upload over the wire) with no errors. |
 | **M5 (done)** Graph view | `FlowDocument`, Rete adapter, Lit components, kind styling, palette, context menu, inspector, undo, Tidy, Split view | Edit in either view, other view follows; invalid text freezes the graph cleanly **Result:** `FlowDocument` (one model, undo/redo, frozen graph on a syntax error), `graphOps` (every graph edit as an IR operation: exec/data wiring with the structure rules, loose pieces kept in `views.graph.scratch`), `graphModel` + `layout`, Rete.js + Lit components (`wst-flow-node/socket/wire/palette/variables`), palette, variables panel, Tidy/Fit/Delete/Undo/Redo, Graph / Split / Text switch. Driven in headless Chrome: add a node, wire it, type a literal, undo, edit the text and watch the graph follow, break the text and see it freeze. |
-| **M6** Cost UI | Badges, handler totals, test-run heat-map, per-event CPU panel in the sidebar, memory meter | Players can see where cycles and memory go |
+| **M6** Cost UI (done 2026-10-24) | Badges, handler totals, test-run heat-map, per-event CPU panel in the sidebar, memory meter | Players can see where cycles and memory go **Result:** `≤Nc` worst case on event nodes and block cards; per-handler cycles/runs in `FlowState` and per-statement hits while profiling; test run table "CPU by event block" and graph heat map (nodes and execution wires; cleared on edit); `cpuProfile` request/answer feeds the in-game info panel (cycles per second by event block, dropped events); Design tab memory row shows program use. Not yet seen in a browser. |
 | **M7** Polish | Docs, sounds for the editor, balance pass on the cost constants, subgraph/function groundwork if wanted | Play-tested |
 
 M0 can run any time and gates M5 only. M1 and M2 can run in parallel. Putting the port (M4) before the graph (M5) keeps the game playable and gives the graph editor real programs to display.
@@ -368,7 +368,7 @@ M0 can run any time and gates M5 only. M1 and M2 can run in parallel. Putting th
 | O2 | Sensor events and configuration | A `Detected` event raised by the sensor sweep. **Configuration lives on the event source block** (`watch`, `range`, `interval`, `sort`, `limit`, and filters on other events), not in the program flow; only genuinely runtime settings (`laserPower`, `setModule`, `storageMode`) remain as `config.*` nodes, visually distinct (section 3.1). The sweep is one function so line-of-sight can change what is found later without touching programs. |
 | O3 | Suspend or run to completion? | **Suspend**: handlers pause between statements when the tick's cycles are spent and resume next tick; a statement may overdraw. Performance plan and a 1024-unit benchmark in section 7. |
 | O4 | Literal cost | **No cycles, no energy; they occupy memory** (distinct literal values, variables, locals), which memory modules provide (section 6). |
-| O5 | Old language | **Retired on this branch**, existing behaviours rewritten in the new language (section 9); `main` keeps the old one. |
+| O5 | Old language | **Retired**, existing behaviours rewritten in the new language (section 9); the last commit with it is `8d2f1d5`. |
 
 ### Also decided
 
@@ -397,9 +397,9 @@ None for the plan itself. Numbers to tune in play-tests: the cost constants (sec
 - **Rete ids are the program's ids** (node id = statement id, or `owner#path` for a value node), so the graph and the IR can never disagree about what a node is. Loose pieces (`views.graph.scratch`) share the id space with the program: text parsing reserves their ids.
 - **`packages/client/spike/`** (the M0 spike) was removed once the real editor existed.
 
-## Remaining (M6 and M7)
+## Remaining (M7 and follow-ups)
 
-- M6: the per-event CPU panel in the sidebar (cycles per event, dropped events), a test-run heat map on nodes and wires, handler worst-case cost on event nodes (`handlerWorstCase` already computes it).
+- M6 follow-ups (optional): heat on value (data) wires and pure nodes (only statements are counted today), a per-class CPU summary across all units of a class, and showing the in-game profile in the Code tab next to the program.
 - M7: sounds for the editor, balance pass on the cost constants (`flow/cost.ts`) and CPU cycles per tick (the harvester now saturates a basic CPU), copy/paste of nodes, a quick-add search on double-click, an error list panel, subgraphs/functions.
 
 
@@ -407,7 +407,7 @@ None for the plan itself. Numbers to tune in play-tests: the cost constants (sec
 
 # Phase 2: event-first programs and higher-level blocks
 
-Status: proposed, not started. Prompted by the first look at the graph: it is a faithful drawing of the old *polling* programs, and polling code is unreadable as a graph (nested branches, queue juggling, `Idle` doing everything). The fix is not a nicer drawing of the same logic; it is to stop writing polling logic. A useful smell test: **if a program hooks `Idle` for its main behaviour, it is wrong.** Starter programs must not use `Idle` at all, except where a periodic check is the point (the storage controller uses `Every`).
+Status: **M8-M12 done** (2026-10-20); only the readability review of M12 with the user is left (see "Phase 2: decisions and status"). Prompted by the first look at the graph: it is a faithful drawing of the old *polling* programs, and polling code is unreadable as a graph (nested branches, queue juggling, `Idle` doing everything). The fix is not a nicer drawing of the same logic; it is to stop writing polling logic. A useful smell test: **if a program hooks `Idle` for its main behaviour, it is wrong.** Starter programs must not use `Idle` at all, except where a periodic check is the point (the storage controller uses `Every`).
 
 ## Why the current graphs are bad
 
@@ -542,45 +542,86 @@ M12 done (2026-10-20): block cards with settings and Expand, palette group Block
 
 ---
 
-# Unit size tiers (plan, proposed 2026-10-20, not started)
+# Unit size tiers (done 2026-10-24)
 
-Asked for: unit sizes both larger and smaller than today's three (light, medium, heavy), without breaking the paradigms (part catalogue, flyweight blueprints, deterministic engine, designs referencing parts by id).
+Asked for (2026-10-20): unit sizes both larger and smaller than the original three (light, medium, heavy), without breaking the paradigms (part catalogue, flyweight blueprints, deterministic engine, designs referencing parts by id). The first proposal (point-like units, a `SIZE` constant, a 2-slot micro) is superseded by what was built, below.
 
-## What "size" is today
-
-A chassis part carries `size` 0, 1 or 2. Everything else about a unit already comes from the chassis *part*: `mass`, `hp`, `slots` (4 / 6 / 9) and base `energy`. In the engine `size` only decides how fast a factory builds it (a factory builds at full speed with `size + 1` factory modules at a tenth of the speed with one fewer and not at all with two fewer); in the client it only scales the drawn body (`unitRadius`). Units are points to physics: pathing, separation (`SEPARATION_RADIUS`, 0.7 tile for everything), spatial grid and vision do not look at size at all. That is what makes extra tiers cheap.
-
-## Proposal: more chassis parts on a longer tier ladder (no new concept)
-
-1. **Tiers, not free scaling.** Keep one chassis part per tier so a class is still "a list of part ids". Ladder (names and numbers provisional):
-
-   | Tier | Chassis | Slots | Mass | HP | Factory modules needed |
-   |---|---|---|---|---|---|
-   | 0 | Micro | 2 | 1 | 15 | 1 |
-   | 1 | Light (today `chassis.light`) | 4 | 2 | 40 | 1 |
-   | 2 | Medium (today) | 6 | 5 | 100 | 2 |
-   | 3 | Heavy (today) | 9 | 10 | 220 | 3 |
-   | 4 | Super-heavy | 14 | 20 | 480 | 4 |
-   | 5 | Colossus | 20 | 40 | 1000 | 5 |
-
-   The rule becomes `modules = max(1, tier)`; micro and light share the 1-module factory. Existing part ids and saved designs keep working: only the numeric `size` field is renumbered (it is not stored in designs). The big tiers are gated by factory size, a longer production time and more energy, and the class cost is already derived from mass, so no new balance machinery is needed.
-2. **Smaller than a tile, larger than a tile.** Add `radius` (sub-tile units) to the chassis `PartDef` beside `size`; `SEPARATION_RADIUS`, the selection box, hit tests, spatial queries and `unitRadius` read it. Phase 1 keeps units point-like for pathing (a colossus squeezes through gaps; documented). Phase 2 (optional, bigger change): pathing clearance by tier, an A* cost layer that treats cells narrower than the unit as blocked, cached per tier (at most 6 variants).
-3. **Slots and parts must scale together.** Modules keep their mass; bigger chassis get more slots and more thrust headroom (`motor.*` thrust per mass). Add heavier modules where a tier makes the existing ones pointless: `motor.huge`, `battery.large`, `cargo.hold`, bigger weapons (the missile family already has small / medium / large). Check the speed formula `thrust * SPEED_FACTOR / mass` still gives a usable slow end.
-4. **Programs.** No change to the language: capabilities (`CAN_MOVE`, ...) come from modules. Add `SIZE` (own tier) as a readable value so a program can behave differently by size, and `unitSize(h)` for known units. CPU and memory stay modules; a micro chassis (2 slots) fits a CPU and one module only, which is the point of the tier.
-5. **Docs, designer and UI.** Designer chassis list grouped by tier with the slot count; the production panel greys out classes the building cannot make (done for the three existing tiers); docs table of the ladder.
-6. **Art.** `drawUnit` already scales by `size`; new tiers need only a radius table and a few outline tweaks (outlines are in units of body radius). Sprites for micro and colossus are the main art cost.
-
-## Risks
-
-- **Pathing for big units** is the real cost (phase 2); phase 1 is shippable without it.
-- **Balance**: micro units are cheap and numerous (spatial grid, replication and CPU load grow with unit count; the per-player unit cap stays the guard). A *tier cost multiplier* for the unit cap (a colossus counts as several units) may be needed.
-- **Renumbering `size`** touches `art.ts` and `unitRadius` (one table) and the factory rule; saved designs are unaffected.
-
-## Milestones
-
-| S | Deliverable | Done when |
+| S | Deliverable | Status |
 |---|---|---|
-| **S1** (done, 2026-10-20) | Factory modules limit chassis size; HQ has 2 modules; Light / Vehicle / Heavy Factory classes | A 1-module factory refuses a medium unit (test); the production panel dims what does not fit |
-| **S2** | `size` ladder with Micro, Super-heavy, Colossus chassis, slot/mass/hp table, `radius` on the part, rendering and separation from `radius`, designer and docs | Each new tier can be designed, produced at the right factory and drawn at the right size |
-| **S3** | New heavy modules (motor, battery, cargo, weapon) and a tier-aware balance pass; `SIZE` in programs | A colossus is worth its cost against ten lights in the scenario tests |
-| **S4** (optional) | Clearance-aware pathing per tier | A colossus never plans a path through a one-tile gap |
+| **S1** | Factory modules limit chassis size; HQ has 2 modules; Light / Vehicle / Heavy Factory classes | done 2026-10-20 |
+| **S2** | Tier ladder with Micro, Super-heavy, Colossus chassis, `radius` on the part, rendering and separation from `radius`, designer and docs | done 2026-10-24 |
+| **S3** | Heavy modules and starters, tier-aware balance check, size queries in programs | done 2026-10-24 (a Colossus beats 10 scouts and its own cost in scouts) |
+| **S4** | Clearance-aware pathing per tier | done 2026-10-24 (a Colossus never plans through a 1- or 2-tile gap) |
+
+## As built: tiers, legs, terrain height (2026-10-24, agent A1)
+
+The user asked for Micro, Super-heavy and Colossus chassis plus modules to go with them, **legs** that climb some rock (light legs 1 deep into a wall, heavy legs 2 deep, colossus legs any height, slowly), and a **height map** so cliffs exist and "what height am I on" is a lookup.
+
+- **Height map.** `Terrain.heights` (one byte per cell, read with `heightAt`): 0 = open ground, 1..9 = rock. Generated rock gets its depth (steps to the nearest open cell, so the rim is 1 and the core of a big outcrop is higher); some outcrops are **cliffs** whose height starts at `CLIFF_HEIGHT` (3) right at the edge, so only colossus legs and rotors cross them. `passable` stays as "height 0" for everything that only knows wheels (buildings, spawning, fog, the map preview). The wire form is one digit per cell, the height ('0' open), replacing the old '1'/'0'; the same form is what the Tiled editor writes into `map.terrain`, so drawn levels can have cliffs.
+- **Mobility** = `{ climb, clearance }` from the blueprint. `climb` is the highest rock a unit may enter (0 wheels and tracks, 1 `legs.light`, 2 `legs.heavy`, 9 `legs.colossus`). Legs and wheels (and rotors) do not mix. On rock a legged unit moves at `CLIMB_SPEED_PERMILLE` of its speed. Buildings block every ground unit.
+- **Tier ladder.** `size` is the tier: 0 Micro, 1 Light, 2 Medium, 3 Heavy, 4 Super-heavy, 5 Colossus (the long chassis are 1/2/3). Factory modules for full speed = `max(1, size)`, so light/medium/heavy keep needing 1/2/3. A **Titan Works** starter building has 5 factory modules. `PartDef.radius` (tiles) on chassis decides the drawn size, separation (`radius a + radius b + SEPARATION_GAP`) and edge distance (weapons and docking reach the hull, not the centre).
+- **Clearance (S4).** `clearance` = cells a unit needs clear on each side of its centre, `ceil(radius - 0.5)`: 0 up to Heavy, 1 for Super-heavy and Colossus (a 3-wide corridor). A per-climb Chebyshev distance map (cached on `Terrain.version`) answers it; units with clearance 0 and climb 0 use the old fast path. A unit that starts in a tight spot may squeeze out through tight cells, but never enter one from open space.
+- **Programs.** Queries `size()` (own tier; a constant cannot differ per unit), `unitSize(h)` (a known unit's tier, -1 otherwise), `climb()` and `heightAt(x, y)`, plus constants `SIZE_MICRO` ... `SIZE_COLOSSUS`. Micro has 3 slots (a CPU and two modules), not 2.
+- **S3 modules**: `motor.huge`, `legs.light` / `legs.heavy` / `legs.colossus`, `battery.large` (mobile), `cargo.hold`, `cannon.siege`, `gun.rotary`, `armor.heavy` (most with a `minSize`); starter classes Titan Works, Mite (micro scout), Strider (light legs), Walker (heavy legs), Juggernaut (super-heavy), Colossus. `MAX_CLASSES_PER_PLAYER` is 48.
+
+Still open (pick up here; claim in `AGENTS.md`):
+1. **Bots field the new tiers** (`bot.ts`): a bot never builds a Titan Works, legs or big hulls.
+2. **Unit-cap weight per tier** (a colossus counting as several units) if micro swarms hurt in play-tests.
+3. **Art**: hull silhouettes come from drive x chassis tier, walkers animate their legs, turrets aim, wind rotors spin and harvesters spark (2026-10-24, `art.ts`, `renderer.ts`, `sparks.ts`); still procedural placeholders. Open: spinning helicopter rotors, scrolling tracks, role hints on the hull (gun, cargo, arm are only drawn on top of it now), turrets that track a locked target before the first shot (needs the target networked or a `Lock` event), a broken-module look (smoke, dangling legs), sounds for `Break` and `Harvest`, and height is shading plus a cliff rim only (no shadow direction).
+
+### Module damage: open follow-ups (done 2026-10-24: broken mask, aimed fire, repair order)
+
+1. **Bots and starter programs**: none of them uses `config.aim` or `brokenOf` yet. Fighters could aim at `M_MOTOR` against walkers or `M_WEAPON` against turrets; repair drones could prefer units with broken modules.
+2. **Balance**: integrity numbers (25 + 6 per mass, legs 12 / 30 / 100) are a first guess; every hit now wears a random module. Measure how often units lose a CPU / gun in a normal match.
+3. **Per-module state on the wire**: only the broken bit is networked; clients cannot show partly worn modules. A `health %` per module would need a compact delta.
+4. **Buildings**: factory, generator and other building modules break the same way; check a broken factory or silo is clear in the UI (the modules panel lists it, nothing else does).
+4. Flying units ignore height entirely (by design for now; revisit if tall cliffs should block low flyers).
+
+## Sound: combat and explosion effects (planned 2026-10-24)
+
+Review of `client/src/sound.ts` found overlapping voices work (each `play()` has its own source and gain nodes, nodes are released on `ended`). A fixed limiter now sits after the master gain. Still to do:
+
+1. ~~Give the new tags limits~~ (done: `combat.shot*`, `combat.hit*`, `death.unit` and `death.building` have `cooldownMs` / `maxVoices` in `sound/sound_manifest.json`). Give any new combat or explosion tag the same before hooking it; both default to 0 (unlimited).
+2. **Hook the events** in `gameSounds.ts`: the missile burst, `combat.shot.missile` (tag exists, no files), `SimEvent.Build` and `Charge`.
+3. **Global voice cap** (only if a big fight still sounds muddy): when total live voices pass ~32, drop the quietest or farthest new sound. Needs a shared voice count in `SoundPlayer`, not per pool.
+4. **First-play drops**: a sound is skipped if its file is still decoding (the first one after load can be missing). Option: await `decode` for tags marked important.
+5. A `play()` test would need an `AudioContext` stub; today only `soundbank` is tested.
+
+## Credits and options (2026-10-24)
+
+- Credits roll (`renderCredits` in `lobby.ts`) lists people (`CREDIT_PEOPLE`), music (`GET /music`) and sound effects (`GET /sound`). Add anyone who contributes there.
+- `client/src/settings.ts` holds client-only settings (today: reduce motion, stored in `wst-reduce-motion`, sets `data-reduce-motion` on `<html>`). New motion should key off that attribute in CSS or `reduceMotion()` in code. Not yet honoured by the in-game renderer (screen shake, particles, build sparks): possible follow-up.
+- Credits follow-ups: the roll now always scrolls with a Pause / Resume button (no hover pause). If the roll grows long, consider a skip-to-top control. Agents who add a substantial feature can add a line to `CREDIT_PEOPLE`; keep roles short.
+
+## Engine review fixes (2026-10-24, review by agent A2)
+
+From the "Engine and flow pass" in `REVIEW.md`. **Done** (A2, 2026-10-24; details in `PROGRESS.md`, tests in `engine/test/hardening.test.ts` and `server/test/match.test.ts`): 1, player programs can no longer crash the server; 2, orders are never lost to a full queue; 3, the server-side hotkey check and small fixes. **Parked**: 6, script-system allocations: the sweep cache and nearest-only fast path changed nothing measurable (median tick ~0.5 ms at 256 a side); revisit only with a profile showing the script system matters.
+
+**Open: items 4-5, where the tick spikes come from.** Both touch `path.ts` / `planPath`, which are free to claim (A1 released them). Keep `findPath(..., m)` respecting `Mobility` and the squeeze-out rule (tests in `engine/test/tiers.test.ts`). Each has a waiting `it.fails` test in `engine/test/perf.test.ts`: when the fix lands the test starts passing, which `it.fails` reports as a failure; change it to `it`.
+
+4. **A\* to buildings** (`path.ts`, `planPath`): retarget a blocked goal to the nearest tile next to the target's footprint that the unit fits on (`Terrain.fits` / `nearestFit` with the unit's mobility) before searching, or cut the search off once the best h stops improving. Budget: within 10x of a path to the open tile beside it (today ~100x).
+5. **Group orders without a stall** (`simulation.ts` movement, `systems.ts`): a path-planning queue with a per-tick budget (e.g. 8 ms), where units with no plan yet head straight for the goal; then optionally one shared search per command batch (per mobility class, since legs and big hulls plan differently). Build `freeMoveTile`'s taken set once per batch. Budget: no tick over 100 ms after ordering 256 units across Great Plains (today ~460 ms).
+
+Perf budgets (`engine/test/perf.test.ts`, run in CI by `npm test`; `npm run test:perf` runs only them; `WST_PERF_SLACK=3` loosens the wall-clock ones on a slow machine): a 256-a-side match ticks at mean < 15 ms and p95 < 50 ms; 4x the units costs < 8x the median tick; the VM runs > 1000 cycles/ms; a purely reactive unit uses 0 cycles between events (exact); a corner-to-corner path on Badlands takes < 25 ms; a 256-unit order takes < 100 ms to issue. Add a budget with any new system that runs per unit per tick.
+
+## Typed factory modules (decided 2026-10-24, option 2; being implemented)
+
+Problem: one factory module count decided everything, so a big factory built every smaller unit as well and one building could do far too much. Decision: replace `factory.basic` with one factory module per size tier (`factory.micro`, `.light`, `.medium`, `.heavy`, `.super`, `.colossal`, all in the `factory` slot). A building can build a unit only if it has a module of exactly that unit's tier; several tiers need several modules (so a big factory is not automatically a better small one). No more "one module short = a tenth of the speed". Module mass and use grow with the tier. Starter buildings: HQ light + medium (so a Builder can always be made), Light Factory micro + light, Vehicle Factory medium, Heavy Factory heavy, Titan Works super + colossal. The old `factory.basic` id stays as an alias of the light module so saved designs still load (a saved multi-module factory becomes light-tier). The bot Assembler gets every tier. Also in this change: a factory animation while it builds (other players can see it), the full production queue replicated (`Production` component) and shown as an 8-slot icon grid with a progress fill, a `dequeue` command (click a slot to remove it, matter refunded). Open ideas: one production line per module of a tier (parallel builds), tier-specific module costs scaling like units (x2.5), a "can build" legend in the designer.
+
+## Big-unit balance (follow-up to the cost scaling, 2026-10-24)
+
+Super-heavy and colossus units now cost x6.25 and x15.6 (`SIZE_COST_FACTOR` in `rules.ts`) but are no stronger than before, so per matter they lose to many cheap units. Decide with the user whether to buff their hp/damage, shorten their build time, or leave them as expensive status units; then retune a Colossus-vs-scouts fight in `tiers.test.ts`.
+
+## Campaigns (framework done 2026-10-24; triggers still to plan)
+
+- **Tiled objects (next step for the editor):** `editor/` only carries the terrain layer so far (done 2026-10-24). Plan it together with triggers: an object layer for start positions, resource fields, neutral units, pre-placed buildings and named trigger regions, read by `tiled-to-level.mjs` into the level file. On drawn maps the game still places fields, starts and neutrals itself.
+
+Done: `campaigns/` folder (formats in `campaigns/README.md`), `GET /api/v1/campaigns`, `mode=campaign` rooms (`server/src/campaign.ts`, `Match` option `level`), a Campaigns menu with campaign list, level list and briefing screens (`client/src/campaignMenu.ts`), progress in `localStorage` (`wst-campaigns`, levels completed per campaign, `campaignProgress.ts`), end-of-mission buttons (Next mission / Retry) in `ui.ts`. A level is played as solo against the existing bot; victory is the existing "destroy every bot" check, and winning saves progress.
+
+Next, in order:
+1. **Trigger system** (needs its own design pass before code; `triggers` in the map files is a reserved array of `{ "id": string, ... }`, kept by the server and never sent to clients). Questions to settle: event sources (tick, area entered, unit/building destroyed, resource held, timer), actions (spawn units, show message, set objective, change the victory rule, play sound), where it runs (server `Match`, deterministic in the tick like commands), how state is saved for replays, whether it reuses the flow language, and an in-level objective list/message UI.
+2. **Victory conditions beyond `eliminate`** (survive N minutes, destroy a target, reach an area), driven by triggers; replace the `victory` field's single value.
+3. **Scripted starts**: fixed start corner, starting units/buildings/resources, enemy composition and bot aggressiveness per level (today every level uses the random-corner solo setup and the standard bot).
+4. ~~Hand-placed terrain~~ (done 2026-10-24: `map.terrain` drawn in Tiled via `editor/`, heights 1-9 included, so drawn levels can have cliffs). What is left is the object layer (first bullet above).
+5. **Server-side progress / accounts** if saves should follow the player across browsers (today the client is trusted and progress is per browser; any level can be started by editing the URL).
+6. Campaign-specific design/unit restrictions, per-level music tags, a briefing image, and a "campaign complete" screen.

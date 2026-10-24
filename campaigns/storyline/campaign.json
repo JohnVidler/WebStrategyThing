@@ -1,0 +1,10 @@
+{
+  "name": "Digital Chaos",
+  "order": 2,
+  "summary": "The main story: fight your way across a fractured network.",
+  "story": [
+    "The network was meant to be seamless. Then the partitions started to close, one after another, and every fragment woke with its own idea of who should be in charge.",
+    "You command the first unit to reach the surface in the aftermath. Whatever you build now decides what survives."
+  ],
+  "maps": ["01-landfall", "02-the-long-ridge", "03-the-citadel"]
+}

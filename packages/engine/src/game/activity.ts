@@ -156,9 +156,9 @@ function finish(sim: Simulation, e: number, a: ActivityState, outcome: number): 
   const fs = sim.flows[e];
   if (!fs) return;
   const entry = a.entries?.[outcome] ?? -1;
-  if (entry >= 0 && a.frame && a.handler >= 0) {
-    enqueueContinuation(fs, a.handler, entry, a.frame, a.forOrder);
-  } else if (a.forOrder && (sim.tasks[e]?.count ?? 0) > 0) {
+  // A chain is only lost when the queue is full of orders and other chains.
+  const chained = entry >= 0 && a.frame && a.handler >= 0 && enqueueContinuation(fs, a.handler, entry, a.frame, a.forOrder);
+  if (!chained && a.forOrder && (sim.tasks[e]?.count ?? 0) > 0) {
     // Nothing continues the work, so the order is done: on to the next.
     sim.nextOrder(e);
     return;

@@ -41,39 +41,14 @@
 
       <section>
         <h2>Selection</h2>
-        <div id="selection-summary" class="muted">Nothing selected</div>
         <div id="selection-resources" class="resource-list" hidden></div>
         <div id="production" hidden>
           <div id="production-status" class="muted"></div>
+          <div id="production-queue" class="queue-grid" aria-label="Production queue"></div>
           <div id="production-buttons" class="action-grid"></div>
         </div>
         <div id="modules" hidden></div>
         <div id="result"></div>
-        <details>
-          <summary>Controls</summary>
-          <pre>Left click / drag   select (Shift adds); a drag takes
-                    combat units first, then turrets, then
-                    everything else
-Double-click unit   select all matching units on screen
-Right click         move / attack / harvest / dock / charge /
-                    build (on a building: set rally point)
-Ctrl + right click  queue instead of replace
-                    (Shift also works outside Firefox)
-Action grid         M move, A attack, S stop, H harvest,
-                    D unload, C recharge, X demolish (press
-                    twice; sites refund fully), plus class buttons
-                    (aimed ones: left-click a target; Ctrl
-                    keeps aiming; right-click/Esc cancels)
-Mouse wheel         zoom; middle-drag or arrows pan; Home resets
-Build bar (bottom)  place a building; selected builders build it
-                    (Ctrl/Shift + click places several)
-Esc                 cancel aim / placement / deselect / docs
-Ctrl+1..9, 1..9     set / recall group (press twice
-                    quickly to centre on it)
-Shift+1..9          add the selection to a group
-Ctrl+A              select all units
-F1 / F2             script docs / class designer</pre>
-        </details>
       </section>
 
       <footer id="designs-bar" aria-label="Your designs">
@@ -100,6 +75,7 @@ F1 / F2             script docs / class designer</pre>
             <span>Manual &amp; API docs — the game keeps running underneath</span>
             <span>
               <span class="docs-music"></span>
+              <button id="docs-back" data-sound="menu.back" title="Back to the previous manual page">← Back</button>
               <a class="button" href="docs.html" target="_blank" rel="noopener">Open in new tab ↗</a>
               <button id="docs-close" data-sound="ui.panel_close" title="Close (Esc)">✕</button>
             </span>

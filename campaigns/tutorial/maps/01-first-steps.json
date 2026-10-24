@@ -1,0 +1,15 @@
+{
+  "name": "First Steps",
+  "briefing": {
+    "title": "Training Range: First Steps",
+    "story": [
+      "Your headquarters is online and the range is quiet. Your instructor wants to see you gather matter, raise a few buildings and put a handful of units in the field.",
+      "A training drone will test your defences before the session ends."
+    ],
+    "objectives": ["Harvest matter from the nearby fields", "Build at least one new structure", "Destroy the training drone's forces"],
+    "tips": ["Select a unit and right-click a resource field to harvest it.", "Open the Manual from the main menu for the full controls."]
+  },
+  "map": { "layout": "open", "width": 48, "height": 48, "density": 0.5, "outposts": 0, "seed": 101 },
+  "victory": { "type": "eliminate" },
+  "triggers": []
+}

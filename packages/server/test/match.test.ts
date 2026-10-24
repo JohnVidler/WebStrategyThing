@@ -516,4 +516,26 @@ describe('match', () => {
     expect(over[0].winner).toBe(idA);
     expect(over[0].reason).toBe('no-power');
   });
+
+  it('a bug in the simulation ends that match, not the server', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const match = new Match({ mapId: 'small-basin' });
+    const a = new FakeSocket();
+    match.join(asSocket(a));
+    begin(match, a);
+    (match as unknown as { tick(): void }).tick = () => {
+      throw new TypeError('boom');
+    };
+    match.start();
+    expect(() => vi.advanceTimersByTime(1000)).not.toThrow();
+    expect(error).toHaveBeenCalled();
+    expect(a.messages.some((m) => m.t === 'error')).toBe(true);
+    expect(a.readyState).toBe(3);
+    expect(match.empty).toBe(true); // the room sweep removes it
+    const late = new FakeSocket();
+    match.join(asSocket(late));
+    expect(late.readyState).toBe(3);
+    error.mockRestore();
+  });
 });

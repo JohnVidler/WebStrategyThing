@@ -157,7 +157,109 @@ export function parseDoc(source: string): FlowDoc {
   if (!doc || typeof doc !== 'object' || doc.format !== FLOW_FORMAT) throw new FlowError(`Not a ${FLOW_FORMAT} program`);
   if (doc.version !== FLOW_VERSION) throw new FlowError(`Unsupported flow version ${String(doc.version)}`);
   if (!Array.isArray(doc.vars) || !Array.isArray(doc.handlers)) throw new FlowError('Program needs vars and handlers');
+  const problem = shapeProblem(doc);
+  if (problem) throw new FlowError(problem);
   return doc as FlowDoc;
+}
+
+/** Deepest nesting of statements and expressions a stored program may have (the checker and compiler recurse over it). */
+export const MAX_NESTING = 200;
+
+const BIN_OP_SET: ReadonlySet<string> = new Set(['+', '-', '*', '/', '%', '==', '!=', '<', '<=', '>', '>=', '&&', '||', '&', '|']);
+const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+const isStr = (v: unknown): v is string => typeof v === 'string';
+const isNum = (v: unknown): v is number => typeof v === 'number';
+const isConfigValue = (v: unknown): boolean => isNum(v) || isStr(v) || (Array.isArray(v) && v.every(isNum));
+
+/**
+ * Checks that stored JSON has the IR's shape, without recursion: a program from the network can be
+ * nested deeper than the call stack, and a missing field would otherwise surface as a TypeError
+ * deep in the checker. Returns the first problem, or null.
+ */
+function shapeProblem(doc: Record<string, unknown>): string | null {
+  if (doc.blocks !== undefined && !Array.isArray(doc.blocks)) return 'blocks must be a list';
+  for (const v of doc.vars as unknown[]) if (!isObj(v) || !isStr(v.name) || !isNum(v.init)) return 'Every variable needs a name and a start value';
+  for (const b of (doc.blocks ?? []) as unknown[]) {
+    if (!isObj(b) || !isStr(b.id) || !isStr(b.block) || !isObj(b.settings) || !Object.values(b.settings).every(isConfigValue)) return 'Malformed block use';
+  }
+  // Work list of [value, 's' (statement list) | 'e' (expression), depth].
+  const work: [unknown, 's' | 'e', number][] = [];
+  for (const h of doc.handlers as unknown[]) {
+    if (!isObj(h) || !isStr(h.id) || !isStr(h.event) || !isObj(h.config) || !Array.isArray(h.params)) return 'Malformed event block';
+    if (!h.params.every(isStr) || !Object.values(h.config).every(isConfigValue)) return `Malformed event block ${h.id}`;
+    work.push([h.body, 's', 1]);
+  }
+  while (work.length) {
+    const [v, kind, depth] = work.pop()!;
+    if (depth > MAX_NESTING) return `The program is nested too deeply (more than ${MAX_NESTING} levels)`;
+    const d = depth + 1;
+    if (kind === 's') {
+      if (!Array.isArray(v)) return 'Malformed statement list';
+      for (const s of v as unknown[]) {
+        if (!isObj(s) || !isStr(s.id)) return 'Malformed statement';
+        switch (s.k) {
+          case 'call':
+            if (!isStr(s.fn) || !Array.isArray(s.args) || (s.result !== undefined && !isStr(s.result))) return `Malformed call ${s.id}`;
+            for (const a of s.args) work.push([a, 'e', d]);
+            if (s.outcomes !== undefined) {
+              if (!isObj(s.outcomes)) return `Malformed call ${s.id}`;
+              for (const chain of Object.values(s.outcomes)) work.push([chain, 's', d]);
+            }
+            break;
+          case 'set':
+            if (!isStr(s.name)) return `Malformed assignment ${s.id}`;
+            work.push([s.value, 'e', d]);
+            break;
+          case 'if':
+            work.push([s.cond, 'e', d], [s.then, 's', d], [s.else, 's', d]);
+            break;
+          case 'while':
+            work.push([s.cond, 'e', d], [s.body, 's', d]);
+            break;
+          case 'emit':
+            if (!isStr(s.event) || !Array.isArray(s.args)) return `Malformed emit ${s.id}`;
+            for (const a of s.args) work.push([a, 'e', d]);
+            break;
+          case 'comment':
+            if (!isStr(s.text)) return `Malformed comment ${s.id}`;
+            break;
+          default:
+            return `Unknown statement kind in ${s.id}`;
+        }
+      }
+      continue;
+    }
+    if (!isObj(v)) return 'Malformed expression';
+    switch (v.k) {
+      case 'num':
+        if (!isNum(v.v)) return 'Malformed number';
+        break;
+      case 'str':
+        if (!isStr(v.v)) return 'Malformed text';
+        break;
+      case 'ref':
+        if (!isStr(v.name)) return 'Malformed name';
+        break;
+      case 'un':
+        if (v.op !== '-' && v.op !== '!') return 'Unknown operator';
+        work.push([v.a, 'e', d]);
+        break;
+      case 'bin':
+        if (!isStr(v.op) || !BIN_OP_SET.has(v.op)) return 'Unknown operator';
+        work.push([v.a, 'e', d], [v.b, 'e', d]);
+        break;
+      case 'cond':
+        work.push([v.c, 'e', d], [v.a, 'e', d], [v.b, 'e', d]);
+        break;
+      case 'call':
+        if (!isStr(v.fn) || !Array.isArray(v.args)) return 'Malformed call';
+        for (const a of v.args) work.push([a, 'e', d]);
+        break;
+      default:
+        return 'Unknown expression kind';
+    }
+  }
+  return null;
 }
 
 /** A short stable id generator for new nodes (`n1`, `n2`, ...), continuing after the highest used (in the document, and among `reserved` ids such as the editor's loose pieces). */

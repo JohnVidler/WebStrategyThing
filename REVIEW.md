@@ -4,7 +4,68 @@ Findings from reviewing the uncommitted changes (2026-10-18), for later actionin
 
 Status after the first fixing pass (2026-10-18): items marked **Done** are implemented and covered by `npm test` and `npm run typecheck`, but nothing was checked in a browser. **Partly done** and **Open** items need a design decision or a play-test. One item was **Closed** as not a bug.
 
-## Correctness and performance pass
+## Engine and flow pass (2026-10-24)
+
+Review of the engine after the flowcode migration (commits d9a5d54..15998c8): `engine/src/flow/*` (compiler, checker, VM), the script host (`game/api.ts`, `activity.ts`, `sensor.ts`), and the tick path in `simulation.ts` / `systems.ts` / `path.ts`. Every item marked **Confirmed** was reproduced; each has a test in [`engine/test/hardening.test.ts`](packages/engine/test/hardening.test.ts) (fixed 2026-10-24, now plain tests) or [`engine/test/perf.test.ts`](packages/engine/test/perf.test.ts), written as `it.fails`. When you fix one, its test starts passing and `it.fails` reports that as a failure: change it to `it` (and move it next to that code's other tests). Fix plans are in `PLAN.md` ("Engine review fixes, 2026-10-24").
+
+### Server crashes (any player can trigger them)
+
+The match loop (`Match.start` → `tick()`, `server/src/match.ts:176`) runs from `setTimeout` without a try/catch, and `Match.apply` re-throws anything that is not a Flow, Blueprint or Command error. Any other exception from `sim.step()` or a command is an uncaught exception, so Node exits and every match on the server ends.
+
+- [ ] **A stored program nested a few thousand levels deep crashes the server.** Confirmed. [`flow/check.ts:102`](packages/engine/src/flow/check.ts#L102) `checkDoc` → `expr`, and `compile.ts` `expr`, `text.ts` `expandBlocks`
+  - Problem: the checker and compiler recurse once per nesting level. A `loadDesigns` message of about 120 KB (the WebSocket limit is 1 MB) holding a 5,000-deep `-(-(-(...)))` throws `RangeError: Maximum call stack size exceeded`, not a `FlowError`.
+  - Fix: limit nesting depth while checking (one depth counter in `expr` and in `block`; refuse past, say, 64 with a `FlowError`), before anything else recurses. The stack-depth item below needs the same walk.
+  - Also: wrap `tick()` in a try/catch that ends only that match (log it, tell its players), so the next engine bug cannot take the whole server down.
+
+- [ ] **A chain started from a Visitor handler points the visitor queries at entity 0, and `visitorCaps()` then crashes `step()`.** Confirmed. [`game/systems.ts:174`](packages/engine/src/game/systems.ts#L174) `scriptSystem` hooks, [`flow/run.ts:327`](packages/engine/src/flow/run.ts#L327)
+  - Problem: when a continuation starts, `runFlow` calls `hooks.start` with zeroed event arguments. For a Visitor chain, the hook sets `sim.visiting[b] = 0`, which is the handle of entity 0 generation 0, the first thing `createMatch` spawns (a resource field). `visitorCaps()` then calls `sim.stats(0)` on a resource and throws a `TypeError`. `order()` would push to whatever entity 0 is, without checking its owner.
+  - Example: `on(Visitor, (r, who) => { goTo(1, 1, { blocked: () => { c = visitorCaps(); } }); })` on any building.
+  - Fix: for a continuation, give the hook the first four slots of the saved frame (they hold the event's arguments), or record the visitor in `Pending`. In `api.ts`, `currentVisitor` should also check `sim.unit.has(v)`, and `order()` should check that `v` belongs to the building's owner.
+
+### Correctness
+
+- [ ] **A full event queue drops an Order, and the unit then ignores every later order.** Confirmed. [`flow/run.ts:206`](packages/engine/src/flow/run.ts#L206) `raise`, [`game/simulation.ts:994`](packages/engine/src/game/simulation.ts#L994) `raiseFrontOrder`
+  - Problem: `raise` counts a handler as having taken the event even when `enqueue` dropped it. `raiseFrontOrder` sees `taken > 0` and leaves the order at the front, but no handler will ever run for it. New orders queue behind it and are never raised. Only an urgent `REPLACE` order or a reboot clears it. A basic CPU holds 16 events, so a burst of hits with a `Damaged` block, or `Message` spam, is enough to fill it.
+  - Same problem: `enqueueContinuation` dropping a chain for an order-context activity (`finish` in `activity.ts`) also leaves the order unfinished.
+  - Fix: `raise` returns how many were really queued. `Order` (and chains) should evict any non-Order event when the queue is full, not only periodic ones: an order is the player's intent and must not be lost to `Damaged` noise.
+
+- [ ] **The server compile path does not check Button hotkeys.** Confirmed. [`flow/compile.ts:136`](packages/engine/src/flow/compile.ts#L136)
+  - Problem: `compileDoc` passes its own `reservedKeys` argument (undefined from `compileUnitProgram`) to `checkDoc`, instead of `host.reservedKeys`. The editor and the text path check hotkeys, but an uploaded design file can give a Button the key `M`, `A`, `S`, ... and shadow a common action.
+  - Fix: `checkDoc(doc, host, reservedKeys ?? host.reservedKeys)`.
+
+- [ ] **Expressions deeper than the 32-slot stack compile, then crash-loop the unit.** Confirmed. [`flow/compile.ts:56`](packages/engine/src/flow/compile.ts#L56)
+  - Problem: the comment says deeper expressions are rejected at compile time, but nothing measures depth. Such a program faults with `stack overflow` on its first run, reboots, and faults again every other tick. `Op.Call` / `Op.Latent` push their result without an overflow check (a zero-argument call at depth 32 writes past the typed array and leaves `sp` at 33).
+  - Fix: compute the maximum stack depth per statement in `compile.ts` (each `emit` of a push/pop adjusts a counter) and report a `FlowError` on the node. Then the runtime overflow checks only guard against bugs.
+
+### Performance
+
+Budgets now run in CI with `npm test` (see `perf.test.ts`). Measured on a desktop, 2026-10-24, Great Plains with 256 units a side: mean tick 1.9 ms, p95 9.5 ms, max 14 ms. Almost all of the spikes come from A*.
+
+- [ ] **A path to a building floods the whole map.** Confirmed, 99% of path-planning time. [`game/path.ts:83`](packages/engine/src/game/path.ts#L83) `findPath`
+  - Problem: dock, take, charge, repair and approach aim at a building's centre, which is inside its footprint and so unwalkable. A* then expands every reachable tile before falling back to the closest one. Measured over 300 ticks: 86 plans to blocked goals took 396 ms (4.6 ms each, 13 ms worst); 240 plans to open goals took 4 ms in all. It gets worse on bigger maps.
+  - Fix: before searching, move a blocked goal to the nearest walkable tile next to the footprint (`Terrain.nearestWalkable`, or the footprint's ring), or stop the search once the open list can no longer get closer than the best tile found. The `it.fails` test "plans a path to a building about as fast as to the open tile next to it" covers this.
+
+- [ ] **A big group order stalls the server for about half a second.** Confirmed. `issueOrder` → `pushOrder` → `goTo` → `setDestination` → `planPath` for each unit, all in one tick
+  - Problem: ordering 256 scouts across Great Plains costs 17 ms to issue, then 464 ms in the next tick, because 256 independent A* searches run back to back. The server is single-threaded, so every match in the process stalls.
+  - Fix: a per-tick planning budget (units wait in a queue for a plan; a unit with no plan yet walks straight towards the goal), and/or one shared search (flow field or reverse Dijkstra from the goal) for units given the same order in the same tick. `freeMoveTile` also scans every unit's order list for each unit ordered (O(n²): 17 ms for 256), so build the "taken" set once per command batch.
+
+- [ ] **Hot-path allocations and lookups in the script system** (by reading; each is small, but they run per unit per tick)
+  - `resolveSweep` (`sensor.ts:47`) runs on every Detected sweep: it allocates the watch slice, a notes array, and the clamp messages as template strings. Resolve once per (handler, stats) and cache it on the flow state; build the notes only for the designer.
+  - `configInt` / `configInts` (`compile.ts:116`) look up the setting by name and fall back to `Array.find` over the schema. They are called per tick in `tickTimers` (`Every`), `runFlow` (Idle interval), `pushOrder` (`urgent`), `raiseFrontOrder`, `transmit` and `addVisitor`. Resolve the settings into a plain object on `CompiledHandler` at compile time.
+  - `raise(..., accept)` filters with a fresh closure for every Damaged, Message, Order, Timer and Visitor event. Fine for now; it can become a per-event filter function on `CompiledHandler`.
+  - `sensorSweep` allocates an object per candidate and sorts, even for `limit: 1, sort: NEAREST` (the common case), which `spatial.nearest` already does without allocating.
+
+### Minor
+
+- [ ] Per-entity side tables are not all reset when an index is reused: `repairCarry` (a new repairer inherits up to one matter of credit), and the `chargeFlow` map (a new pad inherits the old smoothed rate, which only affects the pulse effect). `radarReady` is keyed by handle and never pruned, so it grows over a long match. Clear them in `destroyEntity` / `addCommon`.
+- [ ] `CONFIG_NAMES['Detected.watch']` (`flow/config.ts:9`) lacks `MISSILE`, although `DetectKind.Missile` exists and `EngageEnemies.watch` lists it, so the editor shows `4` instead of the name.
+- [ ] The spatial grid is rebuilt once at the start of `step()`. Missiles and units spawned during the tick are not in it until the next tick, and destroyed indices stay in it (every callback checks `has`, so nothing breaks today). Worth a comment on `SpatialGrid.rebuild` so nobody relies on it being current.
+
+### Checked and fine
+
+The VM's cycle accounting (every loop iteration passes a costed `Stmt`, so `HANDLER_LIMIT` always ends runaway loops); pausing only at statement boundaries; continuation frames (scope captured before the call's result is declared, in both checker and compiler); the queue's eviction of periodic events; `memorySlots` and `stackDepth` can't change after a program is installed (memory and stack parts are passive, so `createFlow`'s throw is unreachable); handle generations on entity reuse; deterministic iteration orders (spatial grid, `activeUnits` insertion order, sorted silos).
+
+## Correctness and performance pass (2026-10-18)
 
 Most severe first.
 

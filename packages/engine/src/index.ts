@@ -28,13 +28,16 @@ export * from './game/sensor';
 export * from './game/activity';
 export * from './game/content';
 export * from './game/map';
+export * from './game/campaign';
 export * from './game/bot';
 export * from './game/missile';
 export * from './game/simulation';
 export * from './game/sandbox';
 export * from './game/designs';
+export * from './game/dev';
 
 export * from './net/codec';
 export * from './net/protocol';
+export * from './net/dev';
 
 export * from './util/rng';

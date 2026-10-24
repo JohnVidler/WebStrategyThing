@@ -19,6 +19,7 @@ import {
   wind,
   World,
   type BlueprintStats,
+  type CpuProfile,
   type NetworkInfo,
   type PowerNode,
   type ProgramButton,
@@ -72,6 +73,8 @@ export class ClientState {
   readonly programs = new Map<number, string>();
   /** Own units' task queues: entity -> [type, x, y, targetEntity, ...]. */
   readonly tasks = new Map<number, number[]>();
+  /** The last two CPU profile answers per own unit (cumulative counters at a server tick), so the panel can show rates. */
+  readonly cpuProfiles = new Map<number, { readonly now: { tick: number; profile: CpuProfile | null }; readonly before?: { tick: number; profile: CpuProfile | null } }>();
   /** Power links as entity pairs. */
   links: [number, number][] = [];
   /** Links with a known flow direction (networks with a generator or storage). */
@@ -128,7 +131,7 @@ export class ClientState {
   stats(e: number): BlueprintStats | undefined {
     if (!this.unit.has(e)) return undefined;
     const bp = this.blueprints.get(this.unit.f.blueprint[e]);
-    return bp ? statsFor(bp, this.modules.has(e) ? this.modules.f.off[e] : 0) : undefined;
+    return bp ? statsFor(bp, this.modules.has(e) ? (this.modules.f.off[e] | this.modules.f.broken[e]) >>> 0 : 0) : undefined;
   }
 
   isStructure(e: number): boolean {
@@ -207,6 +210,7 @@ export class ClientState {
   /** Called on every (re)welcome: owner-only data is about to be resent. */
   resetSession(): void {
     this.tasks.clear();
+    this.cpuProfiles.clear();
     this.lastHp.clear();
     this.programs.clear();
     this.setNetworks([]);
@@ -216,10 +220,18 @@ export class ClientState {
     for (const [e, ...queue] of updates) this.tasks.set(e, queue);
   }
 
+  applyCpuProfile(unit: number, tick: number, profile: CpuProfile | null): void {
+    const have = this.cpuProfiles.get(unit);
+    // A new program (or a unit that reused the slot) starts its counters again: forget the old answer.
+    const same = have?.now.profile && profile && have.now.profile.handlers.length === profile.handlers.length && have.now.tick < tick;
+    this.cpuProfiles.set(unit, { now: { tick, profile }, before: same ? have!.now : undefined });
+  }
+
   /** Call after applying a tick, before world.flush(): updates occupancy and links if buildings changed. */
   afterTick(): void {
     for (const e of this.world.despawned) {
       this.tasks.delete(e);
+      this.cpuProfiles.delete(e);
       this.lastHp.delete(e);
     }
     // Anything in view losing health means a fight is going on (repairs and growth are not).

@@ -5,6 +5,7 @@ import { ConnectingScreen } from './connecting';
 import { DesignStore } from './designs';
 import { GameSounds } from './gameSounds';
 import type { Designer } from './designer';
+import type { DevTools } from './devTools';
 import { Input } from './input';
 import { showLobby } from './lobby';
 import { MusicPlayer } from './music';
@@ -14,12 +15,16 @@ import { Renderer } from './renderer';
 import { playSound, sound } from './sound';
 import { ClientState } from './state';
 import { Ui } from './ui';
+import { briefingUrl, campaignUrl, fetchCampaigns } from './campaignMenu';
+import { completeLevel } from './campaignProgress';
+import { initSettings } from './settings';
 import { installUiSounds } from './uiSounds';
 
 /** Combat music lingers this long (seconds) after the last damage seen. */
 const COMBAT_MUSIC_SECONDS = 15;
 
 async function main(): Promise<void> {
+  initSettings();
   const apiBase = `${location.origin}/api/v1`;
   const socketProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const socketBase = import.meta.env.VITE_SERVER_URL ?? `${socketProtocol}//${location.host}/api/v1/ws`;
@@ -27,6 +32,10 @@ async function main(): Promise<void> {
   const room = new URLSearchParams(location.search).get('room');
   const mapId = new URLSearchParams(location.search).get('map') ?? DEFAULT_MAP_ID;
   const mode = parseGameMode(new URLSearchParams(location.search).get('mode'));
+  // Campaign levels: which campaign and level (by file name), and its position in the campaign.
+  const campaignId = new URLSearchParams(location.search).get('campaign') ?? '';
+  const levelId = new URLSearchParams(location.search).get('level') ?? '';
+  const levelIndex = Number(new URLSearchParams(location.search).get('index') ?? 0) || 0;
   // Background music follows the game: menu tracks in the lobby, idle or combat tracks in a match.
   const music = new MusicPlayer(apiBase, !!room && !!getSavedPlayerName());
   const musicLoaded = music.load();
@@ -65,6 +74,10 @@ async function main(): Promise<void> {
         playSound('produce.queue');
       }
     },
+    dequeue: (building, index) => {
+      send({ t: 'dequeue', building, index });
+      playSound('menu.back');
+    },
     setModule: (entity, index, on) => send({ t: 'setModule', units: [entity], index, on }),
     place: (blueprint) => {
       const bp = state.blueprints.get(blueprint);
@@ -76,6 +89,7 @@ async function main(): Promise<void> {
     startGame: () => send({ t: 'startGame' }),
     spectate: () => spectate(),
     leave: () => leave(),
+    requestCpuProfile: (unit) => send({ t: 'cpuProfile', unit }),
   });
   // Designs and scripts persist in this browser and can be downloaded, uploaded or reset.
   const designs = new DesignStore(state, { send, notify: (text, ok) => ui.showResult(text, ok) });
@@ -136,6 +150,17 @@ async function main(): Promise<void> {
   const resign = document.getElementById('resign') as HTMLButtonElement;
   const idleLabel = () => (state.spectating ? 'Leave' : 'Resign');
   let resignArmedUntil = 0;
+  // Campaign levels: retrying starts the same level again, and a win saves progress and offers the next level.
+  const retryLevel = () => (location.href = campaignUrl(campaignId, levelId, levelIndex));
+  if (mode === 'campaign') ui.setCampaign({ retry: retryLevel });
+  const prepareCampaignEnd = async (winners: readonly number[]): Promise<void> => {
+    if (!winners.includes(state.myId)) return;
+    completeLevel(campaignId, levelIndex);
+    const campaign = (await fetchCampaigns(apiBase))?.find((c) => c.id === campaignId);
+    const next = campaign?.levels[levelIndex + 1];
+    if (next) ui.setCampaign({ retry: retryLevel, next: { label: `Next mission: ${next.name}`, go: () => (location.href = briefingUrl(campaignId, levelIndex + 1)) } });
+    else ui.setCampaign({ retry: retryLevel, next: { label: 'Campaign complete: back to campaigns', go: () => (location.href = location.pathname + '?campaign=' + encodeURIComponent(campaignId) + '&level=-1') } });
+  };
   let resignFallback: number | undefined;
   /** Goes back to the menu: the server frees the seat first, with a fallback if it never answers. */
   const leave = () => {
@@ -173,6 +198,14 @@ async function main(): Promise<void> {
     send({ t: 'spectate' });
     ui.hideDefeat();
   };
+
+  // Dev Options: only in a client built with WST_DEV_TOOLS=1. The condition is a build-time constant, so any other build drops the branch and the module.
+  let devTools: DevTools | undefined;
+  if (__WST_DEV_TOOLS__) {
+    void import('./devTools').then(({ DevTools }) => {
+      devTools = new DevTools(document.getElementById('map')!, state, { send, view: () => renderer.listener(), drop: () => conn.drop() });
+    });
+  }
 
   const handle = (msg: ServerMessage) => {
     gameSounds.onMessage(msg);
@@ -223,8 +256,12 @@ async function main(): Promise<void> {
       case 'tasks':
         state.applyTasks(msg.updates);
         break;
+      case 'cpuProfile':
+        state.applyCpuProfile(msg.unit, msg.tick, msg.profile);
+        break;
       case 'scoreboard':
         ui.setScoreboard(msg.players);
+        devTools?.setPlayers(msg.players);
         break;
       case 'pause':
         // A match waiting for another player offers the invite link again.
@@ -246,7 +283,8 @@ async function main(): Promise<void> {
         location.href = location.pathname;
         break;
       case 'matchOver':
-        ui.showStandings(msg.winner, msg.standings, msg.reason, msg.winners);
+        if (mode === 'campaign') void prepareCampaignEnd(msg.winners ?? [msg.winner]).then(() => ui.showStandings(msg.winner, msg.standings, msg.reason, msg.winners));
+        else ui.showStandings(msg.winner, msg.standings, msg.reason, msg.winners);
         break;
       case 'radar':
         state.addRadar(msg.x, msg.y, msg.range, msg.contacts);
@@ -258,6 +296,9 @@ async function main(): Promise<void> {
         break;
       case 'designsLoaded':
         designs.onLoaded(msg);
+        break;
+      case 'devNote':
+        devTools?.note(msg.text, msg.ok);
         break;
       case 'error':
         ui.showResult(msg.message, false);
@@ -274,7 +315,7 @@ async function main(): Promise<void> {
   } catch {
     token = randomHex();
   }
-  const url = `${socketBase}${socketBase.includes('?') ? '&' : '?'}room=${encodeURIComponent(room)}&token=${token}&map=${encodeURIComponent(mapId)}&mode=${mode}`;
+  const url = `${socketBase}${socketBase.includes('?') ? '&' : '?'}room=${encodeURIComponent(room)}&token=${token}&map=${encodeURIComponent(mapId)}&mode=${mode}${mode === 'campaign' ? `&campaign=${encodeURIComponent(campaignId)}&level=${encodeURIComponent(levelId)}` : ''}`;
   const conn = new Connection(url, {
     open: () => {
       ui.setStatus('connected');

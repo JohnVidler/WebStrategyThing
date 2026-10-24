@@ -55,6 +55,8 @@ export class FlowDocument {
   problems: ReadonlyMap<string, string> = new Map();
   memory: MemoryUse = { vars: 0, literals: 0, locals: 0, total: 0 };
   views: FlowViews = {};
+  /** The last test run's hit counts by node id (the graph's heat map), until the program changes. */
+  heat: ReadonlyMap<string, number> | null = null;
   private readonly listeners = new Set<(change: FlowChange) => void>();
   private past: Snapshot[] = [];
   private future: Snapshot[] = [];
@@ -80,7 +82,15 @@ export class FlowDocument {
   }
 
   private emit(origin: unknown, docChanged: boolean): void {
+    // Counts from a test run describe the program that ran: once it changes they would point at the wrong nodes.
+    if (docChanged && origin !== 'heat') this.heat = null;
     for (const fn of [...this.listeners]) fn({ origin, docChanged });
+  }
+
+  /** Shows (or, with null, clears) a test run's hit counts on the graph. Not a program change and not undoable. */
+  setHeat(heat: ReadonlyMap<string, number> | null): void {
+    this.heat = heat;
+    this.emit('heat', false);
   }
 
   /** Loads a stored program (JSON), or an empty program for ''. Anything unreadable loads as unusable text with an error. */

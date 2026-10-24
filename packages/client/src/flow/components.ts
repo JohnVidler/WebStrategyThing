@@ -58,21 +58,40 @@ export class WstFlowSocket extends LitElement {
   }
 }
 
-/** A wire: execution wires are white and thick, data wires blue. Double-click cuts it. */
+/** Heat-map colour for a share of the busiest node (0..1): from the wire's own colour towards orange-red. */
+export const heatColour = (heat: number): string => `hsl(${Math.round(40 - 32 * heat)} 100% ${Math.round(72 - 18 * heat)}%)`;
+
+/**
+ * A wire: execution wires are white and thick, data wires blue. Double-click cuts it. While a test run's heat map is
+ * on show, execution wires that were followed glow warmer the busier they were, and ones never followed fade out.
+ */
 export class WstFlowWire extends LitElement {
-  static properties = { path: { attribute: false }, type: { type: String, reflect: true }, wire: { attribute: false } };
+  static properties = {
+    path: { attribute: false },
+    type: { type: String, reflect: true },
+    wire: { attribute: false },
+    hits: { attribute: false },
+    heat: { attribute: false },
+  };
   declare path: string;
   declare type: 'exec' | 'data';
   /** Id of the connection, reported when the wire is cut. */
   declare wire: string;
+  declare hits: number | undefined;
+  declare heat: number | undefined;
   static styles = css`
     svg { overflow: visible !important; position: absolute; pointer-events: none; width: 9999px; height: 9999px; }
     path { fill: none; stroke: var(--wst-data, #4f87c7); stroke-width: 3px; pointer-events: auto; cursor: pointer; }
     :host([type='exec']) path { stroke: var(--wst-exec, #f2f2f2); stroke-width: 4px; }
+    :host([cold]) path { opacity: 0.25; }
     path:hover { stroke-width: 6px; filter: brightness(1.3); }
   `;
   render() {
-    return html`<svg><path d=${this.path} @dblclick=${() => this.dispatchEvent(new CustomEvent('wire-cut', { detail: this.wire, bubbles: true, composed: true }))}><title>Double-click to cut this wire</title></path></svg>`;
+    const shown = this.type === 'exec' && this.hits !== undefined;
+    this.toggleAttribute('cold', shown && this.hits === 0);
+    const style = shown && this.hits ? `stroke: ${heatColour(this.heat ?? 0)}; stroke-width: ${4 + Math.round(4 * (this.heat ?? 0))}px` : '';
+    const tip = shown ? `Followed ${this.hits} time(s) in the last test run. Double-click to cut this wire` : 'Double-click to cut this wire';
+    return html`<svg><path d=${this.path} style=${style} @dblclick=${() => this.dispatchEvent(new CustomEvent('wire-cut', { detail: this.wire, bubbles: true, composed: true }))}><title>${tip}</title></path></svg>`;
   }
 }
 
@@ -119,6 +138,9 @@ export class WstFlowNode extends LitElement {
     .title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .sub { font-weight: 400; opacity: 0.7; font-size: 10px; }
     .cost { font-weight: 400; font-size: 10px; padding: 0 5px; border-radius: 8px; background: #0006; }
+    .worst { font-weight: 400; font-size: 10px; padding: 0 5px; border-radius: 8px; background: #0006; border: 1px solid #fff3; }
+    .hits { font-weight: 600; font-size: 10px; padding: 0 5px; border-radius: 8px; color: #1a1206; }
+    :host([cold]) { opacity: 0.55; }
     .settings { padding: 4px 9px 2px; display: grid; grid-template-columns: auto 1fr; gap: 3px 8px; align-items: center; }
     .settings label { color: var(--wst-muted, #8f9bb0); }
     .row { display: flex; align-items: center; justify-content: space-between; min-height: 26px; }
@@ -144,6 +166,9 @@ export class WstFlowNode extends LitElement {
     this.toggleAttribute('selected', !!this.data?.selected);
     this.toggleAttribute('loose', m.loose);
     this.toggleAttribute('problem', !!m.problem);
+    this.toggleAttribute('cold', m.hits === 0);
+    // A test run's heat map: busier nodes glow warmer.
+    this.style.boxShadow = m.hits ? `0 0 0 ${2 + Math.round(4 * (m.heat ?? 0))}px ${heatColour(m.heat ?? 0)}, 0 4px 14px #0008` : '';
     this.title = m.doc ?? '';
     const pinControls = new Set(m.inputs.map((i) => i.key));
     const settings = m.controls.filter((c) => !pinControls.has(c.key));
@@ -156,6 +181,8 @@ export class WstFlowNode extends LitElement {
         <span class="title">${m.title}${m.subtitle ? html` <span class="sub">${m.subtitle}</span>` : nothing}</span>
         ${m.loose ? html`<span class="loose-tag" title="Not connected to any event block">loose</span>` : nothing}
         ${m.cost > 0 ? html`<span class="cost" title="Cycles this node costs each time it runs">${m.cost}c</span>` : nothing}
+        ${m.worst !== undefined && m.worst > 0 ? html`<span class="worst" title=${m.kind === 'block' ? 'Most cycles one run of any of this block’s event blocks can cost (its most expensive path)' : 'Most cycles one run of this event block can cost: the most expensive path through it (a loop counted once)'}>≤${m.worst}c</span>` : nothing}
+        ${m.hits !== undefined && m.hits > 0 ? html`<span class="hits" style=${`background: ${heatColour(m.heat ?? 0)}`} title="Times this ran in the last test run">×${m.hits}</span>` : nothing}
       </header>
       ${settings.length ? html`<div class="settings">${settings.map((c) => this.setting(c))}</div>` : nothing}
       ${rowsHtml}

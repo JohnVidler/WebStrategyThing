@@ -93,6 +93,10 @@ class FlowConnection extends ClassicPreset.Connection<FlowNode, FlowNode> {
   ) {
     super(source, sourceOutput, target, targetInput);
   }
+
+  /** Heat map: times execution followed this wire in the last test run, and its share of the busiest (undefined: no test run on show). */
+  hits?: number;
+  heat?: number;
 }
 
 type Schemes = GetSchemes<FlowNode, FlowConnection>;
@@ -244,7 +248,7 @@ export class GraphView {
     this.canvas.addEventListener('keydown', (e) => this.key(e));
     this.canvas.addEventListener('wire-cut', (e) => this.cutWire((e as CustomEvent<string>).detail));
     // Handy in the browser console while developing.
-    if (import.meta.env.DEV) (window as unknown as { __wstGraph?: GraphView }).__wstGraph = this;
+    if (__WST_DEV_TOOLS__) (window as unknown as { __wstGraph?: GraphView }).__wstGraph = this;
     g.doc.subscribe((change) => {
       if (change.origin === this) return;
       if (change.origin === 'load') {
@@ -252,7 +256,7 @@ export class GraphView {
         this.wantFit = true;
       }
       this.refreshChrome();
-      if (change.docChanged || change.origin === 'load') void this.sync();
+      if (change.docChanged || change.origin === 'load' || change.origin === 'heat') void this.sync();
     });
   }
 
@@ -282,7 +286,10 @@ export class GraphView {
         customize: {
           node: (data) => ({ emit }) => html`<wst-flow-node .data=${data.payload} .model=${(data.payload as FlowNode).model} .callbacks=${this.callbacks} .emit=${emit}></wst-flow-node>`,
           socket: (data) => () => html`<wst-flow-socket kind=${(data.payload as FlowSocket).kind}></wst-flow-socket>`,
-          connection: (data) => ({ path }) => html`<wst-flow-wire .path=${path} .type=${(data.payload as FlowConnection).type} .wire=${data.payload.id}></wst-flow-wire>`,
+          connection: (data) => ({ path }) => {
+            const c = data.payload as FlowConnection;
+            return html`<wst-flow-wire .path=${path} .type=${c.type} .wire=${c.id} .hits=${c.hits} .heat=${c.heat}></wst-flow-wire>`;
+          },
         },
       }),
     );
@@ -633,7 +640,7 @@ export class GraphView {
   }
 
   private async reconcile(): Promise<void> {
-    const model = buildGraph(this.program(), this.g.host, this.g.doc.problems);
+    const model = buildGraph(this.program(), this.g.host, this.g.doc.problems, this.g.doc.heat);
     this.model = model;
     // Nodes without a saved position get a tidy one, and it is remembered so later edits don't shuffle them.
     const auto = layout(model);
@@ -685,7 +692,15 @@ export class GraphView {
     }
     for (const e of model.edges) {
       const key = edgeKey(e);
-      if (this.conns.has(key)) continue;
+      const have = this.conns.get(key);
+      if (have) {
+        if (have.hits !== e.hits || have.heat !== e.heat) {
+          have.hits = e.hits;
+          have.heat = e.heat;
+          await this.area.update('connection', have.id);
+        }
+        continue;
+      }
       const from = this.nodes.get(e.from.node);
       const to = this.nodes.get(e.to.node);
       if (!from || !to) continue;
@@ -694,6 +709,8 @@ export class GraphView {
         continue;
       }
       const c = new FlowConnection(from, e.from.key, to, e.to.key, e.type);
+      c.hits = e.hits;
+      c.heat = e.heat;
       this.conns.set(key, c);
       await this.editor.addConnection(c);
     }

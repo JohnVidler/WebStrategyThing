@@ -7,14 +7,13 @@ import {
   CpuStatus,
   type Blueprint,
   EnergyView,
-  FAULT_NAMES,
-  factoryModulesFor,
-  factoryRatePermille,
+  factoryCanBuild,
+  FACTORY_TIER_NAMES,
+  MAX_PRODUCTION_QUEUE,
   Health,
   Modules,
   PARTS,
   Production,
-  Resource,
   Stockpile,
   SWITCHABLE,
   Unit,
@@ -23,14 +22,24 @@ import {
   type ServerMessage,
 } from '@wst/engine';
 import { playSound } from './sound';
-import { isShown, setShown } from './transition';
+import { isShown, revealScreen, setShown } from './transition';
 import type { ActionButton } from './actions';
 import { ownerColour } from './renderer';
 import { HISTORY_EVERY, HISTORY_SAMPLES, METRICS, ResourceHistory, sparkline } from './resources';
 import type { ClientState } from './state';
 
+/** What the end-of-mission screens offer in a campaign level. */
+export interface CampaignEnd {
+  /** Start the same level again. */
+  retry(): void;
+  /** Only after a win: where to go next (the next level's briefing, or back to the campaign). */
+  next?: { label: string; go(): void };
+}
+
 export interface UiActions {
   produce(building: number, blueprint: number): void;
+  /** Remove the item at `index` (0 = being built) from a factory's queue. */
+  dequeue(building: number, index: number): void;
   setModule(entity: number, index: number, on: boolean): void;
   /** Start placing a building blueprint. */
   place(blueprint: number): void;
@@ -46,6 +55,8 @@ export interface UiActions {
   spectate(): void;
   /** Leave the room and return to the menu. */
   leave(): void;
+  /** Ask the server where an own unit's CPU goes (answered with a cpuProfile message). */
+  requestCpuProfile(unit: number): void;
 }
 
 const el = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -76,10 +87,13 @@ export class Ui {
   private readonly status = el<HTMLSpanElement>('status');
   private readonly resourceBars = el<HTMLDivElement>('resource-bars');
   private readonly envView = el<HTMLSpanElement>('environment');
-  private readonly selectionSummary = el<HTMLDivElement>('selection-summary');
   private readonly productionPanel = el<HTMLDivElement>('production');
   private readonly productionStatus = el<HTMLDivElement>('production-status');
   private readonly productionButtons = el<HTMLDivElement>('production-buttons');
+  private readonly queueGrid = el<HTMLDivElement>('production-queue');
+  private queueSlots: { btn: HTMLButtonElement; img: HTMLImageElement; fill: HTMLSpanElement; bp: number }[] = [];
+  private queueIcons = new Map<number, string>();
+  private queueFor = -1;
   private readonly modulesPanel = el<HTMLDivElement>('modules');
   private readonly result = el<HTMLDivElement>('result');
   private readonly docsOverlay = el<HTMLDivElement>('docs-overlay');
@@ -118,6 +132,7 @@ export class Ui {
     // Docs open over the game area (the game keeps running) or in a new tab.
     el<HTMLButtonElement>('docs-open').onclick = () => this.toggleDocs(true);
     el<HTMLButtonElement>('docs-close').onclick = () => this.toggleDocs(false);
+    el<HTMLButtonElement>('docs-back').onclick = () => this.docsFrame.contentWindow?.history.back();
     window.addEventListener('keydown', (ev) => {
       if (ev.key === 'F1') {
         ev.preventDefault();
@@ -208,12 +223,22 @@ export class Ui {
     this.waitingView.innerHTML = '';
   }
 
+  private campaign: CampaignEnd | undefined;
+
+  /** Campaign levels add "Retry" (and, after a win, "Next mission") to the end-of-mission screens. */
+  setCampaign(campaign: CampaignEnd): void {
+    this.campaign = campaign;
+  }
+
   /** A player with nothing left (defeated or resigned) chooses between watching the whole map and leaving. */
   showDefeat(): void {
+    const retry = this.campaign ? '<button id="defeat-retry" class="primary" type="button" data-sound="ui.confirm">Retry mission</button>' : '';
     this.defeatView.innerHTML = `<h2>You have been defeated</h2>
       <p class="muted">The match goes on without you. Spectate to watch it with the fog of war lifted.</p>
-      <div class="row"><button id="defeat-spectate" class="primary" type="button" data-sound="match.spectate">Spectate</button><button id="defeat-leave" type="button" data-sound="match.leave">Leave to menu</button></div>`;
+      <div class="end-actions">${retry}<button id="defeat-spectate"${this.campaign ? '' : ' class="primary"'} type="button" data-sound="match.spectate">Spectate</button><button id="defeat-leave" type="button" data-sound="match.leave">Leave to menu</button></div>`;
     this.defeatView.hidden = false;
+    revealScreen(this.defeatView);
+    if (this.campaign) el<HTMLButtonElement>('defeat-retry').onclick = () => this.campaign!.retry();
     el<HTMLButtonElement>('defeat-spectate').onclick = () => this.actions.spectate();
     el<HTMLButtonElement>('defeat-leave').onclick = () => this.actions.leave();
   }
@@ -245,12 +270,17 @@ export class Ui {
       'no-power': 'Only one player still has powered units.',
     }[reason];
     this.standings.innerHTML = `<h2>${headline}</h2><p class="muted">${why}</p><table>${this.scoreTable(standings, 'Final standings')}</table>
-      <div class="row">${won ? '<button id="standings-quit" data-sound="match.leave">Quit as victor</button>' : ''}<button id="standings-close" data-sound="ui.cancel">Keep playing</button>${
+      <div class="end-actions">${won && this.campaign?.next ? `<button id="standings-next" class="primary" data-sound="ui.confirm">${esc(this.campaign.next.label)}</button>` : ''}${
+        !won && this.campaign ? '<button id="standings-retry" class="primary" data-sound="ui.confirm">Retry mission</button>' : ''
+      }${won ? '<button id="standings-quit" data-sound="match.leave">Quit as victor</button>' : ''}<button id="standings-close" data-sound="ui.cancel">Keep playing</button>${
         won ? '' : '<button id="standings-spectate" data-sound="match.spectate">Spectate</button><button id="standings-leave" data-sound="match.leave">Leave to menu</button>'
       }</div>`;
     this.standings.hidden = false;
+    revealScreen(this.standings);
     this.hideDefeat();
     el<HTMLButtonElement>('standings-close').onclick = () => (this.standings.hidden = true);
+    if (won && this.campaign?.next) el<HTMLButtonElement>('standings-next').onclick = () => this.campaign!.next!.go();
+    if (!won && this.campaign) el<HTMLButtonElement>('standings-retry').onclick = () => this.campaign!.retry();
     if (won) el<HTMLButtonElement>('standings-quit').onclick = () => this.actions.leave();
     else {
       el<HTMLButtonElement>('standings-spectate').onclick = () => {
@@ -646,7 +676,7 @@ export class Ui {
 
   /** Called on selection change and every tick. */
   renderSelection(selection: ReadonlySet<number>): void {
-    const { world, blueprints } = this.state;
+    const { world } = this.state;
     const nets = this.state.networks;
     const supply = nets.reduce((t, n) => t + n.supply, 0);
     const demand = nets.reduce((t, n) => t + n.demand, 0);
@@ -667,19 +697,6 @@ export class Ui {
     const unit = world.store(Unit);
     const ids = [...selection];
 
-    if (ids.length === 0) {
-      this.selectionSummary.textContent = 'Nothing selected';
-    } else if (ids.length === 1) {
-      this.selectionSummary.textContent = this.describe(ids[0]);
-    } else {
-      const counts = new Map<string, number>();
-      for (const e of ids) {
-        const name = unit.has(e) ? (blueprints.get(unit.f.blueprint[e])?.name ?? '?') : 'Resource';
-        counts.set(name, (counts.get(name) ?? 0) + 1);
-      }
-      this.selectionSummary.textContent = [...counts].map(([n, c]) => `${n} ×${c}`).join(', ');
-    }
-
     this.renderResources(ids.filter((e) => world.isAlive(e) && unit.has(e)));
 
     const single = ids.length === 1 && this.state.isMine(ids[0]) ? ids[0] : -1;
@@ -692,7 +709,8 @@ export class Ui {
     this.modulesPanel.hidden = !bp;
     if (!bp) return;
     const mask = this.state.world.store(Modules).f.off[e];
-    const key = `${e}|${bp.id}|${mask}`;
+    const broken = this.state.world.store(Modules).f.broken[e];
+    const key = `${e}|${bp.id}|${mask}|${broken}`;
     if (key === this.modulesKey) return;
     this.modulesKey = key;
     this.modulesPanel.innerHTML = '<div class="muted">Modules (switch off to save energy)</div>';
@@ -703,11 +721,14 @@ export class Ui {
       const box = document.createElement('input');
       box.type = 'checkbox';
       box.dataset.sound = 'module';
-      box.checked = !((mask >>> i) & 1);
-      box.disabled = !SWITCHABLE.has(def.slot);
+      const isBroken = ((broken >>> i) & 1) === 1;
+      box.checked = !isBroken && !((mask >>> i) & 1);
+      box.disabled = isBroken || !SWITCHABLE.has(def.slot);
+      if (isBroken) label.classList.add('broken');
       box.onchange = () => this.actions.setModule(e, i, box.checked);
-      label.append(box, ` ${i}: ${def.name}`);
-      if (def.use) label.title = `Uses ${def.use} energy per ${def.slot === 'sensor' ? 'scan' : def.slot === 'weapon' ? 'shot' : 'tick in use'}`;
+      label.append(box, ` ${i}: ${def.name}${isBroken ? ' (broken: needs repair)' : ''}`);
+      if (isBroken) label.title = 'Broken by damage: it does nothing until a repair module mends it';
+      else if (def.use) label.title = `Uses ${def.use} energy per ${def.slot === 'sensor' ? 'scan' : def.slot === 'weapon' ? 'shot' : 'tick in use'}`;
       this.modulesPanel.appendChild(label);
     });
   }
@@ -721,14 +742,15 @@ export class Ui {
 
     const current = blueprints.get(prod.f.blueprint[b]);
     this.productionStatus.textContent = prod.f.queued[b]
-      ? `Building ${current?.name ?? '…'} ${prod.f.progress[b]}%${prod.f.queued[b] > 1 ? ` (+${prod.f.queued[b] - 1} queued)` : ''}`
+      ? `Building ${current?.name ?? '…'} ${prod.f.progress[b]}%`
       : 'Idle — choose a class to build';
+    this.renderQueue(b);
 
     const buildable = blueprints.ownedBy(this.state.myId).filter((bp) => !bp.stats.structure && !bp.retired);
     // The buttons are only rebuilt when the building or the class list changes: rebuilding them as
     // the matter total moves would swallow clicks (the element is replaced between press and release).
-    const modules = blueprints.get(world.store(Unit).f.blueprint[b])?.stats.factoryModules ?? 0;
-    const key = `${b}|${modules}|${buildable.map((bp) => bp.id).join(',')}`;
+    const tiers = blueprints.get(world.store(Unit).f.blueprint[b])?.stats.factoryTiers ?? 0;
+    const key = `${b}|${tiers}|${buildable.map((bp) => bp.id).join(',')}`;
     if (key !== this.productionKey) {
       this.productionKey = key;
       this.productionButtons.innerHTML = '';
@@ -736,14 +758,11 @@ export class Ui {
       for (const bp of buildable) {
         const btn = document.createElement('button');
         btn.className = 'action';
-        const need = factoryModulesFor(bp.stats.size);
-        const rate = factoryRatePermille(modules, need);
-        const fits = rate > 0;
-        const seconds = (bp.stats.buildTime * 1000) / Math.max(1, rate) / 10;
+        const fits = factoryCanBuild(tiers, bp.stats.size);
+        const tier = FACTORY_TIER_NAMES[bp.stats.size] ?? 'this size of';
         btn.title = !fits
-          ? `${bp.name} is too big for this building: it needs a factory with at least ${need - 1} factory modules (this one has ${modules}).`
-          : `${bp.name}: ◆${bp.stats.cost} + ϟ${bp.stats.buildEnergy}, ${seconds.toFixed(1)}s. Click to queue one.` +
-            (rate < 1000 ? ` Built slowly: a factory with ${need} factory modules is ${(1000 / rate).toFixed(0)}× faster (this one has ${modules}).` : '');
+          ? `${bp.name} is a ${tier} unit: this building has no ${tier} factory module.`
+          : `${bp.name}: ◆${bp.stats.cost} + ϟ${bp.stats.buildEnergy}, ${(bp.stats.buildTime / 10).toFixed(1)}s. Click to queue one.`;
         const img = document.createElement('img');
         img.alt = '';
         this.actions.iconFor(bp.id).then((src) => (img.src = src)).catch(() => img.remove());
@@ -758,6 +777,57 @@ export class Ui {
       }
     }
     this.updateAffordability();
+  }
+
+  /**
+   * The factory's queue as MAX_PRODUCTION_QUEUE slots with a picture of each queued unit; the one being
+   * built fills up as it progresses, and clicking a slot removes that item (its matter is refunded).
+   * The slot elements are kept between updates (replacing them would swallow clicks).
+   */
+  private renderQueue(b: number): void {
+    const prod = this.state.world.store(Production);
+    if (this.queueFor !== b || this.queueSlots.length !== MAX_PRODUCTION_QUEUE) {
+      this.queueFor = b;
+      this.queueGrid.innerHTML = '';
+      this.queueSlots = Array.from({ length: MAX_PRODUCTION_QUEUE }, (_, i) => {
+        const btn = document.createElement('button');
+        btn.className = 'queue-slot';
+        btn.dataset.sound = 'none';
+        const fill = document.createElement('span');
+        fill.className = 'fill';
+        const img = document.createElement('img');
+        img.alt = '';
+        btn.append(fill, img);
+        btn.onclick = () => this.actions.dequeue(b, i);
+        this.queueGrid.appendChild(btn);
+        return { btn, img, fill, bp: -1 };
+      });
+    }
+    const f = prod.f;
+    const behind = [f.q1, f.q2, f.q3, f.q4, f.q5, f.q6, f.q7];
+    this.queueSlots.forEach((slot, i) => {
+      const filled = i < f.queued[b];
+      const id = !filled ? 0 : i === 0 ? f.blueprint[b] : behind[i - 1][b];
+      slot.btn.disabled = !filled;
+      slot.btn.classList.toggle('empty', !filled);
+      slot.btn.classList.toggle('current', filled && i === 0);
+      slot.fill.style.height = filled && i === 0 ? `${f.progress[b]}%` : '0';
+      if (slot.bp === id) return;
+      slot.bp = id;
+      const bp = this.state.blueprints.get(id);
+      slot.btn.title = filled && bp ? `${bp.name}${i === 0 ? ` (${f.progress[b]}%)` : ''}: click to remove it from the queue and get ◆${bp.stats.cost} back` : '';
+      slot.img.hidden = !filled || !bp;
+      if (!filled || !bp) return;
+      const cached = this.queueIcons.get(id);
+      if (cached) slot.img.src = cached;
+      else {
+        slot.img.removeAttribute('src');
+        this.actions.iconFor(id).then((src) => {
+          this.queueIcons.set(id, src);
+          if (slot.bp === id) slot.img.src = src;
+        }).catch(() => undefined);
+      }
+    });
   }
 
   /** Greys out production buttons the player can't pay for, in place. */
@@ -776,48 +846,4 @@ export class Ui {
     placeMusic(show ? this.docsOverlay.querySelector<HTMLElement>('.docs-music') : null); // the player sits in the docs bar meanwhile
   }
 
-  private describe(e: number): string {
-    const { world, blueprints } = this.state;
-    const res = world.store(Resource);
-    if (res.has(e)) return `Type: Resource field\nAmount remaining: ${res.f.amount[e]}`;
-    const unit = world.store(Unit);
-    if (!unit.has(e)) return '';
-    const bp = blueprints.get(unit.f.blueprint[e]);
-    const s = this.state.stats(e);
-    const owner = this.state.isMine(e) ? 'yours' : unit.f.owner[e] === 0 ? 'neutral' : `player ${unit.f.owner[e]}`;
-    const sparklineKeys = new Set(
-      this.state.isMine(e) ? METRICS.filter((metric) => metric.read(this.state, e)).map((metric) => metric.key) : [],
-    );
-    const parts = [`Class: ${bp?.name ?? '?'}`, `Owner: ${owner}`];
-    const hp = world.store(Health);
-    if (hp.has(e) && !sparklineKeys.has('hp')) parts.push(`Health: ${hp.f.hp[e]}/${s?.hp ?? '?'}`);
-    if (!this.state.isMine(e)) return parts.join('\n');
-    const energy = world.store(EnergyView);
-    if (energy.has(e) && s && !sparklineKeys.has('energy')) parts.push(`Energy: ${energy.f.pct[e]}% of ${s.energyCapacity}`);
-    const cpu = world.store(CpuStatus);
-    if (cpu.has(e) && s?.cyclesPerTick && !sparklineKeys.has('cpu')) {
-      const fault = cpu.f.fault[e] ? ` (fault: ${FAULT_NAMES[cpu.f.fault[e]]})` : '';
-      parts.push(`CPU: ${CPU_STATES[cpu.f.state[e]]} ${cpu.f.used[e]}/${s.cyclesPerTick}c${fault}`);
-    }
-    const cargo = world.store(Cargo);
-    if (cargo.has(e) && !sparklineKeys.has('cargo')) parts.push(`Cargo: ${cargo.f.amount[e]}/${s?.cargo ?? '?'}`);
-    const site = world.store(Construction);
-    if (site.has(e) && !sparklineKeys.has('built')) parts.push(`Construction: ${site.f.progress[e]}% of ◆${s?.cost ?? '?'}`);
-    const stock = world.store(Stockpile);
-    if (stock.has(e) && !sparklineKeys.has('silos')) parts.push(`Silos: ${stock.f.amount[e]}/${s?.resourceCapacity ?? '?'}`);
-    const tasks = this.state.tasks.get(e);
-    parts.push(`Tasks queued: ${(tasks?.length ?? 0) / 4}`);
-    if (s?.structure) {
-      const links = this.state.links.filter(([a, b]) => a === e || b === e).length;
-      parts.push(`Power links: ${links}`);
-      const net = this.state.networkOf(e);
-      if (net) {
-        parts.push(
-          `Grid: ${net.members.length} buildings, +${net.supply}/−${net.demand} per tick`,
-        );
-        parts.push(`Grid storage: ${net.stored}/${net.capacity}${net.depot ? ' (silo connected)' : ' (no silo)'}`);
-      }
-    }
-    return parts.join('\n');
-  }
 }

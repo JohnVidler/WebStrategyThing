@@ -1,113 +1,38 @@
 /**
- * Player-facing release notes, shown on the lobby page. Newest first, one short
- * line per change, written for players (no file names or internals). Add a
- * block here when a change is worth telling players about.
+ * Player-facing release notes, shown as articles under News and Updates on the main menu. The notes
+ * live in changelog.md: per update a "## date" heading, an optional "### Headline", a short summary
+ * paragraph, then one "- " line per change. Edit that file to add an update. Write for players: no
+ * file names or internals.
  */
+import source from './changelog.md?raw';
+
 export interface ChangelogEntry {
   /** ISO date of the update. */
   readonly date: string;
+  /** Short headline; empty when the entry has none. */
+  readonly title: string;
+  /** A brief, human-readable summary of the day; empty when the entry has none. */
+  readonly summary: string;
   readonly changes: readonly string[];
 }
 
-export const CHANGELOG: readonly ChangelogEntry[] = [
-  {
-    date: '2026-10-20',
-    changes: [
-      'The documentation is now a full Manual: how the game works, controls, economy, building, fighting, designing classes, programming from zero (with links to learn more), a tour of the graph editor, nine worked recipes drawn as real graphs, and a gallery of every built-in block. The reference pages follow it.',
-      'Drag while placing a building to lay a straight line of them, side by side (up to 12; spots that are blocked are skipped, and builders take them in order). Right-drag with units selected to spread them evenly along the path you drew.',
-      'Units and buildings with a Radar module now carry a spinning radar dish on top.',
-      'New double-length vehicle chassis (Long light, Long medium, Long heavy) with more module slots, drawn twice as long as they are wide, and a Rocket Artillery unit built on one: its huge missile launcher reaches 26 tiles, further than any sensor sees, so it needs spotters or radar.',
-      'New building shapes: L, T, cross, U and H-shaped frames. They cover 5 or 7 tiles of a 3×3 box, leave the empty tiles walkable, and hold modules in proportion to the tiles they cover; construction energy is now charged per tile covered.',
-      'Your saved designs now remember which version of the game they were made with. After an update that changes the default units, you are asked whether to merge the new defaults with your edits, replace your versions, or keep yours.',
-      'Factory modules decide what a building can make: a light unit is built at full speed with 1 factory module, a medium one with 2, a heavy one with 3. One module short, a unit takes ten times as long (the HQ, with 1 module, builds Builders slowly); two or more short, the building cannot make it at all. New Light Factory, Vehicle Factory and Heavy Factory buildings are specialised producers.',
-      'The graph editor shows blocks as cards with their settings and an Expand button, has a Blocks group in the palette and a Template chooser for new classes; the Docs have a new page on blocks and your own events.',
-      'Starter units are now built from ready-made behaviour blocks (orders, recharging, harvesting, building, repairing, fighting), written as use(HarvestLoop, { minMatter: 10 }) and expandable into plain events to edit.',
-      'Radio and Laser link modules: units and buildings of a team can now talk. radioSend(channel, value) reaches allies with a radio within 12 tiles (even through rock); laserSend reaches allies with a laser link up to 40 tiles away, but only along a clear line of sight. Receivers react in a new Message event block.',
-      "Text can now be joined with +, for example alert('HP: ' + hp(), 2000); numbers and true/false values are turned into text for you.",
-      'Scripts can now raise events of their own: emit(Name, values) and an on(Name) block in the same unit react to each other, in text and as nodes in the graph.',
-      'New alert(text, duration_ms) function: a speech bubble with your text appears over the unit for a set time, visible to anyone who can see the unit.',
-      'Long jobs (walking, harvesting, docking, building, repairing) now report how they ended through outcome pins instead of being polled, so busy units cost almost no CPU.',
-      'Flak: a new anti-missile weapon that bursts every enemy missile near its target and never misses, with a Flak Truck and a Flak Turret. You can now also order any armed unit to shoot a missile down by right-clicking it.',
-      'Fast units and a lightning discharge: a Turbo motor, the Dart and Pathfinder light units that are twice as quick as a Scout, and a visible tesla discharge.',
-      'The designer opened from the main menu now has Download, Upload and Reset-to-defaults buttons for your saved designs, like the in-game menu.',
-      'Missiles: three launcher sizes fire slow, homing missiles that fly in wide arcs and burst on their own at the end of their flight. Damage grows with the matter each costs; bigger ones are slower, turn wider and are easier to shoot down. Each has a shadow under it so you can see it is flying.',
-      'New starter units so every weapon gets played: Tank (cannon), Lancer (laser), Stormer (tesla coil) and Rocket Truck (missiles). Tanks and Rocket Trucks fetch more matter from a silo when they run low.',
-    ],
-  },
-  {
-    date: '2026-10-19',
-    changes: [
-      'Rock on the map now has rounded outer corners and gets lighter towards the middle of big outcrops, the grid no longer shows through it, and thin lines in the fog of war are gone.',
-      'Maps are now perfectly symmetrical (Badlands no longer favours player 1), and start corners are shuffled each match so you never know where your enemies are.',
-      'A new Options screen on the main menu holds the music and effects volume sliders and a mute switch; the music widget now shows just the mute button and the track title.',
-      'Units ordered to move to one spot now spread out over free tiles around it instead of all heading for the same place.',
-      'Finished buildings now burst with sparks that run outwards along the grid lines, turning at crossings and fading, with a flash as they complete.',
-      'Builders now fire a scanning cyan build beam across their site, and sites throw off the odd spark while under construction.',
-      'Idle builders now spread out over the available building sites, and only team up on one when there are no others left.',
-      'Charging pads send out a slow green pulse while they are actively charging units.',
-      'A new Connecting screen covers the game while it loads and links up to the server, with progress as it goes.',
-      'Sound effects: menus, orders, combat and alerts now have an effects system with its own volume slider.',
-    ],
-  },
-  {
-    date: '2026-10-18',
-    changes: [
-      'Multiplayer and co-op rooms now open in a waiting room: friends join with the invite link and the host starts the game when everyone is in.',
-      'When you are defeated or resign, you can now spectate the rest of the match with the fog of war lifted, or leave for the menu.',
-      'The Resign button gives up your forces instead of quitting at once.',
-    ],
-  },
-  {
-    date: '2026-10-15',
-    changes: [
-      'Repairs: a new Repair beam module mends your own units and buildings (units can fix buildings and the other way round). It costs energy and matter, and armour is the most expensive to mend.',
-      'New Repair Drone class you can build, with a Repair action (R, or right-click a damaged unit or building). The Construction Tower now repairs nearby things when it has nothing to build.',
-      'Repairs show as a green beam with rising crosses, so they no longer look like weapon fire.',
-      'Producing a unit now costs energy as well as matter, based on how many modules it has and what they are. Build buttons show both costs.',
-      'Lasers draw five times the energy per shot, so a few of them will drain a small grid. Damage per shot is unchanged.',
-      'Batteries hold half as much, and the starting base now has a small energy storage instead of a large one.',
-      'Fixed: an energy storage that ran flat while discharging or holding could refuse to charge again even with surplus power.',
-      'Daylight, wind and power are now large tiles at the top of the side panel, with the power balance on its own strip.',
-      'The stats strip across the top of the map and the resource bars no longer jump around as numbers change.',
-      'The main menu has an animated backdrop, a new font, larger text, and shows how many players are online.',
-      'The music widget moves into the designer while it is open.',
-      'The unit cap is now 256 per player (it was 80), and only units count towards it, not buildings. A new Units bar under Matter and Energy shows how close you are.',
-      'Buildings can now only be placed inside your vision, so you can no longer build in the dark; the placement ghost turns red there.',
-      'The edges of solid terrain are now outlined where they meet open ground, so walls and ridges stand out.',
-      'Players waiting in the menu now count towards the players online total, shown as "In the menu".',
-    ],
-  },
-  {
-    date: '2026-10-14',
-    changes: [
-      'New default building: the Radar Tower pings the map on its own while its radar module is switched on.',
-      'New Radar module: a script calls radarPulse(energy) for a one-off scan whose range grows with the energy spent. Contacts appear as blips that slowly fade.',
-      'New main menu: Single-player (you against a bot) and Multiplayer (every open game on the left, tagged free-for-all or co-op, with create-a-room on the right), plus the Designer and the API reference, both available without starting a game. Designs you make in the menu are the ones you get in your next match.',
-      'Factory unit buttons respond on the first click, and now match the square action buttons, with a picture of each unit.',
-      'Harvesters no longer stall: with nothing to do they return to the nearest storage building for new orders, switch to another nearby field when theirs runs low, and storage buildings send them to a random one of the nearest fields.',
-      'Five new, larger maps: Great Plains, Sprawl, Long Valley, Bastion and Badlands, with extra resource fields between the bases. The lobby now shows ten maps in two rows.',
-      'New game mode: Co-op vs bots. Up to two players on the same team, each facing a bot that never needs to mine and sends waves of units at you. Handy for testing your designs. The standard mode is a four-way free-for-all.',
-      'Units and buildings now look different depending on their modules: weapons, motors, cargo, sensors and armour all change the hull and fittings.',
-      'Units turn to face the way they last moved.',
-      'The designer has a larger preview, with true-size thumbnails in your colours and a rival’s.',
-      'Sprites are sharper when zoomed in.',
-      'Matter patches slowly regrow after being harvested.',
-      'Solar panels and wind turbines produce twice as much energy.',
-      'Units are much more forgiving about energy use.',
-      'Five maps to choose from when creating a room.',
-      'Balance values are gathered in one place, so tuning is easier for the next update.',
-    ],
-  },
-  {
-    date: '2026-10-13',
-    changes: [
-      'Rooms: create a named room, share an invite link, and reconnect if you drop. The game pauses until two players are present.',
-      'Matches end when one side is eliminated, with a winner screen and final standings.',
-      'Scoreboard, matter and energy bars, and a live game clock.',
-      'Control groups (Ctrl+1–9), priority band-select and a unit action grid with hotkeys.',
-      'Fog of war, power-flow animation along links and charging-zone shading.',
-      'Laser turret and tesla coil, construction towers, and building now costs energy.',
-      'The class designer: code editor, test run sandbox, program history and design download/upload.',
-    ],
-  },
-];
+/** Reads the changelog.md format. Text outside a dated section, `#` comment lines and blank lines are ignored. */
+export function parseChangelog(text: string): ChangelogEntry[] {
+  const entries: { date: string; title: string; summary: string[]; changes: string[] }[] = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    const last = entries[entries.length - 1];
+    const heading = /^##\s+(\S.*)$/.exec(line);
+    const title = /^###\s+(\S.*)$/.exec(line);
+    if (heading) entries.push({ date: heading[1].trim(), title: '', summary: [], changes: [] });
+    else if (!last || !line) continue;
+    else if (title) last.title = title[1].trim();
+    else if (line.startsWith('#')) continue;
+    else if (line === '-' || line.startsWith('- ')) {
+      if (line.slice(2).trim()) last.changes.push(line.slice(2).trim());
+    } else last.summary.push(line);
+  }
+  return entries.filter((e) => e.changes.length).map((e) => ({ ...e, summary: e.summary.join(' ') }));
+}
+
+export const CHANGELOG: readonly ChangelogEntry[] = parseChangelog(source);

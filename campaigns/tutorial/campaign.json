@@ -1,0 +1,14 @@
+{
+  "name": "Tutorial",
+  "order": 1,
+  "summary": "Learn the basics: mining, building and defending your base.",
+  "story": [
+    "Welcome, Commander. Before you take command of a real force, the training range will walk you through the essentials.",
+    "Nothing here is dangerous, but the drones on the range do fight back. Treat it like the real thing."
+  ],
+  "maps": [
+    "01-first-steps",
+    "02-making-a-stand",
+    "03-the-gauntlet"
+  ]
+}

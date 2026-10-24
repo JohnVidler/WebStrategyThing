@@ -10,16 +10,19 @@ export const Resource = defineComponent('Resource', { amount: 'u16' }, { network
 /** Server-only marker for natural resource patches, capped at their initial amount. */
 export const ResourcePatch = defineComponent('ResourcePatch', { maximum: 'u16' });
 export const Cargo = defineComponent('Cargo', { amount: 'u16' }, { networked: true });
-/** Factory progress for the UI. `progress` is percent of the current item. */
+/**
+ * Factory progress for the UI. `blueprint` is the item being built, `progress` its percent and `queued`
+ * the queue length; `q1`-`q7` are the items waiting behind it (0 = empty), so clients can draw the whole queue.
+ */
 export const Production = defineComponent(
   'Production',
-  { blueprint: 'u16', progress: 'u8', queued: 'u8' },
+  { blueprint: 'u16', progress: 'u8', queued: 'u8', q1: 'u16', q2: 'u16', q3: 'u16', q4: 'u16', q5: 'u16', q6: 'u16', q7: 'u16' },
   { networked: true },
 );
 /** Energy as a percentage: replicated only when the whole percent changes. */
 export const EnergyView = defineComponent('EnergyView', { pct: 'u8' }, { networked: true });
-/** Bit i set = parts[i] switched off. Clients need it to derive the unit's effective stats. */
-export const Modules = defineComponent('Modules', { off: 'u32' }, { networked: true });
+/** Bit i set = parts[i] switched off (`off`) or broken by damage (`broken`). Clients need both to derive the unit's effective stats. */
+export const Modules = defineComponent('Modules', { off: 'u32', broken: 'u32' }, { networked: true });
 /** Resources held by a building with silos. */
 export const Stockpile = defineComponent('Stockpile', { amount: 'i32' }, { networked: true });
 /** Present while a building is still being constructed. `progress` is percent. */
@@ -35,7 +38,8 @@ export const Missile = defineComponent('Missile', { owner: 'u8', size: 'u8', hea
 // Server-only.
 /** `arrived`: 1 = reached the end of the path to (tx, ty); 2 = stopped short by a crowd. */
 export const Motion = defineComponent('Motion', { tx: 'i32', ty: 'i32', moving: 'u8', arrived: 'u8' });
-export const Weapon = defineComponent('Weapon', { target: 'i32', cooldown: 'u16', power: 'u16' });
+/** `aim`: the module class (SLOT_CODES) shots are aimed at; 0 = any, a random module each hit. */
+export const Weapon = defineComponent('Weapon', { target: 'i32', cooldown: 'u16', power: 'u16', aim: 'u8' });
 /** `target` is the resource handle last given to harvest() — kept as "where I was working". */
 export const Harvester = defineComponent('Harvester', { target: 'i32' });
 export const Energy = defineComponent('Energy', { amount: 'i32' });

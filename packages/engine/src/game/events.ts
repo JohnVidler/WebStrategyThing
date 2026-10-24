@@ -10,4 +10,8 @@ export const SimEvent = {
   Build: 5,
   /** A charging pad actively topping up units: the pad's entity index (twice). Rate-limited, and only above a delivery threshold. */
   Charge: 6,
+  /** A module broke: the unit or building, and the index of the part. */
+  Break: 7,
+  /** A harvester at work: harvester, resource (sent every other tick while it mines). */
+  Harvest: 8,
 } as const;

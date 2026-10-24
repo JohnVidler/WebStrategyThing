@@ -1,6 +1,6 @@
 import type { FlowProgram } from '../flow/compile';
-import { PARTS, SWITCHABLE, type PartDef, type WeaponKind } from './parts';
-import { ANTENNA_THROUGHPUT_PER_TILE, BASE_LINK_RANGE, BASE_STACK, BUILD_TIME_BASE, BUILD_TIME_PER_MASS, COST_PER_MASS, CYCLE_COST, PRODUCTION_ENERGY_BY_SLOT, PRODUCTION_ENERGY_PER_MODULE, REPAIR_ARMOR_MULTIPLIER, REPAIR_MATTER_PER_HP, SPEED_FACTOR, TILE } from './rules';
+import { PARTS, SLOT_CODES, SWITCHABLE, TIER_NAMES, type PartDef, type WeaponKind } from './parts';
+import { ANTENNA_THROUGHPUT_PER_TILE, BASE_LINK_RANGE, BASE_STACK, MODULE_HP_BASE, MODULE_HP_PER_MASS, BUILD_TIME_BASE, BUILD_TIME_PER_MASS, COST_PER_MASS, CYCLE_COST, factoryTierBit, PRODUCTION_ENERGY_BY_SLOT, PRODUCTION_ENERGY_PER_MODULE, REPAIR_ARMOR_MULTIPLIER, REPAIR_MATTER_PER_HP, sizeCostMultiplier, SPEED_FACTOR, TILE } from './rules';
 import { TESLA_COOLDOWN, TESLA_RANGE, type MissileTuning } from './rules';
 
 /** Converts total thrust / mass into sub-tile units per tick. */
@@ -73,8 +73,10 @@ export interface BlueprintStats {
   /** A vehicle chassis twice as long as it is wide. */
   readonly long: boolean;
   readonly factory: boolean;
-  /** Working factory modules: a unit with a chassis of size s is built at full speed with s + 1 of them, at a tenth of the speed with one fewer, and not at all with fewer. */
+  /** Working factory modules: a unit with a chassis of size tier s is built at full speed with max(1, s) of them, at a tenth of the speed with one fewer, and not at all with fewer. */
   readonly factoryModules: number;
+  /** Bit mask of the chassis size tiers its factory modules build (see factoryCanBuild). */
+  readonly factoryTiers: number;
   readonly depot: boolean;
   readonly chargeRate: number;
   /** Resources the building's silos hold. */
@@ -115,7 +117,16 @@ export interface BlueprintStats {
   readonly buildTime: number;
   /** Energy the factory spends producing one (over its build time), from module count and types. */
   readonly buildEnergy: number;
+  /** Chassis size tier (TIER_NAMES); 0 for buildings. */
   readonly size: number;
+  /** Hull radius (sub-tile units; 0 for buildings). */
+  readonly radius: number;
+  /** Highest rock (terrain height) the unit can walk onto: 0 on wheels and tracks, more on legs. */
+  readonly climb: number;
+  /** Cells it needs clear on each side of its centre to fit (0 = squeezes through any one-tile gap). */
+  readonly clearance: number;
+  /** Walks on legs. */
+  readonly legs: boolean;
 }
 
 /** What goes over the wire: just part ids. Stats are re-derived on the client from the shared catalogue. */
@@ -132,9 +143,35 @@ export interface BlueprintInfo {
  * A unit class — the flyweight. Units hold only a blueprint id, a module mask
  * and their own mutable state; stats and program are shared through this object.
  */
+/** Where hits can land on a class, by part index; see `Simulation.hitModule`. */
+export interface HitTable {
+  /** Slot code of each part that can break (SLOT_CODES); 0 = soaks hits but never breaks (armour, memory, batteries); 255 = the chassis, never hit. */
+  readonly slot: Uint8Array;
+  /** Damage each part takes before it breaks. */
+  readonly integrity: Uint16Array;
+}
+
+export const CHASSIS_HIT = 255;
+
+/** Damage a module takes before it breaks. */
+export const moduleIntegrity = (d: PartDef): number => d.integrity ?? MODULE_HP_BASE + MODULE_HP_PER_MASS * d.mass;
+
+export function hitTableOf(parts: readonly string[]): HitTable {
+  const slot = new Uint8Array(parts.length);
+  const integrity = new Uint16Array(parts.length);
+  parts.forEach((id, i) => {
+    const d = PARTS[id];
+    if (!d) return;
+    slot[i] = d.slot === 'chassis' ? CHASSIS_HIT : SWITCHABLE.has(d.slot) ? SLOT_CODES[d.slot] : 0;
+    integrity[i] = Math.min(0xffff, moduleIntegrity(d));
+  });
+  return { slot, integrity };
+}
+
 export interface Blueprint extends BlueprintInfo {
   /** Stats with every module switched on. */
   readonly stats: BlueprintStats;
+  readonly hit: HitTable;
   /** Memoised stats per module-off mask. */
   readonly variants: Map<number, BlueprintStats>;
   /** Server-only. Swapping it hot-reloads every unit of the class. */
@@ -159,6 +196,15 @@ function validate(defs: PartDef[]): PartDef {
   if (motors.some((d) => d.flight) && motors.some((d) => !d.flight)) {
     throw new BlueprintError('Rotors and ground motors cannot be mixed');
   }
+  if (motors.some((d) => d.climb) && motors.some((d) => !d.climb)) {
+    throw new BlueprintError('Legs cannot be mixed with wheels or rotors');
+  }
+  if (!structure) {
+    const size = frame.size ?? 0;
+    for (const d of defs) {
+      if ((d.minSize ?? 0) > size) throw new BlueprintError(`${d.name} needs a ${TIER_NAMES[d.minSize!]} chassis or bigger`);
+    }
+  }
   return frame;
 }
 
@@ -177,9 +223,9 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
   const structure = frame.structure === true;
 
   let hp = 0, mass = 0, memory = 0, stack = BASE_STACK, energy = 0, fullCycles = 0;
-  let cycles = 0, cpuUse = 0, thrust = 0, motorUse = 0, flying = false;
+  let cycles = 0, cpuUse = 0, thrust = 0, motorUse = 0, flying = false, climb = 0, legs = false;
   let sensor = 0, sensorUse = 0, sensorTier = 0, cargo = 0, rate = 0, cargoUse = 0;
-  let factory = false, factoryModules = 0, factoryUse = 0, silo = 0, charge = 0, solar = 0, wind = 0, antenna = 0, antennas = 0, banks = 0;
+  let factory = false, factoryModules = 0, factoryTiers = 0, factoryUse = 0, silo = 0, charge = 0, solar = 0, wind = 0, antenna = 0, antennas = 0, banks = 0;
   let radioRange = 0, radioUse = 0, laserRange = 0, laserUse = 0, buildRate = 0, builderUse = 0, radarMax = 0, buildEnergy = 0, repairRate = 0, repairUse = 0, armorHp = 0;
   let weapon: BlueprintStats['weapon'] = null;
 
@@ -206,6 +252,10 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
         thrust += d.thrust ?? 0;
         motorUse += d.use ?? 0;
         flying ||= d.flight === true;
+        if (d.climb) {
+          legs = true;
+          climb = Math.max(climb, d.climb);
+        }
         break;
       case 'sensor':
         if ((d.sensorRange ?? 0) > sensor) {
@@ -233,6 +283,7 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
       case 'factory':
         factory = true;
         factoryModules++;
+        factoryTiers |= factoryTierBit(d.factoryTier ?? 1);
         factoryUse += d.use ?? 0;
         break;
       case 'charger':
@@ -288,6 +339,9 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
     (radioRange > 0 ? Caps.Radio : 0) |
     (laserRange > 0 ? Caps.Laser : 0);
 
+  // Big hulls (heavy and up) cost exponentially more matter and production energy; buildings are not scaled.
+  const sizeScale = structure ? 1 : sizeCostMultiplier(frame.size ?? 0);
+
   return Object.freeze({
     hp,
     mass,
@@ -308,6 +362,7 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
     long: frame.long === true,
     factory,
     factoryModules,
+    factoryTiers,
     depot,
     chargeRate: charge,
     resourceCapacity: silo,
@@ -332,12 +387,19 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
     repairUse,
     repairMatterPerHp: hp > 0 ? (REPAIR_MATTER_PER_HP * (hp - armorHp + armorHp * REPAIR_ARMOR_MULTIPLIER)) / hp : 0,
     caps,
-    cost: COST_PER_MASS * mass + CYCLE_COST * fullCycles,
+    cost: Math.round((COST_PER_MASS * mass + CYCLE_COST * fullCycles) * sizeScale),
     buildTime: BUILD_TIME_BASE + BUILD_TIME_PER_MASS * mass,
-    buildEnergy,
-    size: frame.size ?? 0,
+    buildEnergy: Math.round(buildEnergy * sizeScale),
+    size: structure ? 0 : (frame.size ?? 0),
+    radius: structure ? 0 : Math.round((frame.radius ?? 0.3) * TILE),
+    climb: structure ? 0 : climb,
+    clearance: structure ? 0 : clearanceFor(frame.radius ?? 0.3),
+    legs,
   });
 }
+
+/** Cells a hull of `radius` tiles needs clear on each side of its centre: none up to half a tile, then one per tile. */
+export const clearanceFor = (radius: number): number => Math.max(0, Math.ceil(radius - 0.5));
 
 /** Stats for a unit of `bp` with module mask `off` (shared between all units with that mask). */
 export function statsFor(bp: Blueprint, off: number): BlueprintStats {
@@ -389,6 +451,7 @@ export class BlueprintRegistry {
       name: info.name,
       parts: Object.freeze([...info.parts]),
       stats: deriveStats(info.parts),
+      hit: hitTableOf(info.parts),
       variants: new Map(),
       program: null,
       retired: info.retired === true,

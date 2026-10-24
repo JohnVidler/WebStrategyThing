@@ -1,6 +1,6 @@
 import type { ProgramButton } from '../flow/compile';
 import { FlowError } from '../flow/ir';
-import { FAULT_NAMES } from '../flow/run';
+import { cpuProfile, FAULT_NAMES, profileFlow, type HandlerProfile } from '../flow/run';
 import { BlueprintError } from './blueprint';
 import { SCOUT_CLASS } from './content';
 import { SimEvent } from './events';
@@ -39,12 +39,29 @@ export interface TestSample {
   readonly cargo: number;
 }
 
+/** Where the test unit's CPU went during a test run. */
+export interface TestProfile {
+  /** Every event block of the program (blocks expanded), with how often it ran and the cycles it used. */
+  readonly handlers: readonly HandlerProfile[];
+  /** Events lost to a full queue. */
+  readonly dropped: number;
+  /** Ticks simulated. */
+  readonly ticks: number;
+  /**
+   * The heat map, by graph node id: times each statement started, times each event block ran, and for a
+   * built-in block the runs of all its event blocks together.
+   */
+  readonly hits: Readonly<Record<string, number>>;
+}
+
 export interface TestRunResult {
   /** Set when the design or program was rejected (nothing ran). */
   readonly error?: string;
   readonly samples: TestSample[];
   readonly notes: string[];
   readonly buttons: readonly ProgramButton[];
+  /** Absent when the class has no CPU or no program. */
+  readonly profile?: TestProfile;
 }
 
 const CPU_STATE_NAMES = ['running', 'asleep', 'no power', 'offline', 'stunned'];
@@ -74,6 +91,8 @@ export function testRun(parts: readonly string[], source: string, options: TestR
   }
 
   const notes: string[] = [];
+  const flow = sim.flowFor(e);
+  if (flow) profileFlow(flow);
   let enemy = -1;
   if (options.enemy || options.order === 'attack') {
     const scout = defineClass(sim, 2, SCOUT_CLASS);
@@ -155,7 +174,25 @@ export function testRun(parts: readonly string[], source: string, options: TestR
   if (faults) notes.push(`⚠ Faulted ${faults} time(s) (last: ${lastFault}). Each fault reboots the program.`);
   if (flatAt > 0) notes.push(`⚠ Ran out of energy at tick ${flatAt}.`);
   if (diedAt > 0) notes.push(`⚠ Destroyed at tick ${diedAt}.`);
-  return { samples, notes, buttons };
+  // The unit's flow state may have been replaced (a reboot keeps it; a destroyed unit loses it): use what ran.
+  const fs = sim.flows[e] ?? flow;
+  let profile: TestProfile | undefined;
+  if (fs) {
+    const p = cpuProfile(fs);
+    if (p.dropped) notes.push(`⚠ ${p.dropped} event(s) were dropped because the event queue (${p.capacity}) was full.`);
+    const hits: Record<string, number> = {};
+    fs.program.stmtIds.forEach((id, i) => {
+      if (fs.hits?.[i]) hits[id] = (hits[id] ?? 0) + fs.hits[i];
+    });
+    for (const h of p.handlers) {
+      if (!h.runs) continue;
+      hits[h.id] = (hits[h.id] ?? 0) + h.runs;
+      const cut = h.id.indexOf('~');
+      if (cut > 0) hits[h.id.slice(0, cut)] = (hits[h.id.slice(0, cut)] ?? 0) + h.runs;
+    }
+    profile = { handlers: p.handlers, dropped: p.dropped, ticks: ran, hits };
+  }
+  return { samples, notes, buttons, profile };
 }
 
 /** A free spot for a building near the starting base (top-left corner). */

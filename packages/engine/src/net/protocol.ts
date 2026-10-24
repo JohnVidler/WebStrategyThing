@@ -1,6 +1,8 @@
 import type { BlueprintInfo } from '../game/blueprint';
 import { MAX_DESIGNS, type DesignEntry } from '../game/designs';
 import type { GameMode } from '../game/map';
+import type { CpuProfile } from '../flow/run';
+import { parseDevCommand, type DevCommand } from './dev';
 
 export const TICK_RATE = 10;
 export const DEFAULT_PORT = 8080;
@@ -44,12 +46,18 @@ export type ClientMessage =
   /** A class-declared button, by name: applies to the units whose class declares it. */
   | { t: 'button'; units: number[]; name: string; x: number; y: number; target: number; queue: boolean }
   | { t: 'produce'; building: number; blueprint: number }
+  /** Remove the item at `index` (0 = the one being built) from a factory's queue; its matter is refunded. */
+  | { t: 'dequeue'; building: number; index: number }
   /** Switch module `index` on or off on each unit. */
   | { t: 'setModule'; units: number[]; index: number; on: boolean }
   /** Demolish own buildings (cancel sites): refunds go to the common pool. */
   | { t: 'demolish'; units: number[] }
   /** Place a building blueprint with its top-left on tile (x, y); `builders` get a BUILD task. */
-  | { t: 'place'; blueprint: number; x: number; y: number; builders: number[]; queue: boolean };
+  | { t: 'place'; blueprint: number; x: number; y: number; builders: number[]; queue: boolean }
+  /** Ask where an own unit's CPU goes (the info panel polls this about once a second while one unit is selected). */
+  | { t: 'cpuProfile'; unit: number }
+  /** Developer tools (Dev Options menu): refused unless the server runs with WST_DEV_TOOLS=1. */
+  | { t: 'dev'; cmd: DevCommand };
 
 export type ServerMessage =
   | {
@@ -60,7 +68,7 @@ export type ServerMessage =
       height: number;
       /** Needed to reproduce wind locally. */
       seed: number;
-      /** Terrain.encode(): '1' passable, '0' blocked, row-major. */
+      /** Terrain.encode(): one digit per cell, its height ('0' open ground, '1'-'9' rock), row-major. */
       terrain: string;
       /** Fog of war: the client only receives what its units and buildings can see (never for spectators). */
       fog: boolean;
@@ -102,9 +110,16 @@ export type ServerMessage =
   | { t: 'resigned' }
   /** Sent once when the match has a winner: `winner` is their player id. In team matches `winners` lists every winning side (the humans, or the bots). */
   | { t: 'matchOver'; winner: number; reason: MatchEndReason; standings: ScoreEntry[]; winners?: number[] }
+  /**
+   * Answer to a cpuProfile request: the unit's counters since its program started (cumulative, so the client
+   * turns two answers into rates), at server tick `tick`. Null when the unit has no running program.
+   */
+  | { t: 'cpuProfile'; unit: number; tick: number; profile: CpuProfile | null }
   /** Result of a loadDesigns request. */
   | { t: 'designsLoaded'; reason: 'session' | 'upload' | 'reset'; defined: number; updated: number; retired: number; errors: string[] }
-  | { t: 'error'; message: string };
+  | { t: 'error'; message: string }
+  /** The outcome of a developer command: shown in the Dev Options menu. */
+  | { t: 'devNote'; text: string; ok: boolean };
 
 /**
  * Why a match ended: every other side was destroyed, every other player left,
@@ -170,7 +185,7 @@ export type ClientPhase = 'lobby' | 'playing' | 'spectating';
 const ALWAYS: readonly ClientMessage['t'][] = ['setName', 'resign', 'leave'];
 // loadDesigns is let through so the server can answer that designs can't change yet.
 const BEFORE_START = new Set<ClientMessage['t']>([...ALWAYS, 'startGame', 'loadDesigns']);
-const WATCHING = new Set<ClientMessage['t']>([...ALWAYS, 'loadDesigns']);
+const WATCHING = new Set<ClientMessage['t']>([...ALWAYS, 'loadDesigns', 'dev']);
 
 /** Whether a client in `phase` may send a message of type `t`: nothing is ordered before the start or while spectating. */
 export function messageAllowed(phase: ClientPhase, t: ClientMessage['t']): boolean {
@@ -233,6 +248,9 @@ export function parseClientMessage(raw: unknown): ClientMessage | null {
     case 'produce':
       if (!isInt(m.building) || !isInt(m.blueprint)) return null;
       return { t: m.t, building: m.building, blueprint: m.blueprint };
+    case 'dequeue':
+      if (!isInt(m.building) || !isInt(m.index)) return null;
+      return { t: m.t, building: m.building, index: m.index };
     case 'place':
       if (!isInt(m.blueprint) || !isInt(m.x) || !isInt(m.y)) return null;
       // Builders are optional: a site can be placed and assigned later.
@@ -241,6 +259,13 @@ export function parseClientMessage(raw: unknown): ClientMessage | null {
     case 'setModule':
       if (!isUnitList(m.units) || !isInt(m.index) || typeof m.on !== 'boolean') return null;
       return { t: m.t, units: m.units, index: m.index, on: m.on };
+    case 'cpuProfile':
+      if (!isInt(m.unit) || m.unit < 0) return null;
+      return { t: m.t, unit: m.unit };
+    case 'dev': {
+      const cmd = parseDevCommand(m.cmd);
+      return cmd ? { t: m.t, cmd } : null;
+    }
     default:
       return null;
   }

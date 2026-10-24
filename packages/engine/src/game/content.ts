@@ -48,7 +48,7 @@ const template = (name: string, parts: readonly string[], text: string): ClassTe
 // Right-click a block in the editor and choose Expand to turn it into plain events you can change.
 
 export const HQ_CLASS: ClassTemplate = template('HQ', [
-  'frame.large', 'cpu.fast', 'mem.small', 'sensor.long', 'factory.basic', 'silo', 'silo',
+  'frame.large', 'cpu.fast', 'mem.small', 'sensor.long', 'factory.light', 'factory.medium', 'silo', 'silo',
   'solar.panel', 'solar.panel', 'battery.cell',
 ], `// Headquarters: produces units and stores harvested resources in its silos.
 // Right-clicking with the HQ selected sets the rally point; harvesters that are produced or dock here
@@ -57,18 +57,21 @@ use(RallyPoint);
 use(DispatchHarvesters, { fieldsToChooseFrom: 4, minMatter: 10 });
 `);
 
-// Specialised unit factories: a unit is built at full speed with 1 (light), 2 (medium) or 3 (heavy) factory
-// modules, at a tenth of the speed with one module fewer, and not at all with two fewer. The HQ has one, so it builds
-// light units normally and medium ones (such as Builders) slowly, but no heavy units.
+// Specialised unit factories: each factory module builds units of exactly one size tier (micro, light, medium,
+// heavy, super-heavy or colossus), so a building needs a module for every size it should build. The HQ has a
+// light and a medium module (so it can always make harvesters and Builders), and no heavy ones.
 const FACTORY_PROGRAM = `// Produces units and sends each new one to the rally point (right-click with the building selected).
 use(RallyPoint);
 `;
 
-export const LIGHT_FACTORY_CLASS: ClassTemplate = template('Light Factory', ['frame.small', 'cpu.basic', 'factory.basic', 'battery.cell'], FACTORY_PROGRAM);
+export const LIGHT_FACTORY_CLASS: ClassTemplate = template('Light Factory', ['frame.small', 'cpu.basic', 'factory.micro', 'factory.light', 'battery.cell'], FACTORY_PROGRAM);
 
-export const VEHICLE_FACTORY_CLASS: ClassTemplate = template('Vehicle Factory', ['frame.medium', 'cpu.basic', 'factory.basic', 'factory.basic', 'battery.cell'], FACTORY_PROGRAM);
+export const VEHICLE_FACTORY_CLASS: ClassTemplate = template('Vehicle Factory', ['frame.medium', 'cpu.basic', 'factory.medium', 'battery.cell'], FACTORY_PROGRAM);
 
-export const HEAVY_FACTORY_CLASS: ClassTemplate = template('Heavy Factory', ['frame.large', 'cpu.basic', 'factory.basic', 'factory.basic', 'factory.basic', 'battery.bank'], FACTORY_PROGRAM);
+export const HEAVY_FACTORY_CLASS: ClassTemplate = template('Heavy Factory', ['frame.large', 'cpu.basic', 'factory.heavy', 'battery.bank'], FACTORY_PROGRAM);
+
+/** The only building that builds super-heavy and colossus units. */
+export const TITAN_WORKS_CLASS: ClassTemplate = template('Titan Works', ['frame.large', 'cpu.basic', 'factory.super', 'factory.colossal', 'battery.bank'], FACTORY_PROGRAM);
 
 export const CHARGING_PAD_CLASS: ClassTemplate = template('Charging Pad', ['frame.small', 'charger.pad', 'battery.cell'], '');
 
@@ -187,6 +190,32 @@ export const PATHFINDER_CLASS: ClassTemplate = template('Pathfinder', ['chassis.
 ${BASICS(25)}
 `);
 
+// --- Size tiers and legs ---------------------------------------------------------------
+// Micro units are cheap and quick; legs climb onto rock (light legs the rim of an outcrop, heavy legs two levels
+// in, colossus legs over anything, cliffs included); super-heavy and colossus hulls need a Titan Works and a
+// corridor three tiles wide unless they walk over the rock.
+
+/** A tiny, very fast spotter: a micro chassis has room for a CPU and two modules. */
+export const MITE_CLASS: ClassTemplate = template('Mite', ['chassis.micro', 'cpu.basic', 'motor.turbo', 'sensor.short'], `// Mite: a cheap, very fast spotter with a short sensor and no weapon. It goes where it is told.
+${BASICS(25)}
+`);
+
+/** A scout on light legs: it can step onto the rim of rock outcrops and shoot from there. */
+export const STRIDER_CLASS: ClassTemplate = template('Strider', ['chassis.light', 'cpu.basic', 'legs.light', 'sensor.short', 'gun.light'], FIGHTER_PROGRAM_TEXT);
+
+/** A cannon walker on heavy legs: climbs two levels into rock, so it takes short cuts over low outcrops. */
+export const WALKER_CLASS: ClassTemplate = template('Walker', ['chassis.medium', 'cpu.basic', 'legs.heavy', 'sensor.short', 'gun.cannon', 'cargo.bay'], FIGHTER_PROGRAM_TEXT + resupply(6));
+
+/** A super-heavy siege tank: slow, armoured, out-ranges turrets; needs wide roads and a Titan Works. */
+export const JUGGERNAUT_CLASS: ClassTemplate = template('Juggernaut', [
+  'chassis.superheavy', 'cpu.basic', 'motor.huge', 'sensor.long', 'cannon.siege', 'armor.heavy', 'armor.heavy', 'cargo.hold', 'battery.large',
+], FIGHTER_PROGRAM_TEXT + resupply(16));
+
+/** The colossus: a walking fortress with a rotary gun that shreds crowds; it strides over any rock, slowly. */
+export const COLOSSUS_CLASS: ClassTemplate = template('Colossus', [
+  'chassis.colossus', 'cpu.fast', 'legs.colossus', 'sensor.long', 'gun.rotary', 'armor.heavy', 'armor.heavy', 'battery.large', 'battery.large',
+], FIGHTER_PROGRAM_TEXT);
+
 /** Starting points for a new class in the editor: a short name, what it is for, and its program text (all built-in blocks). */
 export const CLASS_TEMPLATES: readonly { readonly name: string; readonly about: string; readonly text: string }[] = [
   { name: 'Blank', about: 'No behaviour at all.', text: '' },
@@ -204,6 +233,7 @@ export const STARTER_CLASSES: readonly ClassTemplate[] = [
   LIGHT_FACTORY_CLASS,
   VEHICLE_FACTORY_CLASS,
   HEAVY_FACTORY_CLASS,
+  TITAN_WORKS_CLASS,
   CHARGING_PAD_CLASS,
   SOLAR_CLASS,
   WIND_CLASS,
@@ -228,6 +258,11 @@ export const STARTER_CLASSES: readonly ClassTemplate[] = [
   PATHFINDER_CLASS,
   FLAK_CLASS,
   FLAK_TURRET_CLASS,
+  MITE_CLASS,
+  STRIDER_CLASS,
+  WALKER_CLASS,
+  JUGGERNAUT_CLASS,
+  COLOSSUS_CLASS,
 ];
 
 /** Program shown in the editor for a freshly defined class (as stored text). */

@@ -3,15 +3,15 @@ import { EventId } from '../flow/events';
 import { enqueue, hasWork, raise, reboot, runFlow, tickTimers, type RunHooks } from '../flow/run';
 import { UNIT_API, VisitReason } from './api';
 import { activitySystem } from './activity';
-import { resolveSweep, sensorSweep } from './sensor';
+import { sensorSweep, sweepFor } from './sensor';
 import { CpuState } from './components';
 import { launchMissile, shotHitsMissile } from './missile';
 import { SimEvent } from './events';
-import { TILE } from './parts';
+import { PART_LIST, TILE } from './parts';
 import { daylight, routeEnergy, share, StorageMode, wind } from './power';
 import { GENERATION_SCALE } from './parts';
-import { BUILDER_ENERGY_RESERVE, SEPARATION_RADIUS, DECAY_TICKS, MAX_TRANSMISSION_LOSS, RESOURCE_REGEN_INTERVAL_TICKS, SOLAR_GENERATION_MULTIPLIER, STORAGE_DISCHARGE_FRACTION, STORAGE_RESERVE_FRACTION, TESLA_SELF_STUN_FACTOR, TESLA_STUN_TICKS, TRANSMISSION_LOSS_PER_TILE, WIND_GENERATION_MULTIPLIER, buildEnergyCost } from './rules';
-import { CHARGE_PAD_RATE_MULTIPLIER, CHARGE_RANGE, FLAK_BURST_RADIUS, factoryModulesFor, factoryRatePermille } from './rules';
+import { BUILDER_ENERGY_RESERVE, CLIMB_SPEED_PERMILLE, SEPARATION_GAP, DECAY_TICKS, MAX_TRANSMISSION_LOSS, RESOURCE_REGEN_INTERVAL_TICKS, SOLAR_GENERATION_MULTIPLIER, STORAGE_DISCHARGE_FRACTION, STORAGE_RESERVE_FRACTION, TESLA_SELF_STUN_FACTOR, TESLA_STUN_TICKS, TRANSMISSION_LOSS_PER_TILE, WIND_GENERATION_MULTIPLIER, buildEnergyCost } from './rules';
+import { CHARGE_PAD_RATE_MULTIPLIER, CHARGE_RANGE, FLAK_BURST_RADIUS, factoryCanBuild } from './rules';
 import type { Simulation } from './simulation';
 
 /** Energy a storage building keeps back from discharging (and refills first), so its script can always run. */
@@ -254,7 +254,7 @@ function raiseDue(sim: Simulation, e: number, fs: NonNullable<Simulation['flows'
   if (sensors) {
     for (const h of sensors) {
       if (tick < fs.nextDue[h]) continue;
-      const { sweep } = resolveSweep(p.handlers[h], s);
+      const sweep = sweepFor(p.handlers[h], s);
       fs.nextDue[h] = tick + sweep.interval;
       if (s.sensorTier === 0 || sweep.watch.length === 0 || sweep.limit === 0) continue;
       // Each sweep costs the sensor's energy, found or not; a unit that cannot pay does not sweep.
@@ -317,6 +317,8 @@ export function movementSystem(sim: Simulation): void {
     let budget = s.speed;
     let x = p.x[e];
     let y = p.y[e];
+    // Legs are slower on rock than on open ground.
+    if (s.climb > 0 && !s.flying && sim.terrain.heightAt(Math.floor(x / TILE), Math.floor(y / TILE)) > 0) budget = Math.floor((budget * CLIMB_SPEED_PERMILLE) / 1000);
     while (budget > 0 && path.length) {
       const dx = path[0] - x;
       const dy = path[1] - y;
@@ -354,11 +356,13 @@ export function movementSystem(sim: Simulation): void {
 let pushX = new Int32Array(0);
 let pushY = new Int32Array(0);
 
-/** Nudges overlapping units apart (ground and air separately), never into blocked cells. */
+/** The biggest hull radius any part gives (the colossus), so neighbour searches reach every unit that could touch. */
+let maxRadius = 0;
+
+/** Nudges overlapping units apart (ground and air separately), never into blocked cells. Two units keep their hull radii plus a small gap apart. */
 export function separationSystem(sim: Simulation): void {
-  const R = SEPARATION_RADIUS;
-  const R2 = R * R;
   const p = sim.pos.f;
+  if (maxRadius === 0) for (const d of PART_LIST) maxRadius = Math.max(maxRadius, Math.round((d.radius ?? 0) * TILE));
   if (pushX.length < sim.world.capacity) {
     pushX = new Int32Array(sim.world.capacity);
     pushY = new Int32Array(sim.world.capacity);
@@ -368,13 +372,17 @@ export function separationSystem(sim: Simulation): void {
     if (pushX[e] === 0 && pushY[e] === 0) touched.push(e);
   };
   for (const e of sim.motion.dense) {
-    const flying = sim.stats(e).flying;
-    sim.spatial.forEachInRadius(p.x[e], p.y[e], R, (o) => {
-      if (o <= e || !sim.motion.has(o) || sim.stats(o).flying !== flying) return;
+    const se = sim.stats(e);
+    const flying = se.flying;
+    sim.spatial.forEachInRadius(p.x[e], p.y[e], se.radius + maxRadius + SEPARATION_GAP, (o) => {
+      if (o <= e || !sim.motion.has(o)) return;
+      const so = sim.stats(o);
+      if (so.flying !== flying) return;
+      const R = se.radius + so.radius + SEPARATION_GAP;
       const dx = p.x[e] - p.x[o];
       const dy = p.y[e] - p.y[o];
       const d2 = dx * dx + dy * dy;
-      if (d2 >= R2) return;
+      if (d2 >= R * R) return;
       let px: number;
       let py: number;
       if (d2 === 0) {
@@ -405,8 +413,9 @@ export function separationSystem(sim: Simulation): void {
     const ny = Math.min(maxY, Math.max(0, y + pushY[e]));
     pushX[e] = 0;
     pushY[e] = 0;
-    const flying = sim.stats(e).flying;
-    const ok = (ax: number, ay: number) => flying || t.walkable(Math.floor(ax / TILE), Math.floor(ay / TILE));
+    const s = sim.stats(e);
+    // Pushes never move a unit onto ground it could not walk to (clearance aside: crowds may squeeze a big hull).
+    const ok = (ax: number, ay: number) => s.flying || t.enterable(Math.floor(ax / TILE), Math.floor(ay / TILE), s.climb);
     if (ok(nx, ny)) {
       p.x[e] = nx;
       p.y[e] = ny;
@@ -418,7 +427,7 @@ export function separationSystem(sim: Simulation): void {
       continue;
     }
     sim.pos.markChanged(e);
-    if (flying && !sim.motion.f.moving[e]) sim.ensureLanded(e);
+    if (s.flying && !sim.motion.f.moving[e]) sim.ensureLanded(e);
   }
 }
 
@@ -436,6 +445,7 @@ export function harvestSystem(sim: Simulation): void {
     res.f.amount[t] -= take;
     cargo.markChanged(e);
     res.markChanged(t);
+    if (take > 0 && sim.tick % 2 === 0) sim.emit(SimEvent.Harvest, e, t);
     if (res.f.amount[t] === 0 && !sim.resourcePatch.has(t)) sim.destroyEntity(t);
   }
 }
@@ -493,7 +503,7 @@ export function combatSystem(sim: Simulation): void {
     // Small missiles are hard to hit: the shot (and its energy) is simply wasted.
     if (sim.missile.has(t) && !shotHitsMissile(sim, t)) continue;
     const damage = stats.kind === 'laser' && stats.use > 0 ? Math.max(1, Math.round((stats.damage * shotEnergy) / stats.use)) : stats.damage;
-    sim.damage(t, damage, sim.unit.f.owner[e]);
+    sim.damage(t, damage, sim.unit.f.owner[e], w.aim[e]);
   }
 }
 
@@ -556,7 +566,7 @@ export function productionSystem(sim: Simulation): void {
     // Work is counted in thousandths of a build tick: a factory with too few modules for the unit
     // advances more slowly. The unit's own energy cost is spread evenly over the work (exact total,
     // whole numbers per tick).
-    const rate = bp ? factoryRatePermille(s.factoryModules, factoryModulesFor(bp.stats.size)) : 0;
+    const rate = bp && factoryCanBuild(s.factoryTiers, bp.stats.size) ? 1000 : 0;
     const before = sim.productionTicks[b];
     const after = before + rate;
     const total = bp?.stats.buildEnergy ?? 0;
@@ -580,10 +590,21 @@ export function productionSystem(sim: Simulation): void {
     } else {
       progress = 0;
     }
-    if (view.f.blueprint[b] !== blueprint || view.f.progress[b] !== progress || view.f.queued[b] !== queue.length) {
-      view.f.blueprint[b] = blueprint;
-      view.f.progress[b] = progress;
-      view.f.queued[b] = queue.length;
+    // The queue behind the front item is replicated too, so clients can draw every slot.
+    const f = view.f;
+    const behind = [f.q1, f.q2, f.q3, f.q4, f.q5, f.q6, f.q7];
+    let changed = f.blueprint[b] !== blueprint || f.progress[b] !== progress || f.queued[b] !== queue.length;
+    for (let i = 0; i < behind.length; i++) {
+      const id = queue[i + 1] ?? 0;
+      if (behind[i][b] !== id) {
+        behind[i][b] = id;
+        changed = true;
+      }
+    }
+    if (changed) {
+      f.blueprint[b] = blueprint;
+      f.progress[b] = progress;
+      f.queued[b] = queue.length;
       view.markChanged(b);
     }
   }
@@ -625,17 +646,23 @@ export function repairSystem(sim: Simulation): void {
     const s = sim.stats(e);
     if (s.repairRate <= 0 || sim.edgeDistance(e, t) > sim.buildRange(e)) continue;
     const missing = sim.stats(t).hp - sim.health.f.hp[t];
-    if (missing <= 0) continue;
+    // Damaged modules come first (a broken pair of legs or a gun is worth more than the same hit points of hull), then the hull.
+    const moduleDamage = sim.moduleDamageOf(t);
+    if (missing <= 0 && moduleDamage <= 0) continue;
     // Energy plus matter: the matter comes from the cargo bay of a unit or the silos of a building.
-    const gain = Math.min(s.repairRate, missing);
-    const owed = gain * sim.stats(t).repairMatterPerHp;
+    const modules = Math.min(s.repairRate, moduleDamage);
+    const gain = Math.min(s.repairRate - modules, Math.max(0, missing));
+    const owed = (gain + modules) * sim.stats(t).repairMatterPerHp;
     const credit = sim.repairCarry[e] ?? 0; // matter already paid but not yet used (whole units are bought)
     const buy = credit >= owed ? 0 : Math.ceil(owed - credit);
     if (!sim.canSpendMatter(e, buy) || !sim.spend(e, s.repairUse)) continue;
     sim.spendMatter(e, buy);
     sim.repairCarry[e] = credit + buy - owed;
-    sim.health.f.hp[t] += gain;
-    sim.health.markChanged(t);
+    if (modules > 0) sim.repairModules(t, modules);
+    if (gain > 0) {
+      sim.health.f.hp[t] += gain;
+      sim.health.markChanged(t);
+    }
     if (sim.tick % 2 === 0) sim.emit(SimEvent.Repair, e, t);
   }
 }

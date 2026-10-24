@@ -1,0 +1,15 @@
+{
+  "name": "Making a Stand",
+  "briefing": {
+    "title": "Training Range: Making a Stand",
+    "story": [
+      "The second exercise has rocks to hide behind and a drone that does not wait politely. Expand your economy, then meet its waves with units of your own design.",
+      "Good commanders are ready before the first wave arrives."
+    ],
+    "objectives": ["Keep your headquarters standing", "Destroy every enemy unit and building"],
+    "tips": ["Rock outcrops block movement and make good choke points.", "Try the Designer from the main menu to build a unit that suits the map."]
+  },
+  "map": { "layout": "scattered", "width": 56, "height": 56, "density": 1, "outposts": 0, "seed": 202 },
+  "victory": { "type": "eliminate" },
+  "triggers": []
+}

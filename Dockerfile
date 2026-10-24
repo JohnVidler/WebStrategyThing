@@ -11,12 +11,15 @@ COPY . .
 ARG VITE_SERVER_URL
 ARG GIT_HASH
 ARG GIT_BRANCH
-ENV GIT_HASH=$GIT_HASH GIT_BRANCH=$GIT_BRANCH
+# The dev panels are compiled in only when this is 1; an image is never built that way.
+ENV GIT_HASH=$GIT_HASH GIT_BRANCH=$GIT_BRANCH WST_DEV_TOOLS=0
 RUN if [ -n "$VITE_SERVER_URL" ]; then \
       npm run build --workspace=@wst/client; \
     else \
       unset VITE_SERVER_URL && npm run build --workspace=@wst/client; \
     fi
+# Fail the build if any dev panel code reached the bundle.
+RUN if grep -rlE 'dev-panel|Dev Options|Dev Rooms|__wstGraph' packages/client/dist --include='*.js'; then echo 'Dev tools found in the production client build' >&2; exit 1; fi
 
 FROM nginx:alpine AS client
 COPY --from=client-build /app/packages/client/dist/ /usr/share/nginx/html/
@@ -42,6 +45,8 @@ COPY packages/engine/package.json ./packages/engine/package.json
 COPY packages/engine/src ./packages/engine/src
 COPY packages/server/package.json ./packages/server/package.json
 COPY packages/server/src ./packages/server/src
+# Campaign definitions (see campaigns/README.md) ship with the image, unlike the music and sound libraries.
+COPY campaigns ./campaigns
 # Sound effects and music are not part of the image: docker-compose mounts them read-only at /app/sound and /app/music.
 
 USER node

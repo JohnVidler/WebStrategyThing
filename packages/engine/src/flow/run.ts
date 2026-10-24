@@ -1,7 +1,7 @@
 import { MAX_TEXT } from './check';
 import { COST } from './cost';
 import { EventId } from './events';
-import { configInt, configInts, OP_STRIDE, Op, STACK_SIZE, handles, type FlowProgram } from './compile';
+import { configInt, configInts, handlerLabel, OP_STRIDE, Op, STACK_SIZE, handles, type FlowProgram } from './compile';
 import { MAX_ARGS, type HostApi } from './host';
 
 export const Fault = {
@@ -54,6 +54,11 @@ export interface FlowState {
   dropped: number;
   /** Handlers completed. */
   handled: number;
+  /** Cycles each handler has used in total (by handler index; its outcome chains included), and how often it has started. Kept across reboots. */
+  readonly cycles: Float64Array;
+  readonly runs: Uint32Array;
+  /** Times each statement has started (by `Stmt` index), while profiling (`profileFlow`); null otherwise. */
+  hits: Uint32Array | null;
   /** First tick the Idle handler may fire again, and the tick until which `rest()` holds it back. */
   idleDue: number;
   restUntil: number;
@@ -99,6 +104,9 @@ export function createFlow(program: FlowProgram, memSlots: number, queueCapacity
     length: 0,
     dropped: 0,
     handled: 0,
+    cycles: new Float64Array(program.handlers.length),
+    runs: new Uint32Array(program.handlers.length),
+    hits: null,
     idleDue: 0,
     restUntil: 0,
     nextDue: new Int32Array(program.handlers.length),
@@ -148,20 +156,25 @@ export function boot(fs: FlowState, tick: number, reason: number): void {
   for (const i of p.byEvent[EventId.Spawned] ?? []) enqueue(fs, i, reason, 0, 0, 0);
 }
 
-/** Low-priority events lose their place to important ones when the queue is full. */
-const isPeriodic = (fs: FlowState, handlerIndex: number): boolean => {
-  if (handlerIndex < 0) return false;
+/**
+ * How much a queued entry matters when the queue is full: 0 periodic (it comes round again), 1 other
+ * events, 2 orders and chains (losing one would leave an order stuck at the front of the list forever).
+ */
+const rank = (fs: FlowState, handlerIndex: number): number => {
+  if (handlerIndex < 0) return 2;
   const id = fs.program.handlers[handlerIndex].event.id;
-  return id === EventId.Every || id === EventId.Timer || id === EventId.Detected;
+  return id === EventId.Every || id === EventId.Timer || id === EventId.Detected ? 0 : id === EventId.Order ? 2 : 1;
 };
 
-/** Adds an event for one handler. A full queue drops the oldest periodic event first, else this one. */
+/** Adds an event for one handler. A full queue drops its oldest periodic event, or (for an order or chain) its oldest lesser event; else this one. */
 export function enqueue(fs: FlowState, handler: number, a0: number, a1: number, a2: number, a3: number): boolean {
   if (fs.length >= fs.capacity) {
+    const mine = rank(fs, handler);
     let victim = -1;
     for (let i = 0; i < fs.length; i++) {
       const slot = ((fs.head + i) % fs.capacity) * EVENT_SLOTS;
-      if (isPeriodic(fs, fs.queue[slot])) {
+      const theirs = rank(fs, fs.queue[slot]);
+      if (theirs === 0 || theirs < mine) {
         victim = i;
         break;
       }
@@ -202,15 +215,14 @@ export function enqueueContinuation(fs: FlowState, handler: number, entry: numbe
   return false;
 }
 
-/** Raises an event for every block of `eventId` whose filter accepts it (`accept` sees the handler index). Returns how many blocks took it. */
+/** Raises an event for every block of `eventId` whose filter accepts it (`accept` sees the handler index). Returns how many blocks it was queued for (not those a full queue dropped). */
 export function raise(fs: FlowState, eventId: number, a0 = 0, a1 = 0, a2 = 0, a3 = 0, accept?: (handler: number) => boolean): number {
   const list = fs.program.byEvent[eventId];
   if (!list) return 0;
   let taken = 0;
   for (const h of list) {
     if (accept && !accept(h)) continue;
-    taken++;
-    enqueue(fs, h, a0, a1, a2, a3);
+    if (enqueue(fs, h, a0, a1, a2, a3)) taken++;
   }
   return taken;
 }
@@ -323,7 +335,9 @@ export function runFlow<Ctx>(fs: FlowState, api: HostApi<Ctx>, ctx: Ctx, cyclesP
           fs.handlerCycles = 0;
           locals.fill(0);
           locals.set(pending.frame.subarray(0, locals.length));
-          EVENT_ARGS.fill(0);
+          // A chain is not an event: no arguments (-1, not 0, which is a valid entity handle).
+          EVENT_ARGS.fill(-1);
+          fs.runs[pending.handler]++;
           hooks?.start?.(pending.handler, EVENT_ARGS);
           handler = -2;
         }
@@ -345,11 +359,14 @@ export function runFlow<Ctx>(fs: FlowState, api: HostApi<Ctx>, ctx: Ctx, cyclesP
         locals[1] = EVENT_ARGS[1];
         locals[2] = EVENT_ARGS[2];
         locals[3] = EVENT_ARGS[3];
+        fs.runs[handler]++;
         hooks?.start?.(handler, EVENT_ARGS);
       }
     }
 
     // Run the current handler until it ends, pauses, or crashes.
+    const segment = used;
+    const hits = fs.hits;
     let pc = fs.pc;
     let sp = fs.sp;
     let fault: number = Fault.None;
@@ -378,6 +395,7 @@ export function runFlow<Ctx>(fs: FlowState, api: HostApi<Ctx>, ctx: Ctx, cyclesP
           break run;
         case Op.Stmt:
           if (running.dynamic.length) running.dynamic.length = 0;
+          if (hits) hits[arg]++;
           break;
         case Op.Push:
           if (sp >= STACK_SIZE) { fault = Fault.StackOverflow; break run; }
@@ -521,6 +539,7 @@ export function runFlow<Ctx>(fs: FlowState, api: HostApi<Ctx>, ctx: Ctx, cyclesP
 
     fs.pc = pc;
     fs.sp = sp;
+    fs.cycles[fs.running] += used - segment;
     if (fault) {
       fs.fault = fault;
       hooks?.end?.(fs.running);
@@ -535,6 +554,42 @@ export function runFlow<Ctx>(fs: FlowState, api: HostApi<Ctx>, ctx: Ctx, cyclesP
     if (paused) break;
   }
   return used;
+}
+
+/** One handler's line in a CPU profile. */
+export interface HandlerProfile {
+  /** Handler id in the (expanded) program: the event block's id, `<block id>~<id>` for a block's own. */
+  readonly id: string;
+  /** Event name, plus the block it comes from. */
+  readonly label: string;
+  readonly runs: number;
+  readonly cycles: number;
+}
+
+/** What a unit's CPU has spent its cycles on since it started (or since `since`, when given). */
+export interface CpuProfile {
+  readonly handlers: readonly HandlerProfile[];
+  /** Events lost to a full queue. */
+  readonly dropped: number;
+  readonly handled: number;
+  /** Waiting in the queue now, and its capacity. */
+  readonly queued: number;
+  readonly capacity: number;
+}
+
+export function cpuProfile(fs: FlowState): CpuProfile {
+  return {
+    handlers: fs.program.handlers.map((h, i) => ({ id: h.id, label: handlerLabel(fs.program, i), runs: fs.runs[i], cycles: fs.cycles[i] })),
+    dropped: fs.dropped,
+    handled: fs.handled,
+    queued: fs.length,
+    capacity: fs.capacity,
+  };
+}
+
+/** Starts counting how often each statement runs (the heat map of a test run). Costs one array write per statement. */
+export function profileFlow(fs: FlowState): void {
+  fs.hits ??= new Uint32Array(fs.program.stmtIds.length);
 }
 
 /** Wipes the unit's queue, memory and any running handler, then raises Spawned with reason 1 (a reboot). */

@@ -660,7 +660,7 @@ const reference: Page[] = [
           <td>${esc(p.description)}${p.slots ? ` ${p.slots} slots.` : ''}${p.energy ? ` Stores ${p.energy}.` : ''}</td></tr>`,
       ).join('')}
     </table></div>
-    <p>Class cost: 10 × mass + CPU cycles. Build time: 10 + 4 × mass ticks.</p>`,
+    <p>Class cost: 10 × mass + CPU cycles, then ×2.5 for each size above medium (heavy ×2.5, super-heavy ×6.25, colossus ×15.6), and the energy to produce a unit grows the same way. Build time: 10 + 4 × mass ticks.</p>`,
   },
   {
     id: 'examples',

@@ -23,7 +23,8 @@ function gitBranch(): string {
 }
 
 export default defineConfig({
-  define: { __GIT_HASH__: JSON.stringify(gitHash()), __GIT_BRANCH__: JSON.stringify(gitBranch()) },
+  // WST_DEV_TOOLS=1 at build time keeps the dev panels in the client (npm run dev sets it); any other build drops them.
+  define: { __GIT_HASH__: JSON.stringify(gitHash()), __GIT_BRANCH__: JSON.stringify(gitBranch()), __WST_DEV_TOOLS__: JSON.stringify(process.env.WST_DEV_TOOLS === '1') },
   server: {
     port: 5173,
     proxy: {

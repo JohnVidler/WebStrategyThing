@@ -66,6 +66,18 @@ export function resolveSweep(h: CompiledHandler, stats: BlueprintStats): { sweep
   return { sweep: { watch, range: range * TILE, interval, sort, limit }, notes };
 }
 
+/** Resolved sweeps, by handler and stats (both immutable and shared, so this is computed once per class and module state). */
+const sweeps = new WeakMap<CompiledHandler, WeakMap<BlueprintStats, Sweep>>();
+
+/** `resolveSweep(h, stats).sweep`, cached: the per-tick path. */
+export function sweepFor(h: CompiledHandler, stats: BlueprintStats): Sweep {
+  let byStats = sweeps.get(h);
+  if (!byStats) sweeps.set(h, (byStats = new WeakMap()));
+  let sweep = byStats.get(stats);
+  if (!sweep) byStats.set(stats, (sweep = resolveSweep(h, stats).sweep));
+  return sweep;
+}
+
 /**
  * One sweep for unit `e`: what its sensor finds, as [kind, handle, ...] pairs, in report order
  * (watch priority, then sort), at most `limit` of them. Does not spend energy.
@@ -75,10 +87,17 @@ export function sensorSweep(sim: Simulation, e: number, sweep: Sweep): number[] 
   const x = sim.pos.f.x[e];
   const y = sim.pos.f.y[e];
   const owner = sim.unit.f.owner[e];
+  // The common case (a basic sensor: one report, nearest first) keeps only the best so far, without a list or a sort.
+  const nearestOnly = sweep.limit === 1 && sweep.sort === DetectSort.Nearest;
   for (const kind of sweep.watch) {
     const found: { o: number; d: number; hp: number; pct: number }[] = [];
-    const add = (o: number, hp: number, max: number) =>
-      found.push({ o, d: (sim.pos.f.x[o] - x) ** 2 + (sim.pos.f.y[o] - y) ** 2, hp, pct: hp / Math.max(1, max) });
+    let bestO = -1;
+    let bestD = Infinity;
+    const add = (o: number, hp: number, max: number) => {
+      const d = (sim.pos.f.x[o] - x) ** 2 + (sim.pos.f.y[o] - y) ** 2;
+      if (!nearestOnly) found.push({ o, d, hp, pct: hp / Math.max(1, max) });
+      else if (d < bestD || (d === bestD && o < bestO)) (bestO = o), (bestD = d);
+    };
     sim.spatial.forEachInRadius(x, y, sweep.range, (o) => {
       if (o === e) return;
       if (kind === DetectKind.Enemy) {
@@ -95,6 +114,10 @@ export function sensorSweep(sim: Simulation, e: number, sweep: Sweep): number[] 
         }
       }
     });
+    if (nearestOnly) {
+      if (bestO >= 0) return [kind, sim.world.handle(bestO)];
+      continue;
+    }
     found.sort((a, b) => {
       switch (sweep.sort) {
         case DetectSort.Weakest: return a.hp - b.hp || a.d - b.d || a.o - b.o;

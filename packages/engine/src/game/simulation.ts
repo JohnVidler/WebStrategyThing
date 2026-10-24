@@ -9,7 +9,8 @@ import { COMMON_ACTION_BY_TASK, compileUnitProgram } from './actions';
 import { activitySystem, cancelActivity, type ActivityState } from './activity';
 import { VisitReason, type UnitContext } from './api';
 import { DEFAULT_DESIGNS, type DesignEntry } from './designs';
-import { BlueprintError, BlueprintRegistry, Caps, statsFor, type Blueprint, type BlueprintStats } from './blueprint';
+import { SimEvent } from './events';
+import { BlueprintError, BlueprintRegistry, Caps, CHASSIS_HIT, statsFor, type Blueprint, type BlueprintStats } from './blueprint';
 import {
   Builder,
   Repairer,
@@ -37,7 +38,7 @@ import { missileSystem, type MissileFlight } from './missile';
 import { PARTS, SWITCHABLE, TILE } from './parts';
 import { findPath } from './path';
 import { emptyNetwork, powerLinks, powerNetworks, powerTopology, type PowerNetwork, type PowerNode } from './power';
-import { factoryModulesFor, factoryRatePermille, BASE_LINK_RANGE, BUILD_RANGE, BUILDING_BUILD_RANGE, BUILDING_TRANSFER_RANGE, DEMOLISH_REFUND, DOCK_RANGE, HARVEST_RANGE, MAX_PRODUCTION_QUEUE, MAX_SITES_PER_PLAYER, RADAR_COOLDOWN_TICKS, RADAR_ENERGY_PER_TILE, SITE_START_HP, UNIT_TRANSFER_RANGE } from './rules';
+import { factoryCanBuild, FACTORY_TIER_NAMES, BASE_LINK_RANGE, BUILD_RANGE, BUILDING_BUILD_RANGE, BUILDING_TRANSFER_RANGE, DEMOLISH_REFUND, DOCK_RANGE, HARVEST_RANGE, MAX_PRODUCTION_QUEUE, MAX_SITES_PER_PLAYER, RADAR_COOLDOWN_TICKS, RADAR_ENERGY_PER_TILE, SITE_START_HP, UNIT_TRANSFER_RANGE } from './rules';
 import { SpatialGrid } from './spatial';
 import { inVision, viewersOf } from './vision';
 import {
@@ -258,6 +259,10 @@ export class Simulation {
   readonly genCarry: number[] = [];
   /** Matter each repair module has paid for but not yet used (matter is bought in whole units). */
   readonly repairCarry: number[] = [];
+  /** Entity -> damage each of its modules has taken (by part index); made on the first hit that lands on a module. */
+  readonly moduleDamage: (Uint16Array | undefined)[] = [];
+  /** Hits that have landed on a module, to vary the roll between hits in one tick. */
+  private hitCount = 0;
   /** Team per owner (co-op mode: the humans share one, the bots another). Owners without a team are only allied to themselves. */
   readonly teams = new Map<number, number>();
   /** Buildings may only be placed within the owner's (or their team's) vision; off when fog of war is. */
@@ -326,7 +331,8 @@ export class Simulation {
   /** Spawns a mobile unit at (or as near as possible to) sub-tile coordinates. */
   spawnUnit(bp: Blueprint, x: number, y: number): number {
     if (bp.stats.structure) throw new BlueprintError(`${bp.name} is a building: use spawnStructure`);
-    const cell = this.terrain.nearestWalkable(this.tileX(x), this.tileY(y), 20);
+    // On open ground, with room for the hull if there is any nearby.
+    const cell = this.terrain.nearestFit(this.tileX(x), this.tileY(y), { climb: 0, clearance: bp.stats.clearance }, 20) ?? this.terrain.nearestWalkable(this.tileX(x), this.tileY(y), 20);
     if (!cell) throw new CommandError('No room to place a unit');
     if (cell[0] !== this.tileX(x) || cell[1] !== this.tileY(y)) {
       x = cell[0] * TILE + TILE / 2;
@@ -604,18 +610,110 @@ export class Simulation {
     this.visiting[e] = -1;
     this.productionQueue[e] = undefined;
     this.invested[e] = 0;
+    this.repairCarry[e] = 0;
+    this.moduleDamage[e] = undefined;
+    this.radarReady.delete(this.world.handle(e));
     this.world.destroy(e);
   }
 
-  /** Hurts `t` by `amount` for the player `owner` (a shot, a missile burst): raises its Damaged event and notes who to credit. */
-  damage(t: number, amount: number, owner: number): void {
+  /**
+   * Hurts `t` by `amount` for the player `owner` (a shot, a missile burst): raises its Damaged event and notes who to credit.
+   * The hit also lands on one of its modules: one of class `aim` (a SLOT_CODES value) if it has a working one,
+   * otherwise any module at random (`aim` 0).
+   */
+  damage(t: number, amount: number, owner: number, aim = 0): void {
     this.health.f.hp[t] -= amount;
     this.lastHitBy[t] = owner;
+    if (this.health.f.hp[t] > 0) this.hitModule(t, amount, aim);
     const victim = this.flows[t];
     if (victim && handles(victim.program, EventId.Damaged)) {
       raise(victim, EventId.Damaged, amount, owner, 0, 0, (h) => amount >= ((victim.program.handlers[h].config.minAmount as number | undefined) ?? 0));
     }
     this.health.markChanged(t);
+  }
+
+  /** Deterministic roll in [0, n): a hash of the tick, the victim and a counter, so it never disturbs the match's random stream. */
+  private hitRoll(t: number, n: number): number {
+    let h = Math.imul(this.tick + 1, 0x9e3779b1) ^ Math.imul(t + 1, 0x85ebca6b) ^ Math.imul(++this.hitCount, 0xc2b2ae35);
+    h ^= h >>> 15;
+    h = Math.imul(h, 0x2c1b3c6d);
+    h ^= h >>> 12;
+    h = Math.imul(h, 0x297a2d39);
+    h ^= h >>> 15;
+    return (h >>> 0) % n;
+  }
+
+  /** Picks the module a hit lands on and wears it down; a module that has taken its integrity breaks. */
+  private hitModule(t: number, amount: number, aim: number): void {
+    const bp = this.blueprintOf(t);
+    if (!bp || amount <= 0) return;
+    const { slot, integrity } = bp.hit;
+    const broken = this.modules.f.broken[t];
+    const live = (i: number) => slot[i] !== CHASSIS_HIT && !((broken >>> i) & 1);
+    let pick = -1;
+    if (aim > 0) {
+      let n = 0;
+      for (let i = 0; i < slot.length; i++) if (slot[i] === aim && live(i)) n++;
+      if (n > 0) {
+        let k = n > 1 ? this.hitRoll(t, n) : 0;
+        for (let i = 0; i < slot.length; i++) if (slot[i] === aim && live(i) && k-- === 0) { pick = i; break; }
+      }
+    }
+    if (pick < 0) {
+      // Any: every part but the chassis is as likely as any other, so armour and batteries shield what is behind them.
+      let n = 0;
+      for (let i = 0; i < slot.length; i++) if (live(i)) n++;
+      if (n === 0) return;
+      let k = n > 1 ? this.hitRoll(t, n) : 0;
+      for (let i = 0; i < slot.length; i++) if (live(i) && k-- === 0) { pick = i; break; }
+    }
+    if (pick < 0 || slot[pick] === 0) return; // soaked up
+    const dmg = (this.moduleDamage[t] ??= new Uint16Array(slot.length));
+    dmg[pick] = Math.min(0xffff, dmg[pick] + amount);
+    if (dmg[pick] < integrity[pick]) return;
+    dmg[pick] = integrity[pick];
+    this.modules.f.broken[t] = (broken | (1 << pick)) >>> 0;
+    this.modulesChanged(t);
+    this.emit(SimEvent.Break, t, pick);
+  }
+
+  /** Total damage the modules of `t` have taken (0 for an undamaged unit). */
+  moduleDamageOf(t: number): number {
+    const dmg = this.moduleDamage[t];
+    if (!dmg) return 0;
+    let sum = 0;
+    for (let i = 0; i < dmg.length; i++) sum += dmg[i];
+    return sum;
+  }
+
+  /** Mends up to `points` of module damage on `t`, broken modules first; returns the points used. */
+  repairModules(t: number, points: number): number {
+    const dmg = this.moduleDamage[t];
+    if (!dmg || points <= 0) return 0;
+    const broken = this.modules.f.broken[t];
+    let left = points;
+    let mended = 0;
+    for (let pass = 0; pass < 2 && left > 0; pass++) {
+      for (let i = 0; i < dmg.length && left > 0; i++) {
+        if (dmg[i] === 0 || (((broken >>> i) & 1) === 1) !== (pass === 0)) continue;
+        const use = Math.min(left, dmg[i]);
+        dmg[i] -= use;
+        left -= use;
+        mended += use;
+        if (dmg[i] === 0 && pass === 0) {
+          this.modules.f.broken[t] = (this.modules.f.broken[t] & ~(1 << i)) >>> 0;
+          this.modulesChanged(t);
+        }
+      }
+    }
+    return mended;
+  }
+
+  /** The set of working modules of `t` changed (switched or broken or mended): refresh what depends on it. */
+  private modulesChanged(t: number): void {
+    this.modules.markChanged(t);
+    if (this.stats(t).structure) this.powerDirty = true;
+    if (this.motion.has(t) && this.stats(t).speed <= 0) this.halt(t);
   }
 
   emit(type: number, a: number, b: number): void {
@@ -630,7 +728,7 @@ export class Simulation {
 
   /** Effective stats: the class stats with this unit's switched-off modules removed (shared, memoised). */
   stats(e: number): BlueprintStats {
-    return statsFor(this.blueprintOf(e)!, this.modules.f.off[e]);
+    return statsFor(this.blueprintOf(e)!, (this.modules.f.off[e] | this.modules.f.broken[e]) >>> 0);
   }
 
   /** Building footprint: top-left tile and size. */
@@ -649,9 +747,16 @@ export class Simulation {
     return dx * dx + dy * dy;
   }
 
-  /** Distance from a's centre to b's edge (buildings) or centre (everything else), in sub-tile units. */
+  /**
+   * Distance from a's centre to b's edge (buildings), hull (units bigger than a tile) or centre (everything
+   * else), in sub-tile units. Hulls up to a tile across count as points, as they always have.
+   */
   edgeDistance(a: number, b: number): number {
-    const half = this.unit.has(b) ? (this.stats(b).footprint * TILE) / 2 : 0;
+    let half = 0;
+    if (this.unit.has(b)) {
+      const s = this.stats(b);
+      half = s.structure ? (s.footprint * TILE) / 2 : Math.max(0, s.radius - TILE / 2);
+    }
     return Math.max(0, Math.sqrt(this.distSq(a, b)) - half);
   }
 
@@ -737,13 +842,13 @@ export class Simulation {
     if (!SWITCHABLE.has(def.slot)) return false;
     const bit = (1 << index) >>> 0;
     const mask = this.modules.f.off[e];
+    const broken = this.modules.f.broken[e];
+    if (on && ((broken >>> index) & 1)) return false; // a broken module stays out until it is repaired
     const next = (on ? mask & ~bit : mask | bit) >>> 0;
     if (next === mask) return true;
-    if (byScript && def.slot === 'cpu' && statsFor(bp, next).cyclesPerTick === 0) return false;
+    if (byScript && def.slot === 'cpu' && statsFor(bp, (next | broken) >>> 0).cyclesPerTick === 0) return false;
     this.modules.f.off[e] = next;
-    this.modules.markChanged(e);
-    if (bp.stats.structure) this.powerDirty = true;
-    if (this.motion.has(e) && this.stats(e).speed <= 0) this.halt(e);
+    this.modulesChanged(e);
     return true;
   }
 
@@ -803,12 +908,13 @@ export class Simulation {
       const cell = this.terrain.nearestWalkable(gx, gy, 30);
       return cell ? [cell[0] * TILE + TILE / 2, cell[1] * TILE + TILE / 2] : [x, y];
     }
-    const tiles = findPath(this.terrain, this.tileX(this.pos.f.x[e]), this.tileY(this.pos.f.y[e]), gx, gy);
+    const s = this.stats(e);
+    const tiles = findPath(this.terrain, this.tileX(this.pos.f.x[e]), this.tileY(this.pos.f.y[e]), gx, gy, s);
     const out: number[] = [];
     for (let i = 0; i < tiles.length; i += 2) out.push(tiles[i] * TILE + TILE / 2, tiles[i + 1] * TILE + TILE / 2);
     const n = out.length;
     if (n === 0) {
-      if (this.terrain.walkable(gx, gy)) out.push(x, y);
+      if (this.terrain.fits(gx, gy, s)) out.push(x, y);
     } else if (tiles[tiles.length - 2] === gx && tiles[tiles.length - 1] === gy) {
       out[n - 2] = x;
       out[n - 1] = y;
@@ -872,7 +978,9 @@ export class Simulation {
       }
       if (this.motion.has(o) && !this.motion.f.moving[o]) taken.add(this.tileY(this.pos.f.y[o]) * w + this.tileX(this.pos.f.x[o]));
     }
-    const free = (i: number, j: number) => i >= 0 && j >= 0 && i < w && j < this.config.height && this.terrain.walkable(i, j) && !taken.has(j * w + i);
+    const s = this.stats(e);
+    const fits = (i: number, j: number) => (s.flying ? this.terrain.walkable(i, j) : this.terrain.fits(i, j, s));
+    const free = (i: number, j: number) => i >= 0 && j >= 0 && i < w && j < this.config.height && fits(i, j) && !taken.has(j * w + i);
     if (free(x, y)) return [x, y];
     const max = 30;
     for (let r = 1; r <= max; r++) {
@@ -1109,16 +1217,26 @@ export class Simulation {
     if (!bp || bp.owner !== owner) throw new CommandError('Not your class');
     if (bp.stats.structure) throw new CommandError('Buildings cannot be produced by a factory');
     if (bp.retired) throw new CommandError(`${bp.name} is retired`);
-    const have = this.stats(building).factoryModules;
-    const need = factoryModulesFor(bp.stats.size);
-    if (factoryRatePermille(have, need) === 0) {
-      throw new CommandError(`${bp.name} is too big for ${host.name}: it needs a factory with at least ${need - 1} factory modules, this one has ${have}`);
+    if (!factoryCanBuild(this.stats(building).factoryTiers, bp.stats.size)) {
+      const tier = FACTORY_TIER_NAMES[bp.stats.size] ?? `tier ${bp.stats.size}`;
+      throw new CommandError(`${bp.name} is a ${tier} unit: ${host.name} has no ${tier} factory module`);
     }
     if (queue.length >= MAX_PRODUCTION_QUEUE) throw new CommandError('Production queue is full');
     if (!this.spendPool(owner, bp.stats.cost)) {
       throw new CommandError(`${bp.name} costs ${bp.stats.cost}, you have ${this.pool(owner)}`);
     }
     queue.push(bp.id);
+  }
+
+  /** Removes the item at `index` of a factory's queue (0 = the one being built) and gives its matter back. */
+  dequeueProduction(owner: number, building: number, index: number): void {
+    this.ownedBlueprint(owner, building);
+    const queue = this.productionQueue[building];
+    if (!queue || !Number.isInteger(index) || index < 0 || index >= queue.length) throw new CommandError('Nothing queued there');
+    const [id] = queue.splice(index, 1);
+    if (index === 0) this.productionTicks[building] = 0; // the work on it is lost
+    const bp = this.blueprints.get(id);
+    if (bp) this.refundPool(owner, bp.stats.cost);
   }
 
   /** Whether a point (in tiles) is inside the vision of `owner` or their team; unfinished sites don't count. */
@@ -1175,6 +1293,15 @@ export class Simulation {
   }
 
   /** Takes exactly `amount` from the pool (silo by silo), or nothing if there isn't enough. */
+  /** Puts matter back into the common pool, as far as the silos have room. Returns what fitted. */
+  refundPool(owner: number, amount: number): number {
+    let returned = 0;
+    for (const b of this.silos(owner)) {
+      if (returned >= amount) break;
+      returned += this.addStock(b, amount - returned);
+    }
+    return returned;
+  }
   spendPool(owner: number, amount: number): boolean {
     if (this.pool(owner) < amount) return false;
     this.drawPool(owner, amount);

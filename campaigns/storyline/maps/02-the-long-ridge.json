@@ -1,0 +1,15 @@
+{
+  "name": "The Long Ridge",
+  "briefing": {
+    "title": "Chapter 2: The Long Ridge",
+    "story": [
+      "Scouts report a rival fragment dug in beyond a pair of long ridges. The only way through is along the lanes between them, and they know it.",
+      "Bring more than you think you need."
+    ],
+    "objectives": ["Break through the ridge lanes", "Destroy the rival fragment"],
+    "tips": ["Narrow lanes favour defenders. Strike from more than one direction."]
+  },
+  "map": { "layout": "ridges", "width": 80, "height": 56, "density": 1.5, "outposts": 2, "seed": 302 },
+  "victory": { "type": "eliminate" },
+  "triggers": []
+}

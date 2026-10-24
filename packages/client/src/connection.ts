@@ -46,6 +46,11 @@ export class Connection {
     };
   }
 
+  /** Cuts the link as a network fault would (not a refusal), so the reconnect logic runs. For the dev tools. */
+  drop(): void {
+    this.ws.close(4000, 'Dropped for testing');
+  }
+
   send(msg: ClientMessage): void {
     if (this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg));
   }

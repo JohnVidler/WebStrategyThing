@@ -9,6 +9,8 @@
  * animated elements, no per-frame work), and the timer is stopped whenever the backdrop is hidden.
  * Layout lives in style.css under `#menu-bg`.
  */
+import { onReduceMotionChange, reduceMotion } from './settings';
+
 /** Cell edge length in texture pixels, and cells per texture side (the texture repeats seamlessly). */
 const CELL = 48;
 const CELLS = 24;
@@ -86,19 +88,19 @@ const between = (lo: number, hi: number): number => lo + Math.random() * (hi - l
  * tab) is hidden the timer stops altogether instead of ticking for nothing.
  */
 function startSparks(host: HTMLElement, scroll: HTMLElement): () => void {
-  if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return () => undefined;
   let live = 0;
   let timer: number | undefined;
   const wake = (): void => {
-    if (timer === undefined && !host.hidden && !document.hidden) timer = window.setTimeout(spawn, between(...SPARK_GAP_MS));
+    if (timer === undefined && !host.hidden && !document.hidden && !reduceMotion()) timer = window.setTimeout(spawn, between(...SPARK_GAP_MS));
   };
   const spawn = (): void => {
     timer = undefined;
-    if (host.hidden || document.hidden) return; // wake() restarts it when the menu shows again
+    if (host.hidden || document.hidden || reduceMotion()) return; // wake() restarts it when the menu shows again
     if (live < MAX_SPARKS) launch();
     wake();
   };
   document.addEventListener('visibilitychange', wake);
+  onReduceMotionChange(wake);
   const launch = (): void => {
     const w = window.innerWidth;
     const h = window.innerHeight;

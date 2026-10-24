@@ -1,9 +1,17 @@
 import {
   BlueprintError,
   CommandError,
+  cpuProfile,
   FlowError,
   CORNERS,
   createMatch,
+  devClear,
+  devFinishSites,
+  devGive,
+  devHeal,
+  devRemove,
+  devSpawn,
+  NEUTRAL,
   mapById,
   messageAllowed,
   parseGameMode,
@@ -17,11 +25,14 @@ import {
   STARTING_CREDITS,
   setUpPlayer,
   TICK_RATE,
+  TILE,
   toInfo,
   visibleTo,
   type Blueprint,
   type ClientMessage,
   type ClientPhase,
+  type DevCommand,
+  type DevOutcome,
   type NetworkInfo,
   type MatchEndReason,
   type ScoreEntry,
@@ -70,6 +81,10 @@ export interface MatchOptions {
   readonly mapId?: string;
   /** Default 'versus'. */
   readonly mode?: GameMode;
+  /** Campaign mode: the level's own map definition and terrain seed (replaces `mapId`). */
+  readonly level?: { readonly map: MapDefinition; readonly seed: number };
+  /** Accept the developer commands of the client's Dev Options menu (cheats). Default off: the server sets it from WST_DEV_TOOLS=1. */
+  readonly devTools?: boolean;
 }
 
 /**
@@ -110,17 +125,23 @@ export class Match {
   /** Players who have ever had forces: a match only counts once two sides have. */
   private readonly fielded = new Set<number>();
   private timer: NodeJS.Timeout | undefined;
-  private readonly fog: boolean;
+  /** The tick loop threw: the match is over and its room is removed at the next sweep. */
+  private crashed = false;
+  private fog: boolean;
+  private readonly devTools: boolean;
+  /** Set from the Dev Options menu: the simulation stands still, or shows the waiting-for-a-player notice. */
+  private devPause: 'off' | 'dev' | 'disconnect' = 'off';
   readonly mode: GameMode;
   /** Co-op mode: each human's bot, by human player id. */
   private readonly bots = new Map<number, BotSide>();
 
   constructor(options: MatchOptions = {}) {
     this.mode = parseGameMode(options.mode);
-    this.started = this.mode === 'solo';
-    this.map = mapById(options.mapId);
-    this.sim = createMatch(0x5eed, this.map);
+    this.started = this.single;
+    this.map = options.level?.map ?? mapById(options.mapId);
+    this.sim = createMatch(options.level?.seed ?? 0x5eed, this.map);
     this.fog = options.fog ?? true;
+    this.devTools = options.devTools ?? false;
     this.sim.requirePlacementVision = this.fog;
   }
 
@@ -130,7 +151,12 @@ export class Match {
 
   /** Most human players a match holds: one per map corner, or two in co-op mode (the other corners hold bots). */
   get capacity(): number {
-    return this.mode === 'solo' ? 1 : this.mode === 'coop' ? 2 : this.corners.length;
+    return this.single ? 1 : this.mode === 'coop' ? 2 : this.corners.length;
+  }
+
+  /** Solo and campaign rooms: private, one human, no lobby. */
+  private get single(): boolean {
+    return this.mode === 'solo' || this.mode === 'campaign';
   }
 
   /** Solo and co-op rooms give every human a bot of their own and a team with the other humans. */
@@ -180,7 +206,12 @@ export class Match {
       const now = performance.now();
       let steps = 0;
       while (now >= next && steps < 4) {
-        this.tick();
+        try {
+          this.tick();
+        } catch (err) {
+          this.crash(err);
+          return;
+        }
         next += stepMs;
         steps++;
       }
@@ -195,7 +226,22 @@ export class Match {
     clearTimeout(this.timer);
   }
 
+  /** A bug in the simulation ends this match only: log it, tell the players, and close their connections (the room empties and is removed). */
+  private crash(err: unknown): void {
+    console.error(`Match crashed at tick ${this.sim.tick}:`, err);
+    this.crashed = true;
+    this.stop();
+    for (const p of this.players.values()) {
+      this.send(p, { t: 'error', message: 'The match stopped because of a server error. Sorry!' });
+      p.socket.close(1011, 'Match crashed');
+    }
+  }
+
   join(socket: WebSocket, token?: string): void {
+    if (this.crashed) {
+      socket.close(1011, 'Match crashed');
+      return;
+    }
     const back = token ? this.away.get(token) : undefined;
     if (token && back) {
       this.away.delete(token);
@@ -330,7 +376,7 @@ export class Match {
 
   /** Nobody connected and nobody who could still reconnect. */
   get empty(): boolean {
-    return this.players.size === 0 && this.away.size === 0;
+    return this.crashed || (this.players.size === 0 && this.away.size === 0);
   }
 
   private expireAway(): void {
@@ -412,6 +458,8 @@ export class Match {
     const reasons = [...this.away.values()].map(({ player }) => `${player.name} disconnected — waiting for them to come back`);
     const needed = this.minPlayers;
     if (this.players.size < needed) reasons.push(needed === 1 ? 'Waiting for a player' : 'Waiting for another player — a match needs at least two');
+    if (this.devPause === 'dev') reasons.push('Paused from the Dev Options menu');
+    else if (this.devPause === 'disconnect') reasons.push('A player disconnected — waiting for them to come back (simulated by Dev Options)');
     return reasons;
   }
 
@@ -769,13 +817,122 @@ export class Match {
       case 'setModule':
         for (const e of msg.units) ignoreRefused(() => this.sim.issueModule(player.id, e, msg.index, msg.on));
         return;
+      case 'cpuProfile': {
+        // Only for the player's own living units: program internals are never shown to anyone else.
+        const e = msg.unit;
+        if (!this.sim.world.isAlive(e) || !this.sim.unit.has(e) || this.sim.unit.f.owner[e] !== player.id) return;
+        const flow = this.sim.flows[e];
+        this.send(player, { t: 'cpuProfile', unit: e, tick: this.sim.tick, profile: flow ? cpuProfile(flow) : null });
+        return;
+      }
       case 'produce': {
         const owned = this.sim.unit.dense.filter((e) => this.sim.unit.f.owner[e] === player.id && !this.sim.stats(e).structure).length;
         if (owned >= MAX_UNITS_PER_PLAYER) throw new CommandError(`Unit cap (${MAX_UNITS_PER_PLAYER}) reached`);
         this.sim.enqueueProduction(player.id, msg.building, msg.blueprint);
         return;
       }
+      case 'dequeue':
+        this.sim.dequeueProduction(player.id, msg.building, msg.index);
+        return;
+      case 'dev':
+        this.dev(player, msg.cmd);
+        return;
     }
+  }
+
+  /** Whether `id` is neutral or a side of this match. */
+  private knownOwner(id: number): boolean {
+    return id === NEUTRAL || [...this.players.values(), ...[...this.away.values()].map((a) => a.player), ...this.bots.values()].some((s) => s.id === id);
+  }
+
+  /** Developer commands (cheats for playtesting); a server only obeys them when started with WST_DEV_TOOLS=1. */
+  private dev(player: Player, cmd: DevCommand): void {
+    const note = (text: string, ok = true) => this.send(player, { t: 'devNote', text, ok });
+    if (!this.devTools) {
+      note('Dev tools are off on this server: start it with WST_DEV_TOOLS=1 (npm run dev does).', false);
+      return;
+    }
+    if ('owner' in cmd && cmd.owner >= 0 && !this.knownOwner(cmd.owner)) {
+      note('No such player.', false);
+      return;
+    }
+    switch (cmd.kind) {
+      case 'fog':
+        this.fog = cmd.on;
+        this.sim.requirePlacementVision = cmd.on;
+        // A fresh welcome per client resets what it holds of the world (and re-sends its programs and orders).
+        for (const p of this.players.values()) this.rejoin(p.socket, p);
+        note(cmd.on ? 'Fog of war on.' : 'Fog of war off: everything is visible.');
+        return;
+      case 'spawn': {
+        const made = devSpawn(this.sim, cmd.owner, cmd.template, cmd.x, cmd.y, cmd.count);
+        if (!made) note(`Unknown class "${cmd.template}".`, false);
+        else {
+          if (made.created) this.broadcast({ t: 'blueprints', list: [toInfo(made.bp)] });
+          note(made.entities.length ? `Spawned ${made.entities.length} × ${cmd.template}.` : 'No room near there.', made.entities.length > 0);
+        }
+        return;
+      }
+      case 'field':
+        this.sim.spawnResourcePatch(cmd.x * TILE + TILE / 2, cmd.y * TILE + TILE / 2, cmd.amount);
+        note(`Added a field of ${cmd.amount} matter.`);
+        return;
+      case 'give':
+        note(`Added ${devGive(this.sim, cmd.owner, cmd.amount)} matter to the silos.`);
+        return;
+      case 'remove':
+        note(`Removed ${devRemove(this.sim, cmd.x, cmd.y, cmd.r, cmd.owner, cmd.scope)} things.`);
+        return;
+      case 'clear':
+        note(`Destroyed ${devClear(this.sim, cmd.owner)} units and buildings.`);
+        return;
+      case 'heal':
+        note(`Restored ${devHeal(this.sim, cmd.owner)} units and buildings.`);
+        return;
+      case 'finish':
+        note(`Finished ${devFinishSites(this.sim, cmd.owner)} construction sites.`);
+        return;
+      case 'pause':
+        this.devPause = cmd.mode;
+        note(cmd.mode === 'off' ? 'Simulation running.' : 'Simulation stopped.');
+        return;
+      case 'defeat':
+        this.defeat(player);
+        return;
+      case 'reopen':
+        this.over = false;
+        note('The match can end normally again.');
+        return;
+      case 'end':
+        this.devEnd(player, cmd.outcome);
+        note('Match ended.');
+        return;
+    }
+  }
+
+  /** Ends the match now, for testing the victory and loss screens: the sender's side wins, loses or draws. */
+  private devEnd(player: Player, outcome: DevOutcome): void {
+    const humans = [...this.players.values()];
+    const bots = [...this.bots.values()];
+    const sides: Side[] = [...humans, ...bots];
+    const owning = new Set<number>();
+    for (const e of this.sim.unit.dense) if (!this.sim.isSite(e)) owning.add(this.sim.unit.f.owner[e]);
+    const mine = this.botted ? humans.map((p) => p.id) : [player.id];
+    const theirs = sides.map((s) => s.id).filter((id) => !mine.includes(id));
+    const wins = outcome.startsWith('win');
+    const winners = outcome === 'draw' ? [] : wins ? mine : this.botted ? theirs : theirs.slice(0, 1);
+    const reason: MatchEndReason = outcome.endsWith('last-player') ? 'last-player' : outcome.endsWith('no-power') ? 'no-power' : 'eliminated';
+    const standings: ScoreEntry[] = sides
+      .map((s) => ({
+        id: s.id,
+        name: s.name,
+        eliminated: reason === 'eliminated' && winners.length > 0 ? !winners.includes(s.id) : s.hadForces && !owning.has(s.id),
+        score: this.sim.score(s.id),
+        ...this.sim.tally(s.id),
+      }))
+      .sort((a, b) => Number(a.eliminated) - Number(b.eliminated) || b.score - a.score);
+    this.over = true;
+    this.broadcast({ t: 'matchOver', winner: winners[0] ?? 0, winners, reason, standings });
   }
 
   private send(player: Player, msg: ServerMessage): void {

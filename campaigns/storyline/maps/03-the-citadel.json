@@ -1,0 +1,15 @@
+{
+  "name": "The Citadel",
+  "briefing": {
+    "title": "Chapter 3: The Citadel",
+    "story": [
+      "At the centre of the network stands the Citadel: walls, four gates and the fragment that started it all.",
+      "End it here, or the partitions will never open."
+    ],
+    "objectives": ["Breach the Citadel", "Destroy every enemy unit and building"],
+    "tips": ["Four gates means four places to defend, and four ways in."]
+  },
+  "map": { "layout": "citadel", "width": 96, "height": 80, "density": 1.5, "outposts": 2, "seed": 303 },
+  "victory": { "type": "eliminate" },
+  "triggers": []
+}

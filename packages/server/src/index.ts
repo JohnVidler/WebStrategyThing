@@ -2,6 +2,8 @@ import { createServer } from 'node:http';
 import { DEFAULT_PORT, mapById, parseClientMessage, parseGameMode } from '@wst/engine';
 import { WebSocketServer } from 'ws';
 import { Match } from './match';
+import { campaignLevel, campaignMap, refreshCampaigns } from './campaign';
+import { devToolsEnabled } from './devTools';
 import { loadTracks, sendTrack } from './music';
 import { loadSounds, sendSound } from './sound';
 
@@ -13,6 +15,8 @@ const SOCKET_PATH = `${API_ROOT}/ws`;
 const MUSIC_PATH = `${API_ROOT}/music`;
 const SOUND_PATH = `${API_ROOT}/sound`;
 const MENU_PATH = `${API_ROOT}/menu`;
+const CAMPAIGNS_PATH = `${API_ROOT}/campaigns`;
+void refreshCampaigns();
 /** Presence sockets of players who are on the menu rather than in a match. */
 const menuSockets = new Set<unknown>();
 /** How long an empty room is kept before it is shut down. */
@@ -41,6 +45,14 @@ const http = createServer((req, res) => {
     void sendTrack(req, res, file).catch(() => (res.headersSent ? res.destroy() : res.writeHead(500).end()));
     return;
   }
+  if ((req.method === 'GET' || req.method === 'HEAD') && path === CAMPAIGNS_PATH) {
+    // Re-read on every request, so edits to the campaigns folder show without a restart.
+    void refreshCampaigns().then(({ info }) => {
+      res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      res.end(JSON.stringify(info));
+    });
+    return;
+  }
   if ((req.method === 'GET' || req.method === 'HEAD') && path === SOUND_PATH) {
     void loadSounds().then((bank) => {
       res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
@@ -66,7 +78,7 @@ const http = createServer((req, res) => {
   if (req.method === 'GET' && path === ROOMS_PATH) {
     const list = [...rooms]
       // Single-player rooms are private: they never appear in the list.
-      .filter(([, { match }]) => match.playerCount > 0 && match.mode !== 'solo')
+      .filter(([, { match }]) => match.playerCount > 0 && match.mode !== 'solo' && match.mode !== 'campaign')
       .map(([name, { match }]) => ({
       name,
       mapId: match.map.id,
@@ -95,11 +107,15 @@ http.listen(port);
 // FOG=off sends everything to everyone (handy for debugging).
 const rooms = new Map<string, { match: Match; emptySince: number | undefined }>();
 
-function roomFor(name: string, mapId?: string, mode?: string): { match: Match; emptySince: number | undefined } | undefined {
+function roomFor(name: string, mapId?: string, mode?: string, campaign?: string, levelId?: string): { match: Match; emptySince: number | undefined } | undefined {
   let room = rooms.get(name);
   if (!room) {
     if (rooms.size >= MAX_ROOMS) return undefined;
-    room = { match: new Match({ fog: process.env.FOG !== 'off', mapId: mapById(mapId).id, mode: parseGameMode(mode) }), emptySince: undefined };
+    const parsed = parseGameMode(mode);
+    // A campaign room needs a level that exists; the client's saved progress is trusted (it is a single-player game).
+    const level = parsed === 'campaign' ? campaignLevel(campaign ?? '', levelId ?? '') : campaignMap(mapId ?? '');
+    if (parsed === 'campaign' && !level) return undefined;
+    room = { match: new Match({ fog: process.env.FOG !== 'off', mapId: mapById(mapId).id, mode: parsed, level, devTools: devToolsEnabled() }), emptySince: undefined };
     room.match.start();
     rooms.set(name, room);
     console.log(`room "${name}" opened`);
@@ -139,7 +155,7 @@ wss.on('connection', (socket, request) => {
   const mapId = url.searchParams.get('map') ?? undefined;
   const mode = url.searchParams.get('mode') ?? undefined;
   const token = url.searchParams.get('token') ?? undefined;
-  const room = roomName && NAME.test(roomName) ? roomFor(roomName, mapId, mode) : undefined;
+  const room = roomName && NAME.test(roomName) ? roomFor(roomName, mapId, mode, url.searchParams.get('campaign') ?? undefined, url.searchParams.get('level') ?? undefined) : undefined;
   if (!room) {
     socket.close(1013, 'No such room');
     return;

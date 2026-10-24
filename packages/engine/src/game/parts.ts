@@ -58,14 +58,24 @@ export const SWITCHABLE: ReadonlySet<PartSlot> = new Set<PartSlot>([
  */
 export interface PartDef {
   readonly id: string;
+  /** Damage the module takes before it breaks; default from its mass (see MODULE_HP_BASE). */
+  readonly integrity?: number;
   readonly slot: PartSlot;
   readonly name: string;
   readonly mass: number;
   readonly hp?: number;
   /** Chassis/frame: how many modules fit. */
   readonly slots?: number;
-  /** Chassis: render size class. */
+  /** Chassis: size tier (TIER_NAMES): decides the factory modules it needs, and which big modules fit. */
   readonly size?: number;
+  /** Chassis: hull radius in tiles (drawing, crowding, and how close weapons and docks must get). */
+  readonly radius?: number;
+  /** Module: the smallest chassis tier it fits (heavy modules need a big hull). */
+  readonly minSize?: number;
+  /** Legs: the highest rock they walk onto (0 = open ground only, like wheels). */
+  readonly climb?: number;
+  /** Factory modules: the chassis size tier this module builds. */
+  readonly factoryTier?: number;
   /** Frame: immobile building occupying footprint × footprint tiles (or the cells of `shape` inside that box). */
   readonly structure?: boolean;
   readonly footprint?: number;
@@ -127,6 +137,9 @@ export interface PartDef {
   readonly description: string;
 }
 
+/** Chassis size tiers, by `PartDef.size`. */
+export const TIER_NAMES: readonly string[] = ['micro', 'light', 'medium', 'heavy', 'super-heavy', 'colossus'];
+
 /** Generator outputs are stored in 1/GENERATION_SCALE energy per tick, so they can be fractional. */
 export const GENERATION_SCALE = 10;
 
@@ -136,13 +149,13 @@ const tiles = (n: number) => `${n} tile${n === 1 ? '' : 's'}`;
 
 const CATALOGUE: PartDef[] = [
   // Mobile chassis
-  { id: 'chassis.light', slot: 'chassis', name: 'Light chassis', ...T('chassis.light'), size: 0, description: 'Small, fast and fragile.' },
-  { id: 'chassis.medium', slot: 'chassis', name: 'Medium chassis', ...T('chassis.medium'), size: 1, description: 'General-purpose body.' },
-  { id: 'chassis.heavy', slot: 'chassis', name: 'Heavy chassis', ...T('chassis.heavy'), size: 2, description: 'Slow, tough and roomy.' },
+  { id: 'chassis.light', slot: 'chassis', name: 'Light chassis', ...T('chassis.light'), size: 1, radius: 0.3, description: 'Small, fast and fragile.' },
+  { id: 'chassis.medium', slot: 'chassis', name: 'Medium chassis', ...T('chassis.medium'), size: 2, radius: 0.38, description: 'General-purpose body.' },
+  { id: 'chassis.heavy', slot: 'chassis', name: 'Heavy chassis', ...T('chassis.heavy'), size: 3, radius: 0.46, description: 'Slow, tough and roomy.' },
   // Building frames
-  { id: 'chassis.long.light', slot: 'chassis', name: 'Long light chassis', ...T('chassis.long.light'), size: 0, long: true, description: 'Twice as long as a light chassis: more room for modules, still quick to build and nimble.' },
-  { id: 'chassis.long.medium', slot: 'chassis', name: 'Long medium chassis', ...T('chassis.long.medium'), size: 1, long: true, description: 'A double-length body with room for a big launcher and its ammunition.' },
-  { id: 'chassis.long.heavy', slot: 'chassis', name: 'Long heavy chassis', ...T('chassis.long.heavy'), size: 2, long: true, description: 'A double-length armoured hull: the roomiest vehicle body.' },
+  { id: 'chassis.long.light', slot: 'chassis', name: 'Long light chassis', ...T('chassis.long.light'), size: 1, radius: 0.3, long: true, description: 'Twice as long as a light chassis: more room for modules, still quick to build and nimble.' },
+  { id: 'chassis.long.medium', slot: 'chassis', name: 'Long medium chassis', ...T('chassis.long.medium'), size: 2, radius: 0.38, long: true, description: 'A double-length body with room for a big launcher and its ammunition.' },
+  { id: 'chassis.long.heavy', slot: 'chassis', name: 'Long heavy chassis', ...T('chassis.long.heavy'), size: 3, radius: 0.46, long: true, description: 'A double-length armoured hull: the roomiest vehicle body.' },
   { id: 'frame.small', slot: 'chassis', name: 'Small frame (1×1)', ...T('frame.small'), structure: true, footprint: 1, description: 'A one-tile building.' },
   { id: 'frame.medium', slot: 'chassis', name: 'Medium frame (2×2)', ...T('frame.medium'), structure: true, footprint: 2, description: 'A 2×2 building.' },
   { id: 'frame.large', slot: 'chassis', name: 'Large frame (3×3)', ...T('frame.large'), structure: true, footprint: 3, description: 'A 3×3 building.' },
@@ -192,7 +205,12 @@ const CATALOGUE: PartDef[] = [
   { id: 'battery.cell', slot: 'battery', name: 'Battery cell', ...T('battery.cell'), description: `+${T('battery.cell').energy} energy storage.` },
   { id: 'battery.bank', slot: 'battery', name: 'Battery bank', ...T('battery.bank'), structureOnly: true, description: `+${T('battery.bank').energy} energy storage.` },
 
-  { id: 'factory.basic', slot: 'factory', name: 'Factory', ...T('factory.basic'), structureOnly: true, description: 'Produces units. A light chassis is built at full speed with 1 factory module, a medium one with 2, a heavy one with 3. One module short, a unit is built at a tenth of the speed; two or more short, the building cannot build it. More modules also use more energy while producing.' },
+  { id: 'factory.micro', slot: 'factory', name: 'Micro factory', ...T('factory.micro'), structureOnly: true, description: 'Lets the building produce micro units (chassis tier 0) and only those: a micro chassis is built by a factory module of its own size, and a building needs one module for each size it should build. Units come out one at a time.' },
+  { id: 'factory.light', slot: 'factory', name: 'Light factory', ...T('factory.light'), structureOnly: true, description: 'Lets the building produce light units (chassis tier 1) and only those: a light chassis is built by a factory module of its own size, and a building needs one module for each size it should build. Units come out one at a time.' },
+  { id: 'factory.medium', slot: 'factory', name: 'Medium factory', ...T('factory.medium'), structureOnly: true, description: 'Lets the building produce medium units (chassis tier 2) and only those: a medium chassis is built by a factory module of its own size, and a building needs one module for each size it should build. Units come out one at a time.' },
+  { id: 'factory.heavy', slot: 'factory', name: 'Heavy factory', ...T('factory.heavy'), structureOnly: true, description: 'Lets the building produce heavy units (chassis tier 3) and only those: a heavy chassis is built by a factory module of its own size, and a building needs one module for each size it should build. Units come out one at a time.' },
+  { id: 'factory.super', slot: 'factory', name: 'Super-heavy factory', ...T('factory.super'), structureOnly: true, description: 'Lets the building produce super-heavy units (chassis tier 4) and only those: a super-heavy chassis (needs a Titan Works-class building) is built by a factory module of its own size, and a building needs one module for each size it should build. Units come out one at a time.' },
+  { id: 'factory.colossal', slot: 'factory', name: 'Colossus factory', ...T('factory.colossal'), structureOnly: true, description: 'Lets the building produce colossus units (chassis tier 5) and only those: a colossus chassis (needs a Titan Works-class building) is built by a factory module of its own size, and a building needs one module for each size it should build. Units come out one at a time.' },
   { id: 'silo', slot: 'depot', name: 'Resource silo', ...T('silo'), structureOnly: true, description: `Stores ${T('silo').storage} resources; units dock here to fill it or take from it.` },
   { id: 'build.arm', slot: 'builder', name: 'Build arm', ...T('build.arm'), mobileOnly: true, description: `Constructs buildings, investing ${T('build.arm').buildRate} resources per tick.` },
   { id: 'build.crane', slot: 'builder', name: 'Build crane', ...T('build.crane'), structureOnly: true, description: `Constructs buildings up to ${BUILDING_BUILD_RANGE / TILE} tiles from this building's edge, investing ${T('build.crane').buildRate} resources per tick.` },
@@ -206,10 +224,27 @@ const CATALOGUE: PartDef[] = [
   { id: 'antenna.small', slot: 'antenna', name: `Energy antenna S (${T('antenna.small').antennaRange})`, ...T('antenna.small'), structureOnly: true, description: `Power links reach ${tiles(T('antenna.small').antennaRange!)}.` },
   { id: 'antenna.medium', slot: 'antenna', name: `Energy antenna M (${T('antenna.medium').antennaRange})`, ...T('antenna.medium'), structureOnly: true, description: `Power links reach ${tiles(T('antenna.medium').antennaRange!)}.` },
   { id: 'antenna.large', slot: 'antenna', name: `Energy antenna L (${T('antenna.large').antennaRange})`, ...T('antenna.large'), structureOnly: true, description: `Power links reach ${tiles(T('antenna.large').antennaRange!)}.` },
+
+  // --- Size tiers beyond light/medium/heavy, legs, and the heavy modules that make the big tiers worth it.
+  { id: 'chassis.micro', slot: 'chassis', name: 'Micro chassis', ...T('chassis.micro'), size: 0, radius: 0.22, description: 'Tiny and cheap: room for a CPU and two modules. Built at full speed by any factory.' },
+  { id: 'chassis.superheavy', slot: 'chassis', name: 'Super-heavy chassis', ...T('chassis.superheavy'), size: 4, radius: 0.7, description: 'A huge armoured hull with room for heavy modules. Needs 4 factory modules, and a corridor 3 tiles wide to drive through.' },
+  { id: 'chassis.colossus', slot: 'chassis', name: 'Colossus chassis', ...T('chassis.colossus'), size: 5, radius: 1, description: 'The biggest hull there is. Needs 5 factory modules and a corridor 3 tiles wide, unless it walks over the rock on colossus legs.' },
+  { id: 'motor.huge', slot: 'motor', name: 'Huge motor', ...T('motor.huge'), mobileOnly: true, minSize: 3, description: 'Ground drive for heavy and bigger hulls.' },
+  { id: 'legs.light', slot: 'motor', name: 'Light legs', ...T('legs.light'), mobileOnly: true, description: `Walking legs: cross open ground and climb ${T('legs.light').climb} level onto the rim of rock outcrops (half speed on rock). Fragile: only ${T('legs.light').integrity} damage breaks them, and a unit on broken legs cannot move until a repair module mends them. Do not mix with wheels or rotors.` },
+  { id: 'legs.heavy', slot: 'motor', name: 'Heavy legs', ...T('legs.heavy'), mobileOnly: true, minSize: 2, description: `Strong legs for medium and bigger hulls: climb ${T('legs.heavy').climb} levels into rock (half speed on rock). Cliffs are too high. Fragile: ${T('legs.heavy').integrity} damage breaks them (see repair).` },
+  { id: 'legs.colossus', slot: 'motor', name: 'Colossus legs', ...T('legs.colossus'), mobileOnly: true, minSize: 5, description: `Giant legs that stride over any rock and cliff, slowly (half speed on rock). Fragile for their size: ${T('legs.colossus').integrity} damage breaks them. Colossus chassis only.` },
+  { id: 'cannon.siege', slot: 'weapon', name: 'Siege cannon', ...T('cannon.siege'), minSize: 4, weapon: { ...T('cannon.siege').weapon!, kind: 'cannon' }, description: `${T('cannon.siege').weapon!.damage} damage, range ${T('cannon.siege').weapon!.range}, one shot every ${T('cannon.siege').weapon!.cooldown / 10}s. Uses ${T('cannon.siege').weapon!.matter} matter per shot from the cargo. Super-heavy and colossus hulls only.` },
+  { id: 'gun.rotary', slot: 'weapon', name: 'Rotary gun', ...T('gun.rotary'), minSize: 4, weapon: { ...T('gun.rotary').weapon!, kind: 'gun' }, description: `${T('gun.rotary').weapon!.damage} damage every ${T('gun.rotary').weapon!.cooldown} ticks, range ${T('gun.rotary').weapon!.range}: shreds crowds of small units. ${T('gun.rotary').use} energy per shot. Super-heavy and colossus hulls only.` },
+  { id: 'armor.heavy', slot: 'armor', name: 'Heavy armour', ...T('armor.heavy'), minSize: 3, description: `+${T('armor.heavy').hp} hit points. Heavy and bigger hulls only.` },
+  { id: 'cargo.hold', slot: 'cargo', name: `Cargo hold (${T('cargo.hold').cargo})`, ...T('cargo.hold'), mobileOnly: true, minSize: 3, description: `Harvests ${T('cargo.hold').harvestRate} per tick and carries ${T('cargo.hold').cargo} resources. Heavy and bigger hulls only.` },
+  { id: 'battery.large', slot: 'battery', name: 'Large battery', ...T('battery.large'), minSize: 3, description: `+${T('battery.large').energy} energy storage for heavy and bigger hulls (and buildings).` },
 ];
 
-export const PARTS: Readonly<Record<string, PartDef>> = Object.freeze(
-  Object.fromEntries(CATALOGUE.map((p) => [p.id, Object.freeze(p)])),
-);
+export const PARTS: Readonly<Record<string, PartDef>> = Object.freeze({
+  ...Object.fromEntries(CATALOGUE.map((p) => [p.id, Object.freeze(p)])),
+  // The first factory module was one `factory.basic` that built everything it had enough copies for. Designs saved
+  // with it still load: it counts as the light factory module (it is not in PART_LIST, so the designer doesn't offer it).
+  'factory.basic': CATALOGUE.find((p) => p.id === 'factory.light')!,
+});
 
 export const PART_LIST: readonly PartDef[] = Object.freeze(CATALOGUE);

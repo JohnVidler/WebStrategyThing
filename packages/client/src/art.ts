@@ -20,8 +20,10 @@ const WARN = 0xff8a5c;
 /** What a design is made of, reduced to the things the art cares about. */
 export interface Look {
   readonly structure: boolean;
-  /** Chassis size class (units) or footprint in tiles (buildings). */
+  /** Chassis size tier (units: 0 micro to 5 colossus) or footprint in tiles (buildings). */
   readonly size: number;
+  /** Units: hull radius in tiles (from the chassis). */
+  readonly radius: number;
   readonly flying: boolean;
   /** Has a radar module: a dish spins on top (animated by the renderer; the static art leaves it out). */
   readonly radar: boolean;
@@ -29,8 +31,12 @@ export interface Look {
   readonly long: boolean;
   /** Building layout inside its footprint box ('X' = covered), null = a full square. */
   readonly shape: readonly string[] | null;
-  readonly motor: 'none' | 'small' | 'large' | 'rotor';
+  readonly motor: 'none' | 'small' | 'large' | 'huge' | 'rotor' | 'legs';
+  /** Legs, by the strongest pair fitted. */
+  readonly legs: 'none' | 'light' | 'heavy' | 'colossus';
   readonly weapon: 'none' | 'gun' | 'cannon' | 'laser' | 'tesla' | 'missile' | 'flak';
+  /** Mass of the weapon module: heavier guns get bigger turret housings. */
+  readonly weaponMass: number;
   readonly armour: number;
   readonly cargo: number;
   readonly builders: number;
@@ -55,8 +61,8 @@ export function lookOf(parts: readonly string[]): Look {
   const biggest = (ids: readonly string[]) => ids.filter((id) => parts.includes(id)).pop();
 
   const rotor = mods.some((d) => d.flight);
-  const largeMotor = parts.includes('motor.large');
-  const motor = rotor ? 'rotor' : largeMotor ? 'large' : count('motor') > 0 ? 'small' : 'none';
+  const legs = (biggest(['legs.light', 'legs.heavy', 'legs.colossus'])?.slice(5) ?? 'none') as Look['legs'];
+  const motor = rotor ? 'rotor' : legs !== 'none' ? 'legs' : parts.includes('motor.huge') ? 'huge' : parts.includes('motor.large') ? 'large' : count('motor') > 0 ? 'small' : 'none';
   const weaponDef = mods.find((d) => d.weapon);
   const weapon = weaponDef ? (weaponDef.weapon!.kind ?? 'gun') : 'none';
   const sensor = parts.includes('sensor.long') ? 'long' : parts.includes('sensor.short') ? 'short' : 'none';
@@ -77,12 +83,15 @@ export function lookOf(parts: readonly string[]): Look {
   return {
     structure,
     size: structure ? (frame?.footprint ?? 1) : (frame?.size ?? 0),
+    radius: structure ? 0 : (frame?.radius ?? 0.3),
     flying: rotor,
     radar: count('radar') > 0,
     long: frame?.long === true,
     shape: structure ? (frame?.shape ?? null) : null,
     motor,
+    legs,
     weapon,
+    weaponMass: weaponDef?.mass ?? 0,
     armour: count('armor'),
     cargo: count('cargo'),
     builders: count('builder'),
@@ -109,9 +118,11 @@ function shade(colour: number, k: number): number {
 }
 
 /** Draw a class at `tex` pixels per tile, centred on the origin. */
-export function drawLook(g: Graphics, look: Look, colour: number, tex: number, staticDish = false): void {
-  if (look.structure) drawBuilding(g, look, colour, tex);
-  else drawUnit(g, look, colour, tex);
+/** `gait` is a walking unit's leg phase in radians; leave it out for a standing pose. */
+export function drawLook(g: Graphics, look: Look, colour: number, tex: number, staticDish = false, gait?: number): void {
+  // In the game the dish, the turret and the wind rotor are sprites of their own (they move); a static picture draws them in.
+  if (look.structure) drawBuilding(g, look, colour, tex, !staticDish);
+  else drawUnit(g, look, colour, tex, gait, !staticDish);
   if (staticDish && look.radar) {
     const a = dishAnchor(look, tex);
     g.translateTransform(a.x, a.y);
@@ -123,7 +134,7 @@ export function drawLook(g: Graphics, look: Look, colour: number, tex: number, s
 /** Where a radar dish sits on a class (texture pixels from its centre) and how big it is. */
 export function dishAnchor(look: Look, tex: number): { x: number; y: number; radius: number } {
   if (!look.structure) {
-    const r = unitRadius(look.size, tex);
+    const r = unitRadius(look, tex);
     return { x: 0, y: look.long ? r * 0.55 : r * 0.2, radius: r * 0.62 };
   }
   // On the covered tile nearest the middle (the middle itself may be a gap in a shaped building).
@@ -156,61 +167,169 @@ export function drawDish(g: Graphics, r: number): void {
 }
 
 /** Unit body radius in texture pixels: the only thing the chassis decides. */
-export function unitRadius(size: number, tex: number): number {
-  return (0.3 + size * 0.08) * tex;
+export function unitRadius(look: Pick<Look, 'radius'>, tex: number): number {
+  return look.radius * tex;
+}
+
+/** Leg pairs by chassis tier (micro .. colossus): six legs or more from medium up. */
+const LEG_PAIRS = [2, 2, 3, 4, 5, 6];
+/** Frames in one gait cycle; the renderer picks one by how far the unit has walked. */
+export const GAIT_FRAMES = 8;
+
+/** Legs on a look, in legs (not pairs). */
+export function legCount(l: Pick<Look, 'size'>): number {
+  return LEG_PAIRS[Math.max(0, Math.min(5, l.size))] * 2;
+}
+
+/** Tiles a unit walks in one gait cycle: bigger legs take longer strides. */
+export function gaitLength(l: Pick<Look, 'radius'>): number {
+  return Math.max(0.25, l.radius * 1.6);
+}
+
+/**
+ * Walking legs seen from above: jointed, splayed out from the hull. `gait` is the cycle phase in
+ * radians (undefined = standing). Neighbouring legs, and the two sides, swing in opposite phase, so
+ * half the feet are always planted; a swinging foot lifts, pulling in towards the hull.
+ */
+function drawLegs(g: Graphics, l: Look, r: number, len: number, colour: number, gait?: number): void {
+  const pairs = LEG_PAIRS[Math.max(0, Math.min(5, l.size))];
+  const thick = (l.legs === 'light' ? Math.max(1.5, r * 0.09) : Math.max(2, r * 0.14)) * Math.min(1, Math.sqrt(3 / pairs) * 1.1);
+  const amp = r * 0.4;
+  for (let i = 0; i < pairs; i++) {
+    const t = (i / (pairs - 1)) * 2 - 1; // -1 front .. 1 rear
+    const y = t * r * len * 0.78;
+    // The front legs reach forward, the rear legs back, the middle ones straight out.
+    const reach = t * r * 0.35;
+    for (const sx of [-1, 1]) {
+      const phase = gait === undefined ? 0 : gait + ((i + (sx > 0 ? 1 : 0)) & 1 ? Math.PI : 0);
+      const swing = gait === undefined ? 0 : -Math.sin(phase) * amp;
+      const lift = gait === undefined ? 0 : Math.max(0, Math.cos(phase));
+      const hipX = sx * r * 0.5;
+      const kneeX = sx * r * (1.25 + 0.22 * lift);
+      const kneeY = y + reach * 0.5 + swing * 0.5;
+      const footX = sx * r * (1.4 - 0.14 * lift);
+      const footY = y + reach + swing;
+      g.moveTo(hipX, y).lineTo(kneeX, kneeY).lineTo(footX, footY).stroke({ width: thick, color: DARK, cap: 'round', join: 'round' });
+      g.moveTo(hipX, y).lineTo(kneeX, kneeY).lineTo(footX, footY).stroke({ width: Math.max(1, thick * 0.45), color: STEEL, cap: 'round', join: 'round' });
+      g.circle(kneeX, kneeY, thick * 0.6).fill(shade(colour, -0.35));
+      g.circle(footX, footY, thick * (0.7 + 0.25 * lift)).fill(STEEL);
+    }
+  }
 }
 
 // --- units -------------------------------------------------------------------------
 
-/** Hull outline in units of the body radius, facing up; null is a plain disc. */
-export function hullOutline(l: Look): number[] | null {
-  if (l.weapon === 'cannon') {
-    // Squat tank: broad, blunt front.
-    return [-0.8, -0.95, 0.8, -0.95, 1, -0.55, 1, 0.9, -1, 0.9, -1, -0.55];
-  }
-  if (l.weapon === 'missile') {
-    // Launcher truck: a boxy bed behind a short cab.
-    return [-0.6, -0.95, 0.6, -0.95, 0.6, -0.6, 1, -0.6, 1, 0.95, -1, 0.95, -1, -0.6, -0.6, -0.6];
-  }
-  if (l.weapon === 'laser') {
-    // Swept-wing dart.
-    return [0, -1.2, 0.5, -0.1, 0.95, 0.95, 0, 0.55, -0.95, 0.95, -0.5, -0.1];
-  }
-  if (l.weapon === 'tesla') {
-    // Spiked gear.
-    const pts: number[] = [];
-    for (let i = 0; i < 12; i++) {
-      const a = (i / 12) * Math.PI * 2, rad = i % 2 ? 0.72 : 1.05;
-      pts.push(Math.sin(a) * rad, -Math.cos(a) * rad);
+/**
+ * Hull silhouettes come from two things the player picks: the drive (motor) and the chassis tier.
+ * The drive gives the basic body, as a half-width profile along the length (front to rear, in body
+ * units); the tier then reshapes that profile, so a tier is never just a bigger copy of the one
+ * below it:
+ *   micro      rounded off into a bean            light     tapered, narrow nose
+ *   medium     the plain body                     heavy     a wide belt amidships with narrower ends
+ *   superheavy a long prow, flared sponsons, a narrow stern     colossus  corner bastions round a narrow waist
+ * What a unit carries (gun, cargo bay, build arm, sensors) is drawn on top of the hull, not in it.
+ */
+type Profile = readonly (readonly [y: number, w: number])[];
+
+const DRIVE_PROFILE: Record<Look['motor'], Profile> = {
+  // Immobile pod: an eight-sided cell.
+  none: [[-1, 0.45], [-0.7, 0.8], [-0.3, 1], [0.3, 1], [0.7, 0.8], [1, 0.45]],
+  // Wheels: a sleek wedge, pointed at the front.
+  small: [[-1.05, 0.05], [-0.8, 0.4], [-0.3, 0.85], [0.4, 0.9], [0.8, 0.75], [0.95, 0.5]],
+  // Big wheels or tracks: a blunt, boxy body.
+  large: [[-0.95, 0.4], [-0.55, 0.95], [0.95, 0.95]],
+  // Huge tracks: a blunt full-width dozer front, tapering to the stern.
+  huge: [[-0.9, 1], [0.1, 1], [0.95, 0.6]],
+  // Legs: head, thorax and abdomen, pinched in between, so the legs show.
+  legs: [[-1, 0.3], [-0.65, 0.6], [-0.2, 0.45], [0.2, 0.8], [0.8, 0.75], [1, 0.35]],
+  rotor: [],
+};
+
+interface TierShape {
+  /** 0..1: how far to round the profile off into an ellipse. */
+  round: number;
+  /** Width multiplier along the length. */
+  scale(y: number): number;
+  /** Lengths where `scale` steps: the outline gets a square step there. */
+  steps: readonly number[];
+}
+
+const TIER_SHAPE: readonly TierShape[] = [
+  { round: 0.6, scale: () => 1, steps: [] },
+  { round: 0, scale: (y) => 0.72 + 0.28 * ((y + 1) / 2), steps: [] },
+  { round: 0, scale: () => 1, steps: [] },
+  { round: 0, scale: (y) => (y >= -0.45 && y <= 0.55 ? 1 : 0.85), steps: [-0.45, 0.55] },
+  { round: 0, scale: (y) => (y < -0.55 ? 0.62 : y < 0.05 ? 0.88 : y < 0.75 ? 1 : 0.7), steps: [-0.55, 0.05, 0.75] },
+  { round: 0, scale: (y) => (Math.abs(y) > 0.5 ? 1 : 0.78), steps: [-0.5, 0.5] },
+];
+
+function profileWidth(p: Profile, y: number): number {
+  if (y <= p[0][0]) return p[0][1];
+  for (let i = 1; i < p.length; i++) {
+    if (y <= p[i][0]) {
+      const [y0, w0] = p[i - 1], [y1, w1] = p[i];
+      return w0 + ((w1 - w0) * (y - y0)) / (y1 - y0);
     }
-    return pts;
   }
-  if (l.weapon === 'gun') return [0, -1.05, 0.95, 0.8, 0, 0.4, -0.95, 0.8];
-  if (l.cargo > 0) {
-    // Hauler: narrow cab ahead of a wide bed.
-    return [-0.55, -0.95, 0.55, -0.95, 0.55, -0.5, 0.95, -0.5, 0.95, 0.95, -0.95, 0.95, -0.95, -0.5, -0.55, -0.5];
+  return p[p.length - 1][1];
+}
+
+/** A quadcopter-style cross; the tier thickens the arms and fills the inside corners. */
+const ROTOR_ARMS: readonly { a: number; c: number; reach: number }[] = [
+  { a: 0.4, c: 0.3, reach: 0.85 },
+  { a: 0.28, c: 0, reach: 1 },
+  { a: 0.3, c: 0.08, reach: 1 },
+  { a: 0.38, c: 0.2, reach: 1 },
+  { a: 0.45, c: 0.35, reach: 1 },
+  { a: 0.5, c: 0.45, reach: 1 },
+];
+
+function rotorOutline(tier: number): number[] {
+  const { a, c, reach: e } = ROTOR_ARMS[tier];
+  // One quadrant: the up arm's tip and side, the filled corner. Rotated a quarter turn at a time, the next
+  // quadrant's first two points are the right arm's tip.
+  const q: [number, number][] = [[-a, -e], [a, -e], [a, -a - c], [a + c, -a]];
+  const rot = (x: number, y: number, k: number): [number, number] => (k === 0 ? [x, y] : k === 1 ? [-y, x] : k === 2 ? [-x, -y] : [y, -x]);
+  const pts: number[] = [];
+  for (let k = 0; k < 4; k++) for (const [x, y] of q) pts.push(...rot(x, y, k));
+  return dedupe(pts);
+}
+
+function dedupe(pts: number[]): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < pts.length; i += 2) {
+    const n = out.length;
+    if (n >= 2 && Math.abs(out[n - 2] - pts[i]) < 1e-6 && Math.abs(out[n - 1] - pts[i + 1]) < 1e-6) continue;
+    out.push(pts[i], pts[i + 1]);
   }
-  if (l.builders > 0) {
-    // Dozer: a notched front edge between two blades.
-    return [-0.95, -0.85, -0.35, -0.85, 0, -0.45, 0.35, -0.85, 0.95, -0.85, 0.95, 0.9, -0.95, 0.9];
+  return out;
+}
+
+/** Hull outline in units of the body radius, facing up: from the drive and the chassis tier. */
+export function hullOutline(l: Pick<Look, 'motor' | 'size'>): number[] {
+  const tier = Math.max(0, Math.min(5, l.size));
+  if (l.motor === 'rotor') return rotorOutline(tier);
+  const profile = DRIVE_PROFILE[l.motor];
+  const shape = TIER_SHAPE[tier];
+  const ys = new Set<number>(profile.map(([y]) => y));
+  for (const y of shape.steps) ys.add(y);
+  if (shape.round > 0) for (let i = -5; i <= 5; i++) ys.add(i / 5);
+  const sorted = [...ys].sort((p, q) => p - q);
+  // `side` picks which side of a step to measure on.
+  const width = (y: number, side: number): number => {
+    const base = profileWidth(profile, y);
+    const round = Math.sqrt(Math.max(0, 1 - Math.min(1, y * y)));
+    return (base * (1 - shape.round) + round * shape.round) * shape.scale(y + 1e-6 * side);
+  };
+  const right: number[] = [];
+  for (const y of sorted) {
+    if (shape.steps.includes(y)) right.push(width(y, -1), y, width(y, 1), y);
+    else right.push(width(y, 0), y);
   }
-  if (l.flying) {
-    // Quad-copter cross.
-    return [-0.3, -1, 0.3, -1, 0.3, -0.3, 1, -0.3, 1, 0.3, 0.3, 0.3, 0.3, 1, -0.3, 1, -0.3, 0.3, -1, 0.3, -1, -0.3, -0.3, -0.3];
-  }
-  if (l.sensor === 'long') return [0, -1.1, 0.6, -0.2, 0.8, 0.5, 0.4, 0.95, -0.4, 0.95, -0.8, 0.5, -0.6, -0.2];
-  if (l.sensor === 'short') return [0, -1.1, 0.7, 0, 0, 0.9, -0.7, 0];
-  if (l.motor === 'none') {
-    // Immobile pod.
-    const pts: number[] = [];
-    for (let i = 0; i < 8; i++) {
-      const a = ((i + 0.5) / 8) * Math.PI * 2;
-      pts.push(Math.sin(a) * 1.05, -Math.cos(a) * 1.05);
-    }
-    return pts;
-  }
-  if (l.batteries >= 2) return [-0.55, -0.95, 0.55, -0.95, 0.8, -0.6, 0.8, 0.6, 0.55, 0.95, -0.55, 0.95, -0.8, 0.6, -0.8, -0.6];
-  return null;
+  const pts: number[] = [];
+  for (let i = 0; i < right.length; i += 2) pts.push(right[i], right[i + 1]);
+  for (let i = right.length - 2; i >= 0; i -= 2) pts.push(-right[i], right[i + 1]);
+  return dedupe(pts);
 }
 
 /** How much longer than wide a long chassis is. */
@@ -219,9 +338,7 @@ const LONG = 1.9;
 /** The hull path: the outline (or a disc) in body units, stretched lengthwise on a long chassis. */
 function hullPath(g: Graphics, l: Look, r: number): Graphics {
   const stretch = l.long ? LONG : 1;
-  const pts = hullOutline(l);
-  if (pts) return g.poly(pts.map((v, i) => (i % 2 ? v * stretch : v) * r));
-  return l.long ? g.ellipse(0, 0, r, r * stretch) : g.circle(0, 0, r);
+  return g.poly(hullOutline(l).map((v, i) => (i % 2 ? v * stretch : v) * r));
 }
 
 function hull(g: Graphics, l: Look, r: number, colour: number): void {
@@ -229,20 +346,22 @@ function hull(g: Graphics, l: Look, r: number, colour: number): void {
   shape.fill(colour).stroke({ width: 2, color: 0xffffff, alpha: 0.5 });
 }
 
-function drawUnit(g: Graphics, l: Look, colour: number, tex: number): void {
-  const r = unitRadius(l.size, tex);
+function drawUnit(g: Graphics, l: Look, colour: number, tex: number, gait?: number, separate = false): void {
+  const r = unitRadius(l, tex);
   // Keeps every unit of a size class the same texture box, so sprites stay centred.
   const len = l.long ? LONG : 1;
   const box = r * 1.45;
   g.rect(-box, -box * len, box * 2, box * 2 * len).fill({ color: 0, alpha: 0.001 });
 
   // Drive, underneath the hull.
-  if (l.motor === 'small' || l.motor === 'large') {
-    const w = l.motor === 'large' ? r * 0.42 : r * 0.26;
-    const h = r * (l.motor === 'large' ? 1.7 : 1.4) * len;
+  if (l.motor === 'legs') drawLegs(g, l, r, len, colour, gait);
+  if (l.motor === 'small' || l.motor === 'large' || l.motor === 'huge') {
+    const heavy = l.motor !== 'small';
+    const w = l.motor === 'huge' ? r * 0.5 : heavy ? r * 0.42 : r * 0.26;
+    const h = r * (heavy ? 1.7 : 1.4) * len;
     for (const sx of [-1, 1]) {
       g.roundRect(sx * r * 0.95 - w / 2, -h / 2, w, h, 2).fill(DARK).stroke({ width: 1, color: STEEL });
-      if (l.motor === 'large') for (let i = -2; i <= 2; i++) g.moveTo(sx * r * 0.95 - w / 2, i * h * 0.17).lineTo(sx * r * 0.95 + w / 2, i * h * 0.17).stroke({ width: 1, color: STEEL, alpha: 0.7 });
+      if (heavy) for (let i = -2; i <= 2; i++) g.moveTo(sx * r * 0.95 - w / 2, i * h * 0.17).lineTo(sx * r * 0.95 + w / 2, i * h * 0.17).stroke({ width: 1, color: STEEL, alpha: 0.7 });
     }
   }
   if (l.motor === 'rotor') {
@@ -298,45 +417,82 @@ function drawUnit(g: Graphics, l: Look, colour: number, tex: number): void {
   }
 
   // On a long chassis the weapon rides forward of the middle, leaving the rear for cargo.
-  weaponTurret(g, l.weapon, r, l.long ? -r * (LONG - 1) * 0.55 : 0);
+  if (!(separate && aims(l))) weaponTurret(g, l.weapon, r, l.weaponMass, l.long ? -r * (LONG - 1) * 0.55 : 0);
 }
 
 /** A weapon on a vehicle: its muzzle points up, the way units face. */
-function weaponTurret(g: Graphics, kind: Look['weapon'], r: number, dy = 0): void {
+function weaponTurret(g: Graphics, kind: Look['weapon'], r: number, mass: number, dy = 0): void {
   if (kind === 'none') return;
   g.translateTransform(0, dy);
-  drawTurret(g, kind, r);
+  drawTurret(g, kind, r, mass);
   g.resetTransform();
 }
 
-function drawTurret(g: Graphics, kind: Look['weapon'], r: number): void {
+/** A turret ring: a dark housing with a bright rim; big ones get an inner ring and rivets, so they read as armoured mounts. */
+function housing(g: Graphics, hr: number, accent: number): void {
+  g.circle(0, 0, hr).fill(DARK).stroke({ width: 1.5, color: accent });
+  if (hr < 7) return;
+  g.circle(0, 0, hr * 0.7).stroke({ width: 1, color: STEEL, alpha: 0.55 });
+  const n = hr >= 12 ? 8 : 6;
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2 + Math.PI / n;
+    g.circle(Math.cos(a) * hr * 0.86, Math.sin(a) * hr * 0.86, Math.max(0.8, hr * 0.06)).fill(accent);
+  }
+}
+
+/** Housing radius for a weapon of `mass` on a hull of radius r: a light gun has none to speak of, a siege gun nearly fills the hull. */
+const housingRadius = (r: number, mass: number, base: number): number => Math.min(r * 0.85, r * (base + 0.022 * mass));
+
+function drawTurret(g: Graphics, kind: Look['weapon'], r: number, mass = 0): void {
   switch (kind) {
     case 'gun':
-      g.circle(0, 0, r * 0.3).fill(DARK);
-      g.rect(-1.5, -r * 1.05, 3, r * 1.05).fill(STEEL);
-      break;
-    case 'cannon':
-      g.circle(0, 0, r * 0.42).fill(DARK).stroke({ width: 1.5, color: WARN });
-      g.rect(-r * 0.16, -r * 1.2, r * 0.32, r * 1.2).fill(STEEL).stroke({ width: 1, color: DARK });
-      g.rect(-r * 0.24, -r * 1.2, r * 0.48, r * 0.2).fill(WARN);
-      break;
-    case 'missile':
-      // Two warheads on a rack, nose up.
-      g.rect(-r * 0.55, -r * 0.35, r * 1.1, r * 0.9).fill(DARK).stroke({ width: 1.5, color: WARN });
-      for (const x of [-r * 0.28, r * 0.28]) {
-        g.rect(x - r * 0.12, -r * 0.95, r * 0.24, r * 0.9).fill(0xdfe5ee);
-        g.poly([x - r * 0.12, -r * 0.95, x + r * 0.12, -r * 0.95, x, -r * 1.25]).fill(WARN);
+      if (mass >= 8) {
+        // Rotary gun: a cluster of barrels in a big round mount.
+        const hr = housingRadius(r, mass, 0.3);
+        housing(g, hr, STEEL);
+        for (const x of [-0.5, 0, 0.5]) {
+          g.rect(x * hr - 1.4, -r * 1.2, 2.8, r * 1.2 - hr * 0.2).fill(STEEL).stroke({ width: 0.8, color: DARK });
+        }
+        g.rect(-hr * 0.8, -r * 1.2, hr * 1.6, Math.max(2, r * 0.1)).fill(WARN);
+      } else {
+        g.circle(0, 0, r * 0.3).fill(DARK);
+        g.rect(-1.5, -r * 1.05, 3, r * 1.05).fill(STEEL);
       }
       break;
-    case 'flak':
+    case 'cannon': {
+      // A squat armoured mantlet with a counterweight behind it, and a muzzle brake.
+      const hr = housingRadius(r, mass, 0.36);
+      const w = r * (0.16 + 0.006 * mass);
+      const len = r * (mass >= 10 ? 1.3 : 1.2);
+      g.roundRect(-hr * 0.65, hr * 0.2, hr * 1.3, hr * 0.85, 2).fill(DARK).stroke({ width: 1, color: WARN });
+      housing(g, hr, WARN);
+      g.rect(-w, -len, w * 2, len).fill(STEEL).stroke({ width: 1, color: DARK });
+      g.rect(-w * 1.5, -len, w * 3, r * 0.2).fill(WARN);
+      if (mass >= 10) g.rect(-w * 1.5, -len + r * 0.32, w * 3, r * 0.12).fill(WARN);
+      break;
+    }
+    case 'missile': {
+      // A launcher rack on a pivot ring: two warheads, three on the big ones.
+      const tubes = mass >= 10 ? [-0.38, 0, 0.38] : [-0.28, 0.28];
+      const hw = r * (mass >= 10 ? 0.7 : 0.55);
+      g.rect(-hw, -r * 0.35, hw * 2, r * 0.9).fill(DARK).stroke({ width: 1.5, color: WARN });
+      if (mass >= 6) g.circle(0, r * 0.1, Math.min(r * 0.45, hw * 0.55)).fill(DARK).stroke({ width: 1, color: STEEL, alpha: 0.7 });
+      for (const x of tubes) {
+        g.rect(x * r - r * 0.12, -r * 0.95, r * 0.24, r * 0.9).fill(0xdfe5ee);
+        g.poly([x * r - r * 0.12, -r * 0.95, x * r + r * 0.12, -r * 0.95, x * r, -r * 1.25]).fill(WARN);
+      }
+      break;
+    }
+    case 'flak': {
       // Twin short barrels splayed upward on a round mount.
-      g.circle(0, 0, r * 0.4).fill(DARK).stroke({ width: 1.5, color: STEEL });
+      housing(g, housingRadius(r, mass, 0.3), STEEL);
       for (const a of [-0.28, 0.28]) {
         g.moveTo(Math.sin(a) * r * 0.2, -Math.cos(a) * r * 0.2).lineTo(Math.sin(a) * r * 1.15, -Math.cos(a) * r * 1.15).stroke({ width: 3, color: STEEL });
       }
       break;
+    }
     case 'laser':
-      g.circle(0, 0, r * 0.3).fill(DARK).stroke({ width: 1.5, color: LASER });
+      housing(g, housingRadius(r, mass, 0.26), LASER);
       g.poly([0, -r * 1.2, r * 0.18, -r * 0.3, -r * 0.18, -r * 0.3]).fill(LASER);
       break;
     case 'tesla': {
@@ -377,13 +533,18 @@ function plate(g: Graphics, role: Look['role'], h: number, colour: number): void
 }
 
 type Glyph = (g: Graphics, cx: number, cy: number, s: number) => void;
+type GlyphKind = 'weapon' | 'factory' | 'builder' | 'solar' | 'wind' | 'charger' | 'silo' | 'battery' | 'antenna' | 'sensor' | 'cpu';
+type KindGlyph = Glyph & { kind: GlyphKind };
 
 /** Small module symbols that fill a building's cells. Highest priority first. */
-function glyphs(l: Look): Glyph[] {
-  const out: Glyph[] = [];
+function glyphs(l: Look): KindGlyph[] {
+  const out: KindGlyph[] = [];
+  const add = (kind: GlyphKind, draw: Glyph) => out.push(Object.assign(draw, { kind }));
   if (l.weapon !== 'none') {
-    out.push((g, cx, cy, s) => {
-      g.circle(cx, cy, s * 0.55).fill(DARK).stroke({ width: 1.5, color: l.weapon === 'laser' ? LASER : l.weapon === 'tesla' ? TESLA : l.weapon === 'cannon' || l.weapon === 'missile' ? WARN : STEEL });
+    add('weapon', (g, cx, cy, s) => {
+      const hr = s * Math.min(0.95, 0.55 + 0.025 * l.weaponMass); // heavy guns sit in bigger housings
+      g.circle(cx, cy, hr).fill(DARK).stroke({ width: 1.5, color: l.weapon === 'laser' ? LASER : l.weapon === 'tesla' ? TESLA : l.weapon === 'cannon' || l.weapon === 'missile' ? WARN : STEEL });
+      if (l.weaponMass >= 3) g.circle(cx, cy, hr * 0.72).stroke({ width: 1, color: STEEL, alpha: 0.55 });
       if (l.weapon === 'missile') {
         for (const x of [-s * 0.25, s * 0.25]) {
           g.rect(cx + x - s * 0.1, cy - s * 0.85, s * 0.2, s * 0.8).fill(0xdfe5ee);
@@ -399,20 +560,20 @@ function glyphs(l: Look): Glyph[] {
     });
   }
   if (l.factories > 0) {
-    out.push((g, cx, cy, s) => {
+    add('factory', (g, cx, cy, s) => {
       g.rect(cx - s * 0.8, cy - s * 0.4, s * 1.6, s * 1.1).fill(DARK).stroke({ width: 1, color: STEEL });
       g.rect(cx - s * 0.5, cy - s * 0.95, s * 0.35, s * 0.55).fill(STEEL);
       g.rect(cx + s * 0.05, cy - s * 0.1, s * 0.5, s * 0.4).fill(ENERGY);
     });
   }
   if (l.builders > 0) {
-    out.push((g, cx, cy, s) => {
+    add('builder', (g, cx, cy, s) => {
       g.moveTo(cx - s * 0.7, cy + s * 0.7).lineTo(cx - s * 0.1, cy - s * 0.6).lineTo(cx + s * 0.7, cy - s * 0.6).stroke({ width: 2.2, color: ENERGY });
       g.circle(cx + s * 0.7, cy - s * 0.6, 2).fill(0xffffff);
     });
   }
   if (l.solar > 0) {
-    out.push((g, cx, cy, s) => {
+    add('solar', (g, cx, cy, s) => {
       const n = Math.min(4, l.solar);
       for (let i = 0; i < n; i++) {
         const x = cx + (i % 2 ? 0.05 : -0.95) * s, y = cy + (i < 2 ? -0.95 : 0.05) * s;
@@ -421,30 +582,30 @@ function glyphs(l: Look): Glyph[] {
     });
   }
   if (l.wind > 0) {
-    out.push((g, cx, cy, s) => {
+    add('wind', (g, cx, cy, s) => {
       for (const a of [0, 2.1, 4.2]) g.moveTo(cx, cy).lineTo(cx + Math.sin(a) * s, cy - Math.cos(a) * s).stroke({ width: 2, color: 0xffffff });
       g.circle(cx, cy, 2).fill(DARK);
     });
   }
   if (l.chargers > 0) {
-    out.push((g, cx, cy, s) => {
+    add('charger', (g, cx, cy, s) => {
       g.poly([cx + s * 0.15, cy - s, cx - s * 0.6, cy + s * 0.1, cx, cy + s * 0.1, cx - s * 0.15, cy + s, cx + s * 0.6, cy - s * 0.1, cx, cy - s * 0.1]).fill(ENERGY);
     });
   }
   if (l.silos > 0) {
-    out.push((g, cx, cy, s) => {
+    add('silo', (g, cx, cy, s) => {
       g.circle(cx, cy, s * 0.8).fill(DARK).stroke({ width: 1.5, color: MATTER });
       g.circle(cx, cy, s * 0.35).fill(MATTER);
     });
   }
   if (l.batteries > 0) {
-    out.push((g, cx, cy, s) => {
+    add('battery', (g, cx, cy, s) => {
       const n = Math.min(3, l.batteries);
       for (let i = 0; i < n; i++) g.rect(cx - s * 0.9, cy + (i - (n - 1) / 2) * s * 0.62 - s * 0.2, s * 1.8, s * 0.4).fill(ENERGY);
     });
   }
   if (l.antenna !== 'none') {
-    out.push((g, cx, cy, s) => {
+    add('antenna', (g, cx, cy, s) => {
       const arcs = l.antenna === 'large' ? 3 : l.antenna === 'medium' ? 2 : 1;
       g.moveTo(cx, cy + s * 0.9).lineTo(cx, cy - s * 0.3).stroke({ width: 1.5, color: STEEL });
       g.circle(cx, cy - s * 0.4, 2).fill(ENERGY);
@@ -452,13 +613,13 @@ function glyphs(l: Look): Glyph[] {
     });
   }
   if (l.sensor !== 'none') {
-    out.push((g, cx, cy, s) => {
+    add('sensor', (g, cx, cy, s) => {
       g.arc(cx, cy + s * 0.2, s * (l.sensor === 'long' ? 0.9 : 0.6), Math.PI * 0.1, Math.PI * 0.9).stroke({ width: 2, color: 0xffffff });
       g.moveTo(cx, cy + s * 0.2).lineTo(cx, cy - s * 0.7).stroke({ width: 1.2, color: STEEL });
     });
   }
   if (l.cpu !== 'none') {
-    out.push((g, cx, cy, s) => {
+    add('cpu', (g, cx, cy, s) => {
       const glow = l.cpu === 'quantum' ? LASER : l.cpu === 'fast' ? ENERGY : STEEL;
       g.rect(cx - s * 0.5, cy - s * 0.5, s, s).fill(DARK).stroke({ width: 1.2, color: glow });
       for (const d of [-0.25, 0.25]) g.moveTo(cx + d * s, cy - s * 0.5).lineTo(cx + d * s, cy - s * 0.8).moveTo(cx + d * s, cy + s * 0.5).lineTo(cx + d * s, cy + s * 0.8).stroke({ width: 1, color: glow });
@@ -468,7 +629,7 @@ function glyphs(l: Look): Glyph[] {
 }
 
 /** A shaped building: its covered tiles as one plate, an outline round the edge only, a symbol in each tile. */
-function drawShapedBuilding(g: Graphics, l: Look, shape: readonly string[], colour: number, tex: number): void {
+function drawShapedBuilding(g: Graphics, l: Look, shape: readonly string[], colour: number, tex: number, separate: boolean): void {
   const n = shape.length;
   const x0 = -(n * tex) / 2;
   const has = (i: number, j: number) => shape[j]?.[i] === 'X';
@@ -490,23 +651,33 @@ function drawShapedBuilding(g: Graphics, l: Look, shape: readonly string[], colo
   };
   edges(2, 0xffffff, 0.5, inset);
   if (l.armour > 0) edges(Math.min(5, 1 + l.armour), STEEL, 0.9, inset + 2);
-  const list = glyphs(l);
-  const s = Math.min(tex * 0.4, 9);
-  cells.slice(0, list.length).forEach(([i, j], k) => list[k](g, x0 + (i + 0.5) * tex, x0 + (j + 0.5) * tex, s));
+  drawGlyphs(g, l, tex, separate);
 }
 
-function drawBuilding(g: Graphics, l: Look, colour: number, tex: number): void {
-  if (l.shape) {
-    drawShapedBuilding(g, l, l.shape, colour, tex);
-    return;
-  }
-  const h = (l.size * tex) / 2 - 2;
-  plate(g, l.role, h, colour);
-  if (l.armour > 0) {
-    g.rect(-h + 2, -h + 2, (h - 2) * 2, (h - 2) * 2).stroke({ width: Math.min(5, 1 + l.armour), color: STEEL, alpha: 0.9 });
-  }
+/** A module symbol placed on a building: its kind, the cell centre and the symbol size (texture pixels from the building's centre). */
+interface PlacedGlyph {
+  readonly kind: GlyphKind;
+  readonly draw: Glyph;
+  readonly cx: number;
+  readonly cy: number;
+  readonly s: number;
+}
+
+/** Where each module symbol goes: one per covered tile of a shaped building, a grid in a square one. */
+function placeGlyphs(l: Look, tex: number): PlacedGlyph[] {
   const list = glyphs(l);
-  if (list.length === 0) return;
+  const out: PlacedGlyph[] = [];
+  if (l.shape) {
+    const n = l.shape.length;
+    const x0 = -(n * tex) / 2;
+    const cells: [number, number][] = [];
+    for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) if (l.shape[j]?.[i] === 'X') cells.push([i, j]);
+    const s = Math.min(tex * 0.4, 9);
+    cells.slice(0, list.length).forEach(([i, j], k) => out.push({ kind: list[k].kind, draw: list[k], cx: x0 + (i + 0.5) * tex, cy: x0 + (j + 0.5) * tex, s }));
+    return out;
+  }
+  if (list.length === 0) return out;
+  const h = (l.size * tex) / 2 - 2;
   // A 1×1 building has room for four symbols, larger ones for nine.
   const cols = l.size === 1 ? 2 : 3;
   const shown = list.slice(0, cols * cols);
@@ -514,8 +685,76 @@ function drawBuilding(g: Graphics, l: Look, colour: number, tex: number): void {
   const inner = h - Math.min(4, h * 0.2);
   const cell = (inner * 2) / per;
   shown.forEach((draw, i) => {
-    const cx = -inner + cell * ((i % per) + 0.5);
-    const cy = -inner + cell * (Math.floor(i / per) + 0.5);
-    draw(g, cx, cy, Math.min(cell * 0.4, 9));
+    out.push({ kind: draw.kind, draw, cx: -inner + cell * ((i % per) + 0.5), cy: -inner + cell * (Math.floor(i / per) + 0.5), s: Math.min(cell * 0.4, 9) });
   });
+  return out;
+}
+
+/** Draws the module symbols; with `separate`, the ones the renderer animates as sprites of their own are left out. */
+function drawGlyphs(g: Graphics, l: Look, tex: number, separate: boolean): void {
+  for (const p of placeGlyphs(l, tex)) {
+    if (separate && ((p.kind === 'weapon' && aims(l)) || p.kind === 'wind')) continue;
+    p.draw(g, p.cx, p.cy, p.kind === 'weapon' ? p.s * weaponScale(l) : p.s);
+  }
+}
+
+/** A building's weapon is drawn bigger the heavier it is, so a siege gun is a real turret and not a dot. */
+const weaponScale = (l: Pick<Look, 'weaponMass'>): number => 1 + 0.1 * Math.min(l.weaponMass, 14);
+
+function drawBuilding(g: Graphics, l: Look, colour: number, tex: number, separate: boolean): void {
+  if (l.shape) {
+    drawShapedBuilding(g, l, l.shape, colour, tex, separate);
+    return;
+  }
+  const h = (l.size * tex) / 2 - 2;
+  plate(g, l.role, h, colour);
+  if (l.armour > 0) {
+    g.rect(-h + 2, -h + 2, (h - 2) * 2, (h - 2) * 2).stroke({ width: Math.min(5, 1 + l.armour), color: STEEL, alpha: 0.9 });
+  }
+  drawGlyphs(g, l, tex, separate);
+}
+
+/** Weapons that swing round to face their target (a tesla coil strikes everything around it, so it does not). */
+export const aims = (l: Pick<Look, 'weapon'>): boolean => l.weapon !== 'none' && l.weapon !== 'tesla';
+
+/** Where a turret sits on a class (texture pixels from its centre) and the size its art is drawn at; null if it has none that turns. */
+export function turretAnchor(l: Look, tex: number): { x: number; y: number; r: number } | null {
+  if (!aims(l)) return null;
+  if (!l.structure) {
+    const r = unitRadius(l, tex);
+    return { x: 0, y: l.long ? -r * (LONG - 1) * 0.55 : 0, r };
+  }
+  const p = placeGlyphs(l, tex).find((q) => q.kind === 'weapon');
+  return p ? { x: p.cx, y: p.cy, r: p.s * weaponScale(l) } : null;
+}
+
+/** The turret alone, drawn round the origin facing up (the renderer turns it): its own sprite, so it can aim. */
+export function drawTurretSprite(g: Graphics, l: Look, tex: number): void {
+  const a = turretAnchor(l, tex);
+  if (!a) return;
+  // Equal extents on every side keep the texture centred on the pivot.
+  const box = a.r * 1.6;
+  g.rect(-box, -box, box * 2, box * 2).fill({ color: 0, alpha: 0.001 });
+  if (!l.structure) drawTurret(g, l.weapon, a.r, l.weaponMass);
+  else placeGlyphs(l, tex).find((q) => q.kind === 'weapon')!.draw(g, 0, 0, a.r);
+}
+
+/** Where a building's wind turbine rotor sits, and its size; null for a class without one (or with no room to show it). */
+export function windAnchor(l: Look, tex: number): { x: number; y: number; radius: number } | null {
+  if (!l.structure || l.wind === 0) return null;
+  const p = placeGlyphs(l, tex).find((q) => q.kind === 'wind');
+  return p ? { x: p.cx, y: p.cy, radius: p.s * 1.15 } : null;
+}
+
+/** Three turbine blades round a hub, centred on the origin: the renderer spins it. */
+export function drawRotor(g: Graphics, r: number): void {
+  g.circle(0, 0, r * 1.05).fill({ color: 0, alpha: 0.001 });
+  for (let k = 0; k < 3; k++) {
+    const a = (k * Math.PI * 2) / 3;
+    const c = Math.cos(a), sn = Math.sin(a);
+    // A tapered blade: wide at the hub, narrow at the tip.
+    g.poly([c * r * 0.12 - sn * r * 0.16, sn * r * 0.12 + c * r * 0.16, c * r * 1.0 - sn * r * 0.05, sn * r * 1.0 + c * r * 0.05, c * r * 1.0 + sn * r * 0.05, sn * r * 1.0 - c * r * 0.05, c * r * 0.12 + sn * r * 0.16, sn * r * 0.12 - c * r * 0.16])
+      .fill(0xf1f4f8).stroke({ width: 0.8, color: STEEL });
+  }
+  g.circle(0, 0, Math.max(1.8, r * 0.2)).fill(DARK).stroke({ width: 1, color: STEEL });
 }

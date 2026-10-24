@@ -1,4 +1,4 @@
-import { GENERATION_SCALE, PART_LIST, PARTS, TILE, type PartDef, type PartSlot } from '@wst/engine';
+import { GENERATION_SCALE, PART_LIST, PARTS, TIER_NAMES, TILE, type PartDef, type PartSlot } from '@wst/engine';
 import { esc, type DesignerModel } from './shared';
 
 /** Module palette groups, in display order. Chassis are split into unit bodies and building frames. */
@@ -136,7 +136,7 @@ export class DesignTab {
       ['Hit points', String(s.hp)],
       ['Energy', `${s.energyCapacity}`],
       ['CPU', s.cyclesPerTick ? `${s.cyclesPerTick} cycles/tick · ${s.cpuUse} per 100 cycles` : 'none'],
-      ['Memory', `${s.memorySlots} vars · stack ${s.stackDepth}`],
+      ['Memory', `program ${this.m.programMemory()}/${s.memorySlots} slots · queue ${s.stackDepth}`],
     ];
     if (s.structure) {
       rows.push(['Footprint', s.shape ? `${s.area} tiles in a ${s.footprint}×${s.footprint} box` : `${s.footprint}×${s.footprint} tiles`], ['Link reach', `${s.linkRange} tiles`]);
@@ -146,6 +146,8 @@ export class DesignTab {
       if (s.factory) rows.push(['Factory', `${s.factoryUse} energy/t while producing`]);
     } else {
       rows.push(['Speed', s.speed ? `${((s.speed / TILE) * 10).toFixed(1)} tiles/s${s.flying ? ' (flying)' : ''} · ${s.motorUse}/t` : 'immobile']);
+      rows.push(['Size', `${TIER_NAMES[s.size]}${s.clearance ? ` · needs a ${2 * s.clearance + 1}-tile-wide way` : ''}`]);
+      if (s.legs) rows.push(['Legs', s.climb >= 9 ? 'stride over any rock (half speed on rock)' : `climb ${s.climb} level${s.climb === 1 ? '' : 's'} into rock (half speed on rock)`]);
       if (s.sensorRange) rows.push(['Sensor', `${s.sensorRange / TILE} tiles · ${s.sensorUse}/scan`]);
       if (s.weapon) rows.push(['Weapon', `${s.weapon.damage} dmg · range ${s.weapon.range / TILE} · ${s.weapon.use}/shot`]);
       if (s.cargo) rows.push(['Cargo', `${s.cargo} · ${s.harvestRate}/t harvesting`]);
@@ -212,15 +214,21 @@ export class DesignTab {
       const grid = document.createElement('div');
       grid.className = 'part-grid';
       details.appendChild(grid);
-      for (const p of PART_LIST.filter(cat.match)) {
+      // Unit bodies run from the smallest tier to the biggest.
+      for (const p of PART_LIST.filter(cat.match).sort((a, b) => (a.slot === 'chassis' && b.slot === 'chassis' && !a.structure ? (a.size ?? 0) - (b.size ?? 0) : 0))) {
         const isFrame = p.slot === 'chassis';
-        const fits = isFrame || (structure ? !p.mobileOnly : !p.structureOnly);
+        const tooSmall = !isFrame && !structure && (p.minSize ?? 0) > (frame?.size ?? 0);
+        const fits = isFrame || ((structure ? !p.mobileOnly : !p.structureOnly) && !tooSmall);
         const row = document.createElement('button');
         row.className = 'part-row';
         row.disabled = !editable || !fits || (!isFrame && full);
-        row.title = !fits ? `Only fits ${p.structureOnly ? 'buildings' : 'units'}` : p.description;
+        const onlyFits = tooSmall ? `Needs a ${TIER_NAMES[p.minSize!]} chassis or bigger` : `Only fits ${p.structureOnly ? 'buildings' : 'units'}`;
+        row.title = !fits ? onlyFits : p.description;
         const detail = [
+          isFrame && !p.structure ? TIER_NAMES[p.size ?? 0] : '',
           `mass ${p.mass}`,
+          p.climb ? `climbs ${p.climb >= 9 ? 'anything' : p.climb}` : '',
+          p.minSize && !isFrame ? `${TIER_NAMES[p.minSize]}+` : '',
           p.use ? `uses ${p.use}` : '',
           p.slots ? `${p.slots} slots` : '',
           p.energy ? `+${p.energy} energy` : '',
@@ -229,7 +237,7 @@ export class DesignTab {
         const reason = !editable
           ? 'This class can’t be edited'
           : !fits
-            ? `Only fits ${p.structureOnly ? 'buildings' : 'units'}`
+            ? onlyFits
             : !isFrame && full
               ? 'No free slots'
               : '';
@@ -249,10 +257,10 @@ export class DesignTab {
   /** Swaps the chassis/frame; modules that no longer fit are dropped. */
   private setFrame(p: PartDef): void {
     const structure = p.structure === true;
-    const kept = this.m.draft.slice(1).filter((id) => (structure ? !PARTS[id].mobileOnly : !PARTS[id].structureOnly));
+    const kept = this.m.draft.slice(1).filter((id) => (structure ? !PARTS[id].mobileOnly : !PARTS[id].structureOnly && (PARTS[id].minSize ?? 0) <= (p.size ?? 0)));
     const dropped = this.m.draft.length - 1 - kept.length;
     this.m.draft = [p.id, ...kept.slice(0, p.slots ?? kept.length)];
-    if (dropped) this.m.showResult(`Removed ${dropped} module(s) that don't fit a ${structure ? 'building' : 'unit'}.`, false);
+    if (dropped) this.m.showResult(`Removed ${dropped} module(s) that don't fit a ${structure ? 'building' : `${TIER_NAMES[p.size ?? 0]} unit`}.`, false);
     this.m.refresh();
   }
 

@@ -108,8 +108,21 @@ export const WIND_CHANGE_TICKS = 100;
 export const UNIT_VISION = 4 * TILE;
 export const BUILDING_VISION = 6 * TILE;
 
-/** Units closer than this (sub-tile units) push each other apart. */
+/** Units closer than this (sub-tile units) push each other apart: the two hull radii plus SEPARATION_GAP. */
+export const SEPARATION_GAP = Math.floor(0.1 * TILE);
+/** Separation of two light units (radius 0.3 each), the old fixed value. */
 export const SEPARATION_RADIUS = Math.floor(0.7 * TILE);
+
+// --- Terrain height and legs ----------------------------------------------------------
+
+/** Rock heights run 1..MAX_TERRAIN_HEIGHT (open ground is 0); a rock cell's height is how deep it lies inside its outcrop. */
+export const MAX_TERRAIN_HEIGHT = 9;
+/** Cliffs: outcrops whose rock is at least this high right at the edge, so only colossus legs (and rotors) cross them. */
+export const CLIFF_HEIGHT = 3;
+/** Every CLIFF_EVERY-th outcrop of a map is a cliff (chosen by position in the list, so no extra random numbers are drawn). */
+export const CLIFF_EVERY = 4;
+/** A legged unit walking on rock moves at this share of its speed, in thousandths. */
+export const CLIMB_SPEED_PERMILLE = 500;
 
 // --- Class derivation (how modules combine into stats) -----------------------------
 
@@ -122,6 +135,14 @@ export const BASE_LINK_RANGE = 1;
 /** Matter cost of a class = COST_PER_MASS × total mass + CYCLE_COST × the cycles of all its CPUs. */
 export const COST_PER_MASS = 10;
 export const CYCLE_COST = 1;
+/**
+ * Bigger hulls cost exponentially more, so the biggest units are late-game goals. Micro, light and medium
+ * are the baseline (x1); each tier above medium multiplies the matter cost and the production energy by
+ * this factor again (heavy x2.5, super-heavy x6.25, colossus about x15.6). Buildings are not scaled.
+ */
+export const SIZE_COST_FACTOR = 2.5;
+export const MEDIUM_SIZE = 2;
+export const sizeCostMultiplier = (chassisSize: number): number => SIZE_COST_FACTOR ** Math.max(0, chassisSize - MEDIUM_SIZE);
 /** Production time of a class (ticks) = BUILD_TIME_BASE + BUILD_TIME_PER_MASS × mass. */
 export const BUILD_TIME_BASE = 10;
 export const BUILD_TIME_PER_MASS = 4;
@@ -132,6 +153,16 @@ export const BUILD_TIME_PER_MASS = 4;
 export const PRODUCTION_ENERGY_PER_MODULE = 5;
 /** Matter per hit point repaired, and how many times more armour plating costs to mend than the rest. */
 export const REPAIR_MATTER_PER_HP = 0.1;
+
+/**
+ * Module damage. Every hit also lands on one module (chosen at random, or by the shooter's aim): the
+ * module takes the same damage as the hull, and breaks when it has taken its `integrity`, which is
+ * MODULE_HP_BASE + MODULE_HP_PER_MASS x its mass unless the part says otherwise. A broken module
+ * does nothing until repaired. Armour, memory and batteries cannot break, but they soak up the hits
+ * that land on them.
+ */
+export const MODULE_HP_BASE = 25;
+export const MODULE_HP_PER_MASS = 6;
 export const REPAIR_ARMOR_MULTIPLIER = 4;
 export const PRODUCTION_ENERGY_BY_SLOT: Readonly<Record<string, number>> = {
   cpu: 30,
@@ -159,21 +190,22 @@ export const PRODUCTION_ENERGY_BY_SLOT: Readonly<Record<string, number>> = {
 export const SITE_START_HP = 0.1;
 export const MAX_SITES_PER_PLAYER = 12;
 export const MAX_PRODUCTION_QUEUE = 8;
-/** Factory modules a chassis of size s (0 light, 1 medium, 2 heavy) needs to be built at full speed: s + 1. */
-export const factoryModulesFor = (chassisSize: number): number => chassisSize + 1;
-/** Speed of a factory one module short of a unit's need, in thousandths of full speed. */
-export const FACTORY_ONE_SHORT_PERMILLE = 100;
 /**
- * Production speed in thousandths of full speed. With at least the modules a unit needs it is
- * built at full speed (more modules give no extra speed); one module short it is built at a
- * tenth of the speed; two or more short it cannot be built there at all (0).
+ * Typed factory modules. A chassis of size tier s (0 micro, 1 light, 2 medium, 3 heavy, 4 super-heavy,
+ * 5 colossus) can only be built by a building with a factory module of exactly that tier, so a bigger
+ * factory is not automatically a better small one: a building needs one module per tier it should build.
  */
-export const factoryRatePermille = (have: number, need: number): number => {
-  if (have >= need) return 1000;
-  return need - have === 1 && have > 0 ? FACTORY_ONE_SHORT_PERMILLE : 0;
-};
+export const FACTORY_TIER_COUNT = 6;
+/** Bit mask of the tiers a set of factory modules builds (bit s = chassis size s). */
+export const factoryTierBit = (tier: number): number => 1 << tier;
+/** Whether a factory with module mask `tiers` can build a chassis of size `chassisSize`. */
+export const factoryCanBuild = (tiers: number, chassisSize: number): boolean => (tiers & factoryTierBit(chassisSize)) !== 0;
+/** Names of the tiers, for messages. */
+export const FACTORY_TIER_NAMES = ['micro', 'light', 'medium', 'heavy', 'super-heavy', 'colossus'] as const;
+
 export const MAX_UNITS_PER_PLAYER = 256;
-export const MAX_CLASSES_PER_PLAYER = 40;
+/** Includes the starter classes (34), so players have room for a dozen of their own. */
+export const MAX_CLASSES_PER_PLAYER = 48;
 
 // --- Match set-up ------------------------------------------------------------------
 
@@ -236,6 +268,8 @@ const missileLauncher = (matter: number, range: number, cooldown: number, missil
 export interface PartTuning {
   readonly mass: number;
   readonly hp?: number;
+  /** Damage this one module takes before it breaks (see MODULE_HP_BASE); legs are made deliberately fragile. */
+  readonly integrity?: number;
   /** Chassis/frame: how many modules fit. */
   readonly slots?: number;
   readonly energy?: number;
@@ -243,6 +277,8 @@ export interface PartTuning {
   readonly memory?: number;
   readonly stack?: number;
   readonly thrust?: number;
+  /** Legs: the highest terrain (rock height) they can walk onto. */
+  readonly climb?: number;
   readonly sensorRange?: number;
   /** Sensor tier: what a Detected block may configure (see sensor.ts). */
   readonly sensorTier?: number;
@@ -258,6 +294,8 @@ export interface PartTuning {
   /** Repair module: hit points restored per tick (while powered and in range). */
   readonly repairRate?: number;
   readonly use?: number;
+  /** Factory modules: the chassis size tier this module builds. */
+  readonly factoryTier?: number;
   /** Radar: the most energy one pulse may spend. */
   readonly radarMaxEnergy?: number;
   /** Radio and laser link: reach in tiles (`use` is the energy per message). */
@@ -272,6 +310,10 @@ export const PART_TUNING: Readonly<Record<string, PartTuning>> = {
   'chassis.long.light': { mass: 4, hp: 75, slots: 7, energy: 1100 },
   'chassis.long.medium': { mass: 9, hp: 190, slots: 11, energy: 2200 },
   'chassis.long.heavy': { mass: 19, hp: 420, slots: 16, energy: 4400 },
+  // The size ladder beyond light/medium/heavy (see the factory tier comment above).
+  'chassis.micro': { mass: 1, hp: 15, slots: 3, energy: 300 },
+  'chassis.superheavy': { mass: 20, hp: 480, slots: 14, energy: 4800 },
+  'chassis.colossus': { mass: 40, hp: 1000, slots: 20, energy: 9000 },
   // Building frames
   'frame.small': { mass: 10, hp: 300, slots: 8, energy: 200 },
   'frame.medium': { mass: 20, hp: 600, slots: 16, energy: 500 },
@@ -294,6 +336,12 @@ export const PART_TUNING: Readonly<Record<string, PartTuning>> = {
   'motor.large': { mass: 3, thrust: 160, use: 3 },
   rotor: { mass: 2, thrust: 70, use: 3 },
   'motor.turbo': { mass: 2, thrust: 150, use: 2 },
+  'motor.huge': { mass: 8, thrust: 450, use: 8 },
+  // Legs: `climb` is the highest rock they walk onto (open ground is 0, a wall's rim 1, cliffs 3 and up).
+  // Legs climb, but break easily: a broken pair leaves the unit stuck until a repair module mends them.
+  'legs.light': { mass: 2, thrust: 70, climb: 1, use: 2, integrity: 12 },
+  'legs.heavy': { mass: 5, thrust: 180, climb: 2, use: 4, integrity: 30 },
+  'legs.colossus': { mass: 14, thrust: 500, climb: 9, use: 10, integrity: 100 },
 
   'sensor.short': { mass: 1, sensorRange: 6, sensorTier: 1, use: 1 },
   'sensor.long': { mass: 2, sensorRange: 14, sensorTier: 2, use: 2 },
@@ -312,14 +360,27 @@ export const PART_TUNING: Readonly<Record<string, PartTuning>> = {
   'missile.huge': { mass: 16, weapon: missileLauncher(60, 26, 100, { speed: 0.3, turn: 2, flight: 110, hp: 80, blast: 3, hitChance: 1 }), use: 0 },
   'missile.large': { mass: 10, weapon: missileLauncher(30, 16, 60, { speed: 0.22, turn: 2.5, flight: 90, hp: 60, blast: 2.2, hitChance: 1 }), use: 0 },
 
+  // Heavy weapons for the big tiers: a slow siege cannon (buildings) and a rotary gun (crowds of small units).
+  'cannon.siege': { mass: 14, weapon: { range: 9, damage: 120, cooldown: 30, matter: 8 }, use: 0 },
+  'gun.rotary': { mass: 10, weapon: { range: 7, damage: 20, cooldown: 3 }, use: 1 },
+
   'armor.plate': { mass: 4, hp: 60 },
+  'armor.heavy': { mass: 12, hp: 300 },
 
   'cargo.bay': { mass: 1, cargo: 40, harvestRate: 4, use: 1 },
+  'cargo.hold': { mass: 4, cargo: 200, harvestRate: 12, use: 3 },
 
   'battery.cell': { mass: 2, energy: 500 },
+  'battery.large': { mass: 5, energy: 2000 },
   'battery.bank': { mass: 6, energy: 2500 },
 
-  'factory.basic': { mass: 5, use: 4 },
+  // One module per size tier; mass and use grow with the tier (a building needs a module for each tier it builds).
+  'factory.micro': { mass: 3, use: 2, factoryTier: 0 },
+  'factory.light': { mass: 5, use: 4, factoryTier: 1 },
+  'factory.medium': { mass: 8, use: 6, factoryTier: 2 },
+  'factory.heavy': { mass: 14, use: 9, factoryTier: 3 },
+  'factory.super': { mass: 24, use: 14, factoryTier: 4 },
+  'factory.colossal': { mass: 40, use: 20, factoryTier: 5 },
   silo: { mass: 3, storage: 1000 },
   'build.arm': { mass: 2, buildRate: 4, use: 2 },
   'build.crane': { mass: 4, buildRate: 6, use: 3 },

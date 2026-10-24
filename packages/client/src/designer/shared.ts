@@ -97,6 +97,8 @@ export interface DesignerModel {
   /** Derived stats of the design on show, or undefined if it is invalid (see `statsError`). */
   readonly stats: BlueprintStats | undefined;
   readonly statsError: string;
+  /** Memory slots the program on show occupies (variables, distinct numbers, locals). */
+  programMemory(): number;
   /** True while the design on show is the editable draft rather than an existing class. */
   readonly editable: boolean;
   /** Modules of the design on show. */
