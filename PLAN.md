@@ -654,3 +654,64 @@ Open:
 - **Dev styles in production CSS**: the `#dev-panel` rules ship in `style.css` (inert). Could move them to a dev-only stylesheet imported by the dev modules.
 - **Dead code from the sidebar change**: `UiActions.requestCpuProfile` (`ui.ts`, `main.ts`) and `cpuLines` (`cpuPanel.ts`) are no longer used by the play UI now the selection text is gone, though the server still answers `cpuProfile` and `state.cpuProfiles` is still filled. Either show the per-event CPU readout somewhere (the Dev Options panel is the cheapest home; the designer already shows it for test runs) or delete the lot.
 - **Dev Rooms could grow**: example rooms are client-only; a server-side "fake player" option (real rooms with bot-driven or scripted joiners) would test the waiting room, join and spectate paths, behind `devToolsEnabled()`.
+
+## Playtest phases P1 to P4 (decided 2026-10-26, after playtesting with other players)
+
+Findings: (1) the in-game UI is too complex and inconsistent; (2) units are almost impossible to tell apart; (3) multiplayer performs well, but weapons and armour need balancing, because mass-producing basic units is a viable strategy; (4) new players have no reason to use the designer. Each phase has a short "why" from the code as it stands on 2026-10-26, then the steps. Order: P1 first (most straightforward, no rules change), then P3 and P2 (independent of each other), then P4 (depends on the P3 damage model).
+
+### P1. Simpler in-game UI: one left pane, shown by mode (steps 1 and 3 mostly done 2026-10-26: modal Build/Orders/Selection sections, extras folded, meters moved to a top bar; see PROGRESS.md)
+
+Why: the sidebar (`index.html` `#panel`) holds status, resources, control groups, actions, selection details, production, a module list, docs links, design download/upload/reset and Resign, all at once. Building options live in a second place, the bar under the map (`#buildbar`), and stats in a third, the hover bar over the map.
+
+Direction (from a user suggestion and the project owner): modal display, with the minimum on screen when nothing needs choosing, and everything in a single pane on the left as far as possible.
+
+1. **One left pane, three zones**: a fixed top strip (matter, energy and unit count; time/power tiles; menu button), a middle that changes with the selection, and a thin bottom strip. Nothing else is permanently on screen.
+2. **Modes by selection** (no selection: resources and control groups only):
+   - Builder selected: the build categories and building buttons appear in the pane (the bar under the map goes away). Unselect and they vanish.
+   - Factory selected: production queue and unit buttons.
+   - Combat units selected: the command grid (move, stop, attack, hold fire, charge, custom actions) with hotkeys, and a compact health/energy summary.
+   - Other buildings: a compact stats block and any custom actions.
+3. **Fold away the rest**: the per-module list becomes a collapsed "Details" row; the design download/upload/reset buttons move into the Designer (and Options); Docs and Designer open from one menu button; Resign goes under that menu. The hover bar over the map is kept only if it still earns its place after step 2 (decide after a play-test).
+4. **Consistent components**: one panel/section style, one button size for commands, one tile style for icons. Record the conventions in `STYLE.md` (including how modes appear and disappear, with Reduce motion respected).
+5. Phone width and small windows: the pane may collapse to icons; keyboard shortcuts keep working in every mode.
+
+Done when: with nothing selected the screen is the map plus a slim pane; selecting a builder shows building options, selecting a unit shows its commands, and nothing from the old sidebar is lost that a player needs.
+
+**Power bug to decide (found 2026-10-26, see `engine/test/known-bugs.test.ts`):** transmission loss floors each generator's output a second time, so any link gap costs every small generator a whole unit of energy per tick (about half the output of two wind turbines one tile apart). Fixing it raises generation on every map with gapped links, so check the energy balance of starter bases and bots afterwards.
+
+### P2. Unit identification and silhouettes
+
+Why: `art.ts` builds a unit from its parts, but the hull outline depends only on the drive and the chassis tier; weapon, sensor and CPU are small marks inside a hull about 0.3 tile across, and team colour fills the whole hull. Scout, Hawk, Dart and Strider are all "light chassis plus light gun" and differ only by drive.
+
+1. **Role-led silhouettes**: the outline shows the job (combat, worker, scout, artillery, support) first and the drive second, so a glance tells a gunship from a harvester.
+2. **Team colour as a rim or stripe**, not a fill, so the body colour can carry the role/tier.
+3. **Steeper size ladder on screen**: tier 0 to 5 should differ clearly in size, not only in a few pixels.
+4. **Weapon read at a distance**: barrels and launchers long enough to see at normal zoom, one distinct shape per weapon kind.
+5. **Zoomed-out icons**: below a zoom threshold draw a simple class icon (and a tier pip) instead of the detailed hull.
+6. **Solar feedback on the map**: wind turbines spin at the speed of the wind, but solar arrays show nothing of the daylight. Give them a visible response (panel glint or brightness following `daylight`, dark at night).
+7. Selected-unit outline and health bar sizes follow the tier. Check it all with several teams and 100+ units on screen (60 fps goal in `AGENTS.md`; textures are cached per class, so keep it that way).
+
+### P3. Combat balance: counters and a reason to build bigger
+
+Why: damage is flat (`Simulation.damage`), armour only adds hit points, ground shots never miss, a design carries one weapon, and the light gun does the most damage per matter with no energy or ammo. Per 1000 matter, Scouts bring about twice the damage of Tanks for the same total hit points. The Lancer's laser spends 100 energy for 8 damage and empties its batteries in about 22 shots. The Big-unit balance note above is the same problem seen from the top end.
+
+1. **Armour reduces damage**: each hit loses a fixed amount (armour modules and some chassis add to it), with a minimum damage per hit, so many weak shots stop working against heavy units. Tune so a light gun does little to a heavy hull.
+2. **Damage profiles / counters**: rapid-fire (strong against light and micro, weak against armour), heavy single shots (strong against armour and buildings, wasteful against swarms), energy weapons (ignore some armour but cost power), area damage against groups. Express them as data in `PART_TUNING` plus a small armour-versus-profile table in `rules.ts`.
+3. **Cost of the light gun**: a small energy or matter upkeep per shot, so unlimited free fire stops being the default best value; re-balance Lancer and laser costs.
+4. **Make big units worth their price** (decision pending from the Big-unit balance note): raise hit points, damage and armour of super-heavy and colossus, or shorten their build time.
+5. **Balance harness**: a test that runs equal-cost armies against each other (swarm of light, mixed, heavy, each counter pair) and fails if one composition wins every matchup. Keep it deterministic and fast; do not weaken `perf.test.ts`.
+6. Update starter classes, the bot's wave composition (`bot.ts`), the manual and the player changelog. Changes to damage numbers are disruptive to saved designs: say so plainly in the changelog.
+
+### P4. A purpose for the designer
+
+Why: the game ships 34 ready-made designs, factories build them straight away, and the stock units are already the best value, so a new player never needs the designer. Dropping it would remove the game's idea (programmable units), so the plan is to make it part of play.
+
+Depends on P3 (without counters there is nothing to design against).
+
+1. **Small starting roster**: a match starts with about six combat designs (plus workers and buildings), the rest are available but not listed first; the designer is where the rest of the roster comes from.
+2. **Designs that answer the opponent**: with P3 in place, a design tuned against what the enemy fields (armour against rapid fire, range against slow heavies) should beat a stock one. Show the matchup in the designer: damage against each armour class, cost, and time to build.
+3. **Optional tech path**: modules (heavy armour, big weapons, large CPUs) unlock by building the matching structure during the match, so choosing what to research and design is part of the game rather than an extra screen. Decide with the project owner whether to do this or keep everything available.
+4. **First-time guidance**: a short guided design (a gun on a chassis, then a one-line behaviour) in the campaign or Skirmish, and a clearer "why design" blurb in the Designer and Manual.
+5. **Fallback if the designer stays optional**: keep it as the advanced mode and make stock units a deliberate, balanced traditional-RTS roster.
+
+Open decisions for the project owner: keep or drop the designer (P4); which damage model (P3 step 2); whether to unlock modules by tech (P4 step 3).

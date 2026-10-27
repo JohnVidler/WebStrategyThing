@@ -41,7 +41,7 @@ Naming: `group.event`. Falling back to a parent tag is automatic (see below), so
 | `ui.type` | Key typed in a text field (optional) | ui |
 | `ui.slider` | Volume or similar slider tick | ui |
 | `menu.enter` | Main menu shown (first load or return from a match) | ui |
-| `menu.click` | Any main-menu item that opens a section or overlay (Single-player, Multiplayer, Credits, API reference, Designer, and the Designer / Docs buttons in game) | ui |
+| `menu.click` | Any main-menu item that opens a section or overlay (Skirmish, Multiplayer, Credits, API reference, Designer, and the Designer / Docs buttons in game) | ui |
 | `menu.back` | Browser/on-screen Back | ui |
 | `music.mute` / `music.unmute` | Music toggle | ui |
 
@@ -190,7 +190,7 @@ Background music stays with the existing `music.ts` track list and is not part o
 - **Low overhead:** all resolution happens once, when the manifest loads. Each tag is flattened into a plain array of ready sounds (own sounds + references + parent-tag fallback, de-duplicated) and stored in a `Map<string, Sound[]>` (or an object keyed by tag id). Triggering is one lookup, one `Math.random()` index and one play call, with no string splitting or manifest walking at event time. Tags with no sound at all resolve to an empty array, so an unused event costs a single failed lookup. Audio files are decoded once into `AudioBuffer`s (Web Audio) on first use or idle preload and reused, so repeated plays don't make new elements.
 - **Random pick:** uniform over the flattened array. When it has more than one entry, skip the one played last for that tag.
 - **Fallback chain:** `combat.shot.laser` -> `combat.shot`; `ui.confirm` -> `ui` (flattened at load by trimming trailing `.segments`). Cross-group fallbacks such as `ui.cancel` -> `ui.click` are expressed with a reference entry instead.
-- **Entry fields worth supporting:** `volume` (0..1), `pitchVariance` (e.g. 0.05), `cooldownMs` (per tag, stops machine-gun spam), `maxVoices` (per tag), `loop` (for `*_loop` tags), `positional` (default true for sections 4; false for UI/alerts).
+- **Entry fields worth supporting:** `volume` (0..1, or `{ "min": 0.6, "max": 0.9 }` to draw a random level on each play), `pitchVariance` (e.g. 0.05: playback speed and pitch vary up to that much either way on each play), `cooldownMs` (per tag, stops machine-gun spam), `maxVoices` (per tag), `loop` (for `*_loop` tags), `positional` (default true for sections 4; false for UI/alerts).
 - **Sim events:** none were added. The "new" rows are worked out client-side from component changes (hit points down = hit, a new unit or construction site = spawn / start, a site marker removed = complete); only the movement and charging loops would need the server to say more.
 - **Browser audio:** nothing can play before the first user gesture (`music.ts` already handles this); the sound player has its own gate, follows the music mute button and has a separate effects volume.
 - **Existing sound:** `UI Authorised` fits `ui.confirm` / `match.start`.

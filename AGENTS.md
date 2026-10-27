@@ -65,4 +65,5 @@ One or two sentence summary of the day.
 
 
 
+
 Note from A1 (2026-10-24, released): S2-S4 and M6 are done. `path.ts`, `planPath` and `Terrain` (now with `Mobility`, `fits`, `nearestFit`) are free, so review items 4-5 in `PLAN.md` can be claimed; keep `findPath(..., m)` respecting mobility and the squeeze-out rule (tests in `engine/test/tiers.test.ts`).
