@@ -20,7 +20,7 @@ export function showNews(host: NewsHost): void {
 
   const list = (first: boolean) => {
     const cards = CHANGELOG.map(
-      (e, i) => `<button data-i="${i}" data-sound="menu.click"><small>${esc(e.date)}</small><b>${esc(headline(e))}</b>${e.summary ? `<small class="news-summary">${esc(e.summary)}</small>` : ''}</button>`,
+      (e, i) => `<button data-i="${i}" data-sound="menu.click"><small class="news-date">${esc(e.date)}</small><b>${esc(headline(e))}</b>${e.summary ? `<small class="news-summary">${esc(e.summary.split('\n\n')[0])}</small>` : ''}</button>`,
     ).join('');
     const draw = () => {
       view.innerHTML = `${head('← Main menu', 'News and Updates')}<section class="news-panel"><nav class="menu-buttons news-list" aria-label="Articles">${cards || '<p class="muted">Nothing to report yet.</p>'}</nav></section>`;
@@ -37,8 +37,8 @@ export function showNews(host: NewsHost): void {
       view,
       () => {
         view.innerHTML = `${head('← News', headline(e))}<section class="news-panel"><article class="news-article">
-          <p class="muted">${esc(e.date)}</p>
-          ${e.summary ? `<p class="news-lead">${esc(e.summary)}</p>` : ''}
+          <small class="news-date">${esc(e.date)}</small>
+          ${e.summary.split('\n\n').filter(Boolean).map((p) => `<p>${esc(p)}</p>`).join('')}
           <h3>What changed</h3><ul>${e.changes.map((c) => `<li>${esc(c)}</li>`).join('')}</ul></article></section>`;
         view.querySelector<HTMLButtonElement>('#news-back')!.onclick = () => list(false);
       },

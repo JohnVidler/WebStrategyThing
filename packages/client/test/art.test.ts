@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { aims, gaitLength, hullOutline, legCount, lookOf, turretAnchor, windAnchor } from '../src/art';
+import { aims, drawWall, gaitLength, hullOutline, isWall, legCount, lookOf, turretAnchor, turretAnchors, windAnchor } from '../src/art';
 
 describe('class art', () => {
   it('reads a design as roles and features', () => {
@@ -22,6 +22,31 @@ describe('class art', () => {
     const farm = lookOf(['frame.medium', 'solar.panel', 'solar.panel', 'antenna.medium']);
     expect(farm).toMatchObject({ structure: true, size: 2, role: 'power', solar: 2, antenna: 'medium' });
     expect(lookOf(['frame.large', 'factory.basic', 'cpu.basic']).role).toBe('industry');
+  });
+
+  it('treats a building that is only armour as a wall', () => {
+    expect(isWall(lookOf(['frame.small', 'armor.plate']))).toBe(true);
+    expect(isWall(lookOf(['frame.medium', 'armor.plate', 'armor.plate']))).toBe(true);
+    expect(isWall(lookOf(['frame.small']))).toBe(false); // bare frame: no armour
+    expect(isWall(lookOf(['frame.small', 'armor.plate', 'cpu.basic']))).toBe(false); // armour does not outnumber the rest
+    expect(isWall(lookOf(['frame.medium', 'armor.plate', 'armor.plate', 'cpu.basic']))).toBe(true); // more armour than other modules
+    expect(isWall(lookOf(['frame.l', 'armor.plate']))).toBe(false); // shaped frames keep their own look
+    expect(isWall(lookOf(['chassis.light', 'armor.plate']))).toBe(false); // units are never walls
+  });
+
+  it('draws a wall for every combination of joined sides and diagonals, inside its footprint plus the padding', () => {
+    for (const parts of [['frame.small', 'armor.plate'], ['frame.medium', 'armor.plate']]) {
+      const look = lookOf(parts);
+      const half = (look.size * 64) / 2 + 16; // diagonal arms overhang the footprint by a few pixels
+      const calls: number[][] = [];
+      const g: Record<string, unknown> = {};
+      for (const m of ['rect', 'circle', 'poly', 'fill', 'stroke']) g[m] = (...a: unknown[]) => (m === 'poly' ? calls.push(a[0] as number[]) : m === 'rect' ? calls.push([a[0] as number, a[1] as number]) : undefined, g);
+      for (let mask = 0; mask < 256; mask++) {
+        calls.length = 0;
+        drawWall(g as never, look, 0x3366ff, 64, mask);
+        for (const pts of calls) for (const v of pts) expect(Math.abs(v)).toBeLessThanOrEqual(half + 1e-6);
+      }
+    }
   });
 
   it('gives every motor and chassis tier its own silhouette', () => {
@@ -98,6 +123,22 @@ describe('class art', () => {
     expect(Math.abs(a.x)).toBeLessThanOrEqual(32);
     expect(turretAnchor(lookOf(['frame.medium', 'cpu.basic', 'battery.bank']), 32)).toBeNull();
   });
+  it('gives a building one turret for each weapon it carries', () => {
+    expect(turretAnchors(lookOf(['frame.medium', 'cpu.basic', 'gun.light']), 32)).toHaveLength(1);
+    const twin = turretAnchors(lookOf(['frame.medium', 'cpu.basic', 'gun.light', 'gun.light']), 32);
+    expect(twin).toHaveLength(2);
+    expect(twin[0]).not.toEqual(twin[1]);
+    // A one-tile laser tower with a sensor and a battery still gets a big turret in the middle (one-tile buildings are drawn at about half a tile).
+    const laser = turretAnchors(lookOf(['frame.small', 'cpu.basic', 'sensor.long', 'laser.beam', 'battery.bank']), 32);
+    expect(laser).toHaveLength(1);
+    expect(laser[0]).toMatchObject({ x: 0, y: 0 });
+    expect(laser[0].r).toBeGreaterThan(5);
+    expect(laser[0].r).toBeLessThanOrEqual(8); // inside the half-tile plinth
+    // Never wider than its cell, and none for a coil that does not aim or a building with no weapon.
+    for (const t of twin) expect(t.r).toBeLessThanOrEqual(16);
+    expect(turretAnchors(lookOf(['frame.medium', 'cpu.basic', 'tesla.coil']), 32)).toHaveLength(0);
+    expect(turretAnchors(lookOf(['frame.medium', 'cpu.basic', 'battery.bank']), 32)).toHaveLength(0);
+  });
 
   it('records the weapon mass, so heavy guns can get big housings', () => {
     const light = lookOf(['chassis.heavy', 'cpu.basic', 'gun.light']);
@@ -116,5 +157,16 @@ describe('class art', () => {
     expect(windAnchor(lookOf(['chassis.medium', 'cpu.basic', 'motor.small']), 32)).toBeNull();
     // Shaped buildings place it in a covered cell too.
     expect(windAnchor(lookOf(['frame.plus', 'wind.turbine']), 32)).not.toBeNull();
+  });
+
+  it('sizes wind blades so those of buildings side by side never touch', () => {
+    const lone = windAnchor(lookOf(['frame.small', 'wind.turbine', 'wind.turbine']), 32)!;
+    expect(lone.radius).toBeGreaterThan(11); // bigger than the old 10.3
+    expect(lone.radius * 2).toBeLessThan(32); // two one-tile turbines a tile apart
+    for (const frame of ['frame.medium', 'frame.large', 'frame.l', 'frame.u']) {
+      const a = windAnchor(lookOf([frame, 'cpu.basic', 'wind.turbine', 'battery.bank', 'solar.panel']), 32)!;
+      const half = frame === 'frame.medium' ? 32 : frame === 'frame.large' ? 48 : 16;
+      expect(a.radius, frame).toBeLessThan(half - (frame === 'frame.medium' || frame === 'frame.large' ? Math.max(Math.abs(a.x), Math.abs(a.y)) : 0));
+    }
   });
 });

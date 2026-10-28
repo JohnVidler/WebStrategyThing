@@ -13,9 +13,15 @@ const STEEL = 0x8b95a5;
 const ENERGY = 0xf5c542;
 const MATTER = 0x7ee0b5;
 const SOLAR = 0x2b5fa8;
+const SOLAR_SEAM = 0x0f2347;
 const LASER = 0x5ee6ff;
 const TESLA = 0xa98bff;
 const WARN = 0xff8a5c;
+/** Gun metal: pale, and outlined dark, so barrels stand out from any hull colour. */
+const GUN = 0xe6ecf5;
+/** Hazard stripes: yellow marks a unit that builds, red one that repairs. */
+const BUILD_STRIPE = ENERGY;
+const REPAIR_STRIPE = 0xff5d73;
 
 /** What a design is made of, reduced to the things the art cares about. */
 export interface Look {
@@ -37,9 +43,14 @@ export interface Look {
   readonly weapon: 'none' | 'gun' | 'cannon' | 'laser' | 'tesla' | 'missile' | 'flak';
   /** Mass of the weapon module: heavier guns get bigger turret housings. */
   readonly weaponMass: number;
+  /** How many weapon modules: a building shows one turret for each it has room for. */
+  readonly weapons: number;
   readonly armour: number;
+  /** Every module fitted, armour included (the frame or chassis is not counted). */
+  readonly modules: number;
   readonly cargo: number;
   readonly builders: number;
+  readonly repairers: number;
   readonly sensor: 'none' | 'short' | 'long';
   readonly batteries: number;
   readonly cpu: 'none' | 'basic' | 'fast' | 'quantum';
@@ -92,9 +103,12 @@ export function lookOf(parts: readonly string[]): Look {
     legs,
     weapon,
     weaponMass: weaponDef?.mass ?? 0,
+    weapons: mods.filter((d) => d.weapon).length,
     armour: count('armor'),
+    modules: mods.length,
     cargo: count('cargo'),
     builders: count('builder'),
+    repairers: count('repair'),
     sensor,
     batteries: count('battery'),
     cpu,
@@ -234,9 +248,9 @@ type Profile = readonly (readonly [y: number, w: number])[];
 const DRIVE_PROFILE: Record<Look['motor'], Profile> = {
   // Immobile pod: an eight-sided cell.
   none: [[-1, 0.45], [-0.7, 0.8], [-0.3, 1], [0.3, 1], [0.7, 0.8], [1, 0.45]],
-  // Wheels: a sleek wedge, pointed at the front.
+  // Wheels (small and turbo motors): a sleek wedge, pointed at the front.
   small: [[-1.05, 0.05], [-0.8, 0.4], [-0.3, 0.85], [0.4, 0.9], [0.8, 0.75], [0.95, 0.5]],
-  // Big wheels or tracks: a blunt, boxy body.
+  // Large motor, on tracks: a blunt, boxy body.
   large: [[-0.95, 0.4], [-0.55, 0.95], [0.95, 0.95]],
   // Huge tracks: a blunt full-width dozer front, tapering to the stern.
   huge: [[-0.9, 1], [0.1, 1], [0.95, 0.6]],
@@ -355,13 +369,26 @@ function drawUnit(g: Graphics, l: Look, colour: number, tex: number, gait?: numb
 
   // Drive, underneath the hull.
   if (l.motor === 'legs') drawLegs(g, l, r, len, colour, gait);
-  if (l.motor === 'small' || l.motor === 'large' || l.motor === 'huge') {
-    const heavy = l.motor !== 'small';
-    const w = l.motor === 'huge' ? r * 0.5 : heavy ? r * 0.42 : r * 0.26;
-    const h = r * (heavy ? 1.7 : 1.4) * len;
+  if (l.motor === 'small') {
+    // Wheels: separate stubby tyres on axles, two a side (three on a long chassis), so they read apart from tracks.
+    const n = l.long ? 3 : 2;
+    const wl = r * 0.5, ww = r * 0.3;
+    for (let i = 0; i < n; i++) {
+      const y = ((i / (n - 1)) * 2 - 1) * r * 0.62 * len;
+      g.moveTo(-r * 0.95, y).lineTo(r * 0.95, y).stroke({ width: 1.5, color: STEEL });
+      for (const sx of [-1, 1]) {
+        g.roundRect(sx * r * 0.95 - ww / 2, y - wl / 2, ww, wl, ww * 0.45).fill(DARK).stroke({ width: 1, color: STEEL });
+        g.moveTo(sx * r * 0.95 - ww * 0.25, y - wl * 0.2).lineTo(sx * r * 0.95 + ww * 0.25, y - wl * 0.2)
+          .moveTo(sx * r * 0.95 - ww * 0.25, y + wl * 0.2).lineTo(sx * r * 0.95 + ww * 0.25, y + wl * 0.2).stroke({ width: 1, color: STEEL, alpha: 0.7 });
+      }
+    }
+  }
+  if (l.motor === 'large' || l.motor === 'huge') {
+    const w = l.motor === 'huge' ? r * 0.5 : r * 0.42;
+    const h = r * 1.7 * len;
     for (const sx of [-1, 1]) {
       g.roundRect(sx * r * 0.95 - w / 2, -h / 2, w, h, 2).fill(DARK).stroke({ width: 1, color: STEEL });
-      if (heavy) for (let i = -2; i <= 2; i++) g.moveTo(sx * r * 0.95 - w / 2, i * h * 0.17).lineTo(sx * r * 0.95 + w / 2, i * h * 0.17).stroke({ width: 1, color: STEEL, alpha: 0.7 });
+      for (let i = -2; i <= 2; i++) g.moveTo(sx * r * 0.95 - w / 2, i * h * 0.17).lineTo(sx * r * 0.95 + w / 2, i * h * 0.17).stroke({ width: 1, color: STEEL, alpha: 0.7 });
     }
   }
   if (l.motor === 'rotor') {
@@ -408,6 +435,9 @@ function drawUnit(g: Graphics, l: Look, colour: number, tex: number, gait?: numb
     g.circle(r * 1.15, -r * 0.4, 2.2).fill(0xffffff);
   }
 
+  // Hazard stripes round the whole outer chassis: yellow for builders, red for repairers (alternating if both).
+  hazardRim(g, hullOutline(l).map((v, i) => (i % 2 ? v * len : v) * r), l, Math.max(3, Math.min(7, r * 0.2)));
+
   // Sensors: a nub, or a dish on a mast.
   if (l.sensor === 'short') g.circle(-r * 0.55, -r * 0.55, 2.5).fill(0xffffff);
   if (l.sensor === 'long') {
@@ -420,6 +450,52 @@ function drawUnit(g: Graphics, l: Look, colour: number, tex: number, gait?: numb
   if (!(separate && aims(l))) weaponTurret(g, l.weapon, r, l.weaponMass, l.long ? -r * (LONG - 1) * 0.55 : 0);
 }
 
+/**
+ * A striped band along a closed outline (flat x,y list): dashes of the build colour and/or the repair
+ * colour, each followed by a dark gap, so a worker's whole edge reads as hazard tape.
+ */
+function hazardRim(g: Graphics, pts: readonly number[], l: Pick<Look, 'builders' | 'repairers'>, width: number): void {
+  const colours: number[] = [];
+  if (l.builders > 0) colours.push(BUILD_STRIPE);
+  if (l.repairers > 0) colours.push(REPAIR_STRIPE);
+  if (colours.length === 0 || pts.length < 6) return;
+  const n = pts.length / 2;
+  const dash = width * 1.3;
+  const cycle = colours.length * 2; // colour, dark, [colour, dark]
+  // Dark underlay, then each colour's dashes over it.
+  g.poly(pts as number[]).stroke({ width, color: DARK });
+  colours.forEach((colour, k) => {
+    let walked = 0; // distance round the outline so far
+    for (let i = 0; i < n; i++) {
+      const x0 = pts[i * 2], y0 = pts[i * 2 + 1], x1 = pts[((i + 1) % n) * 2], y1 = pts[((i + 1) % n) * 2 + 1];
+      const len = Math.hypot(x1 - x0, y1 - y0);
+      if (len > 0) {
+        const ux = (x1 - x0) / len, uy = (y1 - y0) / len;
+        let p = 0;
+        while (p < len) {
+          const slot = Math.floor((walked + p) / dash);
+          const end = Math.min(len, Math.max(p + 1e-3, (slot + 1) * dash - walked));
+          if (slot % cycle === 2 * k) g.moveTo(x0 + ux * p, y0 + uy * p).lineTo(x0 + ux * end, y0 + uy * end);
+          p = end;
+        }
+      }
+      walked += len;
+    }
+    g.stroke({ width, color: colour });
+  });
+}
+
+/** A dark plate with slanted stripes of `colour`, clipped to the box (x, y, w, h). */
+function stripes(g: Graphics, x: number, y: number, w: number, h: number, colour: number): void {
+  g.rect(x, y, w, h).fill(DARK);
+  const pitch = Math.max(3, h * 1.1), bar = pitch / 2;
+  const clip = (v: number) => Math.max(x, Math.min(x + w, v));
+  for (let sx = x - h; sx < x + w; sx += pitch) {
+    g.poly([clip(sx + h), y, clip(sx + h + bar), y, clip(sx + bar), y + h, clip(sx), y + h]).fill(colour);
+  }
+  g.rect(x, y, w, h).stroke({ width: 1, color: DARK });
+}
+
 /** A weapon on a vehicle: its muzzle points up, the way units face. */
 function weaponTurret(g: Graphics, kind: Look['weapon'], r: number, mass: number, dy = 0): void {
   if (kind === 'none') return;
@@ -430,7 +506,8 @@ function weaponTurret(g: Graphics, kind: Look['weapon'], r: number, mass: number
 
 /** A turret ring: a dark housing with a bright rim; big ones get an inner ring and rivets, so they read as armoured mounts. */
 function housing(g: Graphics, hr: number, accent: number): void {
-  g.circle(0, 0, hr).fill(DARK).stroke({ width: 1.5, color: accent });
+  g.circle(0, 0, hr + 1).stroke({ width: 3, color: DARK, alpha: 0.9 }); // halo against the hull
+  g.circle(0, 0, hr).fill(DARK).stroke({ width: 2, color: accent });
   if (hr < 7) return;
   g.circle(0, 0, hr * 0.7).stroke({ width: 1, color: STEEL, alpha: 0.55 });
   const n = hr >= 12 ? 8 : 6;
@@ -443,30 +520,33 @@ function housing(g: Graphics, hr: number, accent: number): void {
 /** Housing radius for a weapon of `mass` on a hull of radius r: a light gun has none to speak of, a siege gun nearly fills the hull. */
 const housingRadius = (r: number, mass: number, base: number): number => Math.min(r * 0.85, r * (base + 0.022 * mass));
 
+/** Barrels are drawn this many times longer than the turret's radius alone would give, so they read at a glance. */
+const BARREL = 1.5;
+
 function drawTurret(g: Graphics, kind: Look['weapon'], r: number, mass = 0): void {
   switch (kind) {
     case 'gun':
       if (mass >= 8) {
         // Rotary gun: a cluster of barrels in a big round mount.
         const hr = housingRadius(r, mass, 0.3);
-        housing(g, hr, STEEL);
+        housing(g, hr, GUN);
         for (const x of [-0.5, 0, 0.5]) {
-          g.rect(x * hr - 1.4, -r * 1.2, 2.8, r * 1.2 - hr * 0.2).fill(STEEL).stroke({ width: 0.8, color: DARK });
+          g.rect(x * hr - 1.8, -r * 1.2 * BARREL, 3.6, r * 1.2 * BARREL - hr * 0.2).fill(GUN).stroke({ width: 1.2, color: DARK });
         }
-        g.rect(-hr * 0.8, -r * 1.2, hr * 1.6, Math.max(2, r * 0.1)).fill(WARN);
+        g.rect(-hr * 0.8, -r * 1.2 * BARREL, hr * 1.6, Math.max(2, r * 0.1)).fill(WARN);
       } else {
-        g.circle(0, 0, r * 0.3).fill(DARK);
-        g.rect(-1.5, -r * 1.05, 3, r * 1.05).fill(STEEL);
+        g.circle(0, 0, r * 0.3).fill(DARK).stroke({ width: 1.5, color: GUN });
+        g.rect(-2, -r * 1.05 * BARREL, 4, r * 1.05 * BARREL).fill(GUN).stroke({ width: 1.2, color: DARK });
       }
       break;
     case 'cannon': {
       // A squat armoured mantlet with a counterweight behind it, and a muzzle brake.
       const hr = housingRadius(r, mass, 0.36);
       const w = r * (0.16 + 0.006 * mass);
-      const len = r * (mass >= 10 ? 1.3 : 1.2);
+      const len = r * (mass >= 10 ? 1.3 : 1.2) * BARREL;
       g.roundRect(-hr * 0.65, hr * 0.2, hr * 1.3, hr * 0.85, 2).fill(DARK).stroke({ width: 1, color: WARN });
       housing(g, hr, WARN);
-      g.rect(-w, -len, w * 2, len).fill(STEEL).stroke({ width: 1, color: DARK });
+      g.rect(-w, -len, w * 2, len).fill(GUN).stroke({ width: 1.5, color: DARK });
       g.rect(-w * 1.5, -len, w * 3, r * 0.2).fill(WARN);
       if (mass >= 10) g.rect(-w * 1.5, -len + r * 0.32, w * 3, r * 0.12).fill(WARN);
       break;
@@ -478,28 +558,31 @@ function drawTurret(g: Graphics, kind: Look['weapon'], r: number, mass = 0): voi
       g.rect(-hw, -r * 0.35, hw * 2, r * 0.9).fill(DARK).stroke({ width: 1.5, color: WARN });
       if (mass >= 6) g.circle(0, r * 0.1, Math.min(r * 0.45, hw * 0.55)).fill(DARK).stroke({ width: 1, color: STEEL, alpha: 0.7 });
       for (const x of tubes) {
-        g.rect(x * r - r * 0.12, -r * 0.95, r * 0.24, r * 0.9).fill(0xdfe5ee);
+        g.rect(x * r - r * 0.12, -r * 0.95, r * 0.24, r * 0.9).fill(GUN).stroke({ width: 1, color: DARK });
         g.poly([x * r - r * 0.12, -r * 0.95, x * r + r * 0.12, -r * 0.95, x * r, -r * 1.25]).fill(WARN);
       }
       break;
     }
     case 'flak': {
       // Twin short barrels splayed upward on a round mount.
-      housing(g, housingRadius(r, mass, 0.3), STEEL);
+      housing(g, housingRadius(r, mass, 0.3), GUN);
       for (const a of [-0.28, 0.28]) {
-        g.moveTo(Math.sin(a) * r * 0.2, -Math.cos(a) * r * 0.2).lineTo(Math.sin(a) * r * 1.15, -Math.cos(a) * r * 1.15).stroke({ width: 3, color: STEEL });
+        const x0 = Math.sin(a) * r * 0.2, y0 = -Math.cos(a) * r * 0.2, x1 = Math.sin(a) * r * 1.15 * BARREL, y1 = -Math.cos(a) * r * 1.15 * BARREL;
+        g.moveTo(x0, y0).lineTo(x1, y1).stroke({ width: 5.5, color: DARK });
+        g.moveTo(x0, y0).lineTo(x1, y1).stroke({ width: 3, color: GUN });
       }
       break;
     }
     case 'laser':
       housing(g, housingRadius(r, mass, 0.26), LASER);
-      g.poly([0, -r * 1.2, r * 0.18, -r * 0.3, -r * 0.18, -r * 0.3]).fill(LASER);
+      g.poly([0, -r * 1.2 * BARREL, r * 0.18, -r * 0.3, -r * 0.18, -r * 0.3]).fill(LASER).stroke({ width: 1.5, color: DARK });
       break;
     case 'tesla': {
       g.circle(0, 0, r * 0.3).fill(DARK).stroke({ width: 1.5, color: TESLA });
       for (const a of [-0.7, 0, 0.7]) {
         const x = Math.sin(a) * r * 0.9, y = -Math.cos(a) * r * 0.9;
-        g.moveTo(Math.sin(a) * r * 0.3, -Math.cos(a) * r * 0.3).lineTo(x, y).stroke({ width: 1.5, color: TESLA });
+        g.moveTo(Math.sin(a) * r * 0.3, -Math.cos(a) * r * 0.3).lineTo(x, y).stroke({ width: 4, color: DARK });
+        g.moveTo(Math.sin(a) * r * 0.3, -Math.cos(a) * r * 0.3).lineTo(x, y).stroke({ width: 2, color: TESLA });
         g.circle(x, y, 2).fill(0xffffff);
       }
       break;
@@ -532,52 +615,83 @@ function plate(g: Graphics, role: Look['role'], h: number, colour: number): void
   }
 }
 
+/** The most turrets a building shows: a 1×1 has four cells, and the rest of its modules still need room. */
+const MAX_TURRETS = 4;
+
+/** One photovoltaic panel: a pale aluminium frame round a grid of blue cells separated by dark seams, with a glint across the glass. */
+function drawSolarPanel(g: Graphics, x: number, y: number, w: number, h: number): void {
+  const edge = Math.max(0.6, w * 0.07);
+  const ix = x + edge, iy = y + edge, iw = w - edge * 2, ih = h - edge * 2;
+  g.rect(x, y, w, h).fill(0xaab6c6).stroke({ width: 0.6, color: 0x5d6b7e });
+  g.rect(ix, iy, iw, ih).fill(SOLAR_SEAM);
+  const n = 3, seam = Math.max(0.35, w * 0.035);
+  const cw = (iw - seam * (n + 1)) / n, ch = (ih - seam * (n + 1)) / n;
+  for (let r = 0; r < n; r++) {
+    for (let c = 0; c < n; c++) {
+      const cx = ix + seam + c * (cw + seam), cy = iy + seam + r * (ch + seam);
+      g.rect(cx, cy, cw, ch).fill(SOLAR);
+      g.rect(cx, cy, cw, Math.max(0.3, ch * 0.22)).fill({ color: 0x8fb8ff, alpha: 0.35 }); // light catching the top of each cell
+    }
+  }
+  g.poly([ix, iy + ih * 0.5, ix + iw * 0.5, iy, ix + iw * 0.75, iy, ix, iy + ih * 0.8]).fill({ color: 0xffffff, alpha: 0.13 });
+}
+
 type Glyph = (g: Graphics, cx: number, cy: number, s: number) => void;
-type GlyphKind = 'weapon' | 'factory' | 'builder' | 'solar' | 'wind' | 'charger' | 'silo' | 'battery' | 'antenna' | 'sensor' | 'cpu';
+type GlyphKind = 'weapon' | 'factory' | 'builder' | 'repair' | 'solar' | 'wind' | 'charger' | 'silo' | 'battery' | 'antenna' | 'sensor' | 'cpu';
 type KindGlyph = Glyph & { kind: GlyphKind };
 
 /** Small module symbols that fill a building's cells. Highest priority first. */
 function glyphs(l: Look): KindGlyph[] {
   const out: KindGlyph[] = [];
   const add = (kind: GlyphKind, draw: Glyph) => out.push(Object.assign(draw, { kind }));
+  // The same turret art as a vehicle's, one for each weapon module (as many as there are cells for).
   if (l.weapon !== 'none') {
-    add('weapon', (g, cx, cy, s) => {
-      const hr = s * Math.min(0.95, 0.55 + 0.025 * l.weaponMass); // heavy guns sit in bigger housings
-      g.circle(cx, cy, hr).fill(DARK).stroke({ width: 1.5, color: l.weapon === 'laser' ? LASER : l.weapon === 'tesla' ? TESLA : l.weapon === 'cannon' || l.weapon === 'missile' ? WARN : STEEL });
-      if (l.weaponMass >= 3) g.circle(cx, cy, hr * 0.72).stroke({ width: 1, color: STEEL, alpha: 0.55 });
-      if (l.weapon === 'missile') {
-        for (const x of [-s * 0.25, s * 0.25]) {
-          g.rect(cx + x - s * 0.1, cy - s * 0.85, s * 0.2, s * 0.8).fill(0xdfe5ee);
-          g.poly([cx + x - s * 0.1, cy - s * 0.85, cx + x + s * 0.1, cy - s * 0.85, cx + x, cy - s * 1.1]).fill(WARN);
-        }
-      } else if (l.weapon === 'tesla') {
-        for (const a of [0, 2.1, 4.2]) g.moveTo(cx, cy).lineTo(cx + Math.sin(a) * s, cy - Math.cos(a) * s).stroke({ width: 1.5, color: TESLA });
-      } else {
-        const len = l.weapon === 'cannon' ? s * 1.1 : s * 0.9;
-        const w = l.weapon === 'cannon' ? s * 0.4 : l.weapon === 'laser' ? s * 0.16 : s * 0.22;
-        g.rect(cx - w / 2, cy - len, w, len).fill(l.weapon === 'laser' ? LASER : STEEL);
-      }
-    });
+    for (let i = 0; i < Math.min(l.weapons, MAX_TURRETS); i++) {
+      add('weapon', (g, cx, cy, s) => {
+        g.translateTransform(cx, cy);
+        drawTurret(g, l.weapon, s, l.weaponMass);
+        g.resetTransform();
+      });
+    }
   }
+  // The bulky modules (factory, battery, solar, silo, charger) are drawn at the size of their whole cell: see BIG.
   if (l.factories > 0) {
     add('factory', (g, cx, cy, s) => {
-      g.rect(cx - s * 0.8, cy - s * 0.4, s * 1.6, s * 1.1).fill(DARK).stroke({ width: 1, color: STEEL });
-      g.rect(cx - s * 0.5, cy - s * 0.95, s * 0.35, s * 0.55).fill(STEEL);
-      g.rect(cx + s * 0.05, cy - s * 0.1, s * 0.5, s * 0.4).fill(ENERGY);
+      // A workshop: roof with two exhaust stacks, and a roller door on the south face where units drive out.
+      g.rect(cx - s, cy - s, s * 2, s * 2).fill(DARK).stroke({ width: 1.5, color: STEEL });
+      g.rect(cx - s * 0.9, cy - s * 0.9, s * 1.8, s * 0.8).fill({ color: STEEL, alpha: 0.3 });
+      for (const sx of [-0.6, 0.6]) {
+        g.circle(cx + sx * s, cy - s * 0.55, s * 0.22).fill(DARK).stroke({ width: 1.5, color: STEEL });
+        g.circle(cx + sx * s, cy - s * 0.55, s * 0.1).fill(0x3a2a20);
+      }
+      const door = factoryDoor(cx, cy, s);
+      g.rect(door.x - door.w / 2, door.y - door.h, door.w, door.h).fill(0x1b2029).stroke({ width: 1, color: STEEL });
+      for (let i = 1; i < 4; i++) g.moveTo(door.x - door.w / 2, door.y - (door.h * i) / 4).lineTo(door.x + door.w / 2, door.y - (door.h * i) / 4).stroke({ width: 1, color: STEEL, alpha: 0.7 });
+      stripes(g, door.x - door.w / 2 - s * 0.05, door.y - door.h - s * 0.14, door.w + s * 0.1, s * 0.14, ENERGY);
     });
   }
   if (l.builders > 0) {
     add('builder', (g, cx, cy, s) => {
       g.moveTo(cx - s * 0.7, cy + s * 0.7).lineTo(cx - s * 0.1, cy - s * 0.6).lineTo(cx + s * 0.7, cy - s * 0.6).stroke({ width: 2.2, color: ENERGY });
       g.circle(cx + s * 0.7, cy - s * 0.6, 2).fill(0xffffff);
+      stripes(g, cx - s * 0.9, cy + s * 0.55, s * 1.8, s * 0.4, BUILD_STRIPE);
+    });
+  }
+  if (l.repairers > 0) {
+    add('repair', (g, cx, cy, s) => {
+      g.rect(cx - s * 0.2, cy - s * 0.8, s * 0.4, s * 1.2).fill(REPAIR_STRIPE);
+      g.rect(cx - s * 0.6, cy - s * 0.4, s * 1.2, s * 0.4).fill(REPAIR_STRIPE);
+      stripes(g, cx - s * 0.9, cy + s * 0.55, s * 1.8, s * 0.4, REPAIR_STRIPE);
     });
   }
   if (l.solar > 0) {
     add('solar', (g, cx, cy, s) => {
+      // Panel array: up to a 2×2 of cells, filling the tile.
       const n = Math.min(4, l.solar);
       for (let i = 0; i < n; i++) {
-        const x = cx + (i % 2 ? 0.05 : -0.95) * s, y = cy + (i < 2 ? -0.95 : 0.05) * s;
-        g.rect(x, y, s * 0.9, s * 0.9).fill(SOLAR).stroke({ width: 1, color: 0x8fb8ff, alpha: 0.8 });
+        const x = cx + (i % 2 ? 0.05 : -0.97) * s, y = cy + (i < 2 ? -0.97 : 0.05) * s;
+        g.rect(x, y, s * 0.92, s * 0.92).fill(SOLAR).stroke({ width: 1, color: 0x8fb8ff, alpha: 0.8 });
+        g.moveTo(x + s * 0.46, y).lineTo(x + s * 0.46, y + s * 0.92).moveTo(x, y + s * 0.46).lineTo(x + s * 0.92, y + s * 0.46).stroke({ width: 0.8, color: 0x8fb8ff, alpha: 0.5 });
       }
     });
   }
@@ -589,19 +703,32 @@ function glyphs(l: Look): KindGlyph[] {
   }
   if (l.chargers > 0) {
     add('charger', (g, cx, cy, s) => {
-      g.poly([cx + s * 0.15, cy - s, cx - s * 0.6, cy + s * 0.1, cx, cy + s * 0.1, cx - s * 0.15, cy + s, cx + s * 0.6, cy - s * 0.1, cx, cy - s * 0.1]).fill(ENERGY);
+      g.roundRect(cx - s, cy - s, s * 2, s * 2, s * 0.2).fill(DARK).stroke({ width: 1.5, color: ENERGY });
+      g.circle(cx, cy, s * 0.8).stroke({ width: 1, color: ENERGY, alpha: 0.5 });
+      g.poly([cx + s * 0.12, cy - s * 0.7, cx - s * 0.45, cy + s * 0.08, cx, cy + s * 0.08, cx - s * 0.12, cy + s * 0.7, cx + s * 0.45, cy - s * 0.08, cx, cy - s * 0.08]).fill(ENERGY);
     });
   }
   if (l.silos > 0) {
     add('silo', (g, cx, cy, s) => {
-      g.circle(cx, cy, s * 0.8).fill(DARK).stroke({ width: 1.5, color: MATTER });
-      g.circle(cx, cy, s * 0.35).fill(MATTER);
+      // A storage tank: ringed drum with a hatch.
+      g.circle(cx, cy, s).fill(DARK).stroke({ width: 1.8, color: MATTER });
+      g.circle(cx, cy, s * 0.72).stroke({ width: 1, color: MATTER, alpha: 0.5 });
+      g.circle(cx, cy, s * 0.36).fill(MATTER).stroke({ width: 1, color: DARK });
+      g.moveTo(cx - s * 0.36, cy).lineTo(cx + s * 0.36, cy).moveTo(cx, cy - s * 0.36).lineTo(cx, cy + s * 0.36).stroke({ width: 1, color: DARK });
     });
   }
   if (l.batteries > 0) {
     add('battery', (g, cx, cy, s) => {
-      const n = Math.min(3, l.batteries);
-      for (let i = 0; i < n; i++) g.rect(cx - s * 0.9, cy + (i - (n - 1) / 2) * s * 0.62 - s * 0.2, s * 1.8, s * 0.4).fill(ENERGY);
+      // Large external storage banks: one block, two side by side for a bigger bank, with terminals on top and charge bars.
+      const cols = l.batteries >= 2 ? 2 : 1;
+      const w = (s * 2) / cols;
+      for (let c = 0; c < cols; c++) {
+        const x = cx - s + c * w + w * 0.06, bw = w * 0.88;
+        g.rect(x + bw * 0.15, cy - s - s * 0.02, bw * 0.2, s * 0.16).fill(STEEL);
+        g.rect(x + bw * 0.65, cy - s - s * 0.02, bw * 0.2, s * 0.16).fill(STEEL);
+        g.roundRect(x, cy - s * 0.88, bw, s * 1.76, s * 0.12).fill(DARK).stroke({ width: 1.5, color: STEEL });
+        for (let i = 0; i < 4; i++) g.rect(x + bw * 0.14, cy - s * 0.74 + i * s * 0.4, bw * 0.72, s * 0.28).fill(ENERGY);
+      }
     });
   }
   if (l.antenna !== 'none') {
@@ -637,21 +764,45 @@ function drawShapedBuilding(g: Graphics, l: Look, shape: readonly string[], colo
   const inset = 1;
   const cells: [number, number][] = [];
   for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) if (has(i, j)) cells.push([i, j]);
-  for (const [i, j] of cells) g.rect(x0 + i * tex, x0 + j * tex, tex, tex).fill({ color: colour, alpha: 0.85 });
+  // A margin is left clear on every side that faces the outside or a gap, so neighbouring buildings do not touch.
+  const m = tex * BUILDING_MARGIN;
+  for (const [i, j] of cells) {
+    const l0 = has(i - 1, j) ? 0 : m, r0 = has(i + 1, j) ? 0 : m, t0 = has(i, j - 1) ? 0 : m, b0 = has(i, j + 1) ? 0 : m;
+    g.rect(x0 + i * tex + l0, x0 + j * tex + t0, tex - l0 - r0, tex - t0 - b0).fill({ color: colour, alpha: 0.85 });
+  }
   // Edges that face an empty tile (or the outside).
   const edges = (width: number, color: number, alpha: number, pad: number) => {
     for (const [i, j] of cells) {
+      // The line sits `pad` inside an exposed side and runs to the cell's edge where the next cell continues it.
       const left = x0 + i * tex + pad, right = x0 + (i + 1) * tex - pad, top = x0 + j * tex + pad, bottom = x0 + (j + 1) * tex - pad;
-      if (!has(i, j - 1)) g.moveTo(left, top).lineTo(right, top);
-      if (!has(i, j + 1)) g.moveTo(left, bottom).lineTo(right, bottom);
-      if (!has(i - 1, j)) g.moveTo(left, top).lineTo(left, bottom);
-      if (!has(i + 1, j)) g.moveTo(right, top).lineTo(right, bottom);
+      const l0 = has(i - 1, j) ? x0 + i * tex : left, r0 = has(i + 1, j) ? x0 + (i + 1) * tex : right;
+      const t0 = has(i, j - 1) ? x0 + j * tex : top, b0 = has(i, j + 1) ? x0 + (j + 1) * tex : bottom;
+      if (!has(i, j - 1)) g.moveTo(l0, top).lineTo(r0, top);
+      if (!has(i, j + 1)) g.moveTo(l0, bottom).lineTo(r0, bottom);
+      if (!has(i - 1, j)) g.moveTo(left, t0).lineTo(left, b0);
+      if (!has(i + 1, j)) g.moveTo(right, t0).lineTo(right, b0);
     }
     g.stroke({ width, color, alpha });
   };
-  edges(2, 0xffffff, 0.5, inset);
-  if (l.armour > 0) edges(Math.min(5, 1 + l.armour), STEEL, 0.9, inset + 2);
+  edges(2, 0xffffff, 0.5, inset + m);
+  if (l.armour > 0) edges(Math.min(5, 1 + l.armour), STEEL, 0.9, inset + m + 2);
   drawGlyphs(g, l, tex, separate);
+}
+
+/** Space left clear round the art of buildings bigger than one tile, as a share of a tile. */
+const BUILDING_MARGIN = 0.09;
+/** A one-tile building's art reaches this far from its centre (as a share of a tile), about half of what it used to fill. */
+const SMALL_BUILDING_HALF = 0.23;
+
+/** Half the side of a square building's art, in texture pixels. */
+export const buildingHalf = (size: number, tex: number): number => (size === 1 ? tex * SMALL_BUILDING_HALF : (size * tex) / 2 - tex * BUILDING_MARGIN);
+
+/** Bulky modules are drawn at the size of the whole cell they sit in, not as small symbols. */
+const BIG: ReadonlySet<GlyphKind> = new Set<GlyphKind>(['factory', 'battery', 'solar', 'silo', 'charger']);
+
+/** The roller door of a factory drawn at (cx, cy) with half-size s: bottom-centre x/y, width and height. */
+function factoryDoor(cx: number, cy: number, s: number): { x: number; y: number; w: number; h: number } {
+  return { x: cx, y: cy + s * 0.96, w: s * 1.1, h: s * 0.75 };
 }
 
 /** A module symbol placed on a building: its kind, the cell centre and the symbol size (texture pixels from the building's centre). */
@@ -661,31 +812,42 @@ interface PlacedGlyph {
   readonly cx: number;
   readonly cy: number;
   readonly s: number;
+  /** Width of the cell it sits in, which caps how big a turret can be. */
+  readonly cell: number;
+  /** The size of the share of the whole footprint this symbol has, ignoring the margin: a wind rotor is sized from it and may overhang the walls. */
+  readonly span: number;
 }
 
 /** Where each module symbol goes: one per covered tile of a shaped building, a grid in a square one. */
 function placeGlyphs(l: Look, tex: number): PlacedGlyph[] {
-  const list = glyphs(l);
+  let list = glyphs(l);
+  // A square building with weapons is a turret: they get its whole footprint (one in the middle, more in a grid) so they read at a glance.
+  if (!l.shape && list.some((q) => q.kind === 'weapon')) list = list.filter((q) => q.kind === 'weapon');
   const out: PlacedGlyph[] = [];
   if (l.shape) {
     const n = l.shape.length;
     const x0 = -(n * tex) / 2;
     const cells: [number, number][] = [];
     for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) if (l.shape[j]?.[i] === 'X') cells.push([i, j]);
-    const s = Math.min(tex * 0.4, 9);
-    cells.slice(0, list.length).forEach(([i, j], k) => out.push({ kind: list[k].kind, draw: list[k], cx: x0 + (i + 0.5) * tex, cy: x0 + (j + 0.5) * tex, s }));
+    const s = tex * 0.38;
+    cells.slice(0, list.length).forEach(([i, j], k) => out.push({ kind: list[k].kind, draw: list[k], cx: x0 + (i + 0.5) * tex, cy: x0 + (j + 0.5) * tex, s, cell: tex, span: tex }));
     return out;
   }
   if (list.length === 0) return out;
-  const h = (l.size * tex) / 2 - 2;
-  // A 1×1 building has room for four symbols, larger ones for nine.
-  const cols = l.size === 1 ? 2 : 3;
-  const shown = list.slice(0, cols * cols);
-  const per = Math.ceil(Math.sqrt(shown.length));
+  const h = buildingHalf(l.size, tex);
+  // A 1×1 building has room for four symbols, larger ones for nine. They share the whole top: a lone symbol fills it,
+  // two sit side by side, and the last row is centred.
+  const shown = list.slice(0, (l.size === 1 ? 2 : 3) ** 2);
+  const k = shown.length;
+  const cols = Math.ceil(Math.sqrt(k)), rows = Math.ceil(k / cols);
   const inner = h - Math.min(4, h * 0.2);
-  const cell = (inner * 2) / per;
+  const cw = (inner * 2) / cols, ch = (inner * 2) / rows;
+  const s = Math.min(cw, ch) * 0.46;
+  const span = Math.min((l.size * tex) / cols, (l.size * tex) / rows);
   shown.forEach((draw, i) => {
-    out.push({ kind: draw.kind, draw, cx: -inner + cell * ((i % per) + 0.5), cy: -inner + cell * (Math.floor(i / per) + 0.5), s: Math.min(cell * 0.4, 9) });
+    const row = Math.floor(i / cols);
+    const inRow = row === rows - 1 ? k - cols * (rows - 1) : cols;
+    out.push({ kind: draw.kind, draw, cx: -inner + cw * ((i % cols) + 0.5) + ((cols - inRow) * cw) / 2, cy: -inner + ch * (row + 0.5), s, cell: Math.min(cw, ch), span });
   });
   return out;
 }
@@ -694,22 +856,143 @@ function placeGlyphs(l: Look, tex: number): PlacedGlyph[] {
 function drawGlyphs(g: Graphics, l: Look, tex: number, separate: boolean): void {
   for (const p of placeGlyphs(l, tex)) {
     if (separate && ((p.kind === 'weapon' && aims(l)) || p.kind === 'wind')) continue;
-    p.draw(g, p.cx, p.cy, p.kind === 'weapon' ? p.s * weaponScale(l) : p.s);
+    p.draw(g, p.cx, p.cy, p.kind === 'weapon' ? turretRadius(l, p) : p.kind === 'wind' ? windRadius(l, p, tex) : BIG.has(p.kind) ? p.cell * 0.46 : p.s);
   }
 }
 
 /** A building's weapon is drawn bigger the heavier it is, so a siege gun is a real turret and not a dot. */
 const weaponScale = (l: Pick<Look, 'weaponMass'>): number => 1 + 0.1 * Math.min(l.weaponMass, 14);
+/** ...but never wider than its cell, so neighbouring turrets do not overlap. */
+const turretRadius = (l: Pick<Look, 'weaponMass'>, p: PlacedGlyph): number => Math.min(p.s * weaponScale(l), p.cell * 0.5);
+
+/** A lattice base nearly as wide as the tile: a steel frame with corner feet and cross braces, lit by a thin line of the owner's colour. */
+function drawFramework(g: Graphics, tex: number, colour: number): void {
+  const f = tex * 0.46, foot = tex * 0.11;
+  g.rect(-f, -f, f * 2, f * 2).fill({ color: DARK, alpha: 0.55 });
+  // Cross braces corner to corner, and a lighter inner square.
+  g.moveTo(-f, -f).lineTo(f, f).moveTo(f, -f).lineTo(-f, f).stroke({ width: 1.2, color: STEEL, alpha: 0.75 });
+  g.rect(-f * 0.62, -f * 0.62, f * 1.24, f * 1.24).stroke({ width: 1, color: STEEL, alpha: 0.6 });
+  g.rect(-f, -f, f * 2, f * 2).stroke({ width: 1.8, color: STEEL });
+  g.rect(-f + 1.5, -f + 1.5, f * 2 - 3, f * 2 - 3).stroke({ width: 1, color: colour, alpha: 0.7 });
+  // Feet at the corners.
+  for (const sx of [-1, 1]) {
+    for (const sy of [-1, 1]) {
+      g.rect(sx * f - (sx > 0 ? foot : 0), sy * f - (sy > 0 ? foot : 0), foot, foot).fill(STEEL).stroke({ width: 0.8, color: DARK });
+      g.circle(sx * (f - foot / 2), sy * (f - foot / 2), Math.max(0.7, foot * 0.16)).fill(DARK);
+    }
+  }
+}
+
+/** A square building with more armour than all its other modules together is a wall. */
+export const isWall = (l: Look): boolean => l.structure && !l.shape && l.armour > l.modules - l.armour;
+
+/** Sides of a wall that continue into another wall of the same owner (bits for `drawWall`). */
+export const WALL_N = 1, WALL_E = 2, WALL_S = 4, WALL_W = 8;
+/** Corners of a wall footprint that touch a wall only diagonally (set only when neither side next to that corner is joined). */
+export const WALL_NE = 16, WALL_SE = 32, WALL_SW = 64, WALL_NW = 128;
+const DIAGONALS: readonly [number, number, number][] = [[1, -1, WALL_NE], [1, 1, WALL_SE], [-1, 1, WALL_SW], [-1, -1, WALL_NW]];
+
+/**
+ * A wall is a plus inside its footprint. Where a neighbouring wall continues it, the arm on that side
+ * runs out to the tile edge, so a line of walls becomes a bar (| or -) and corners and junctions keep their joined arms.
+ * A wall bigger than one tile is a block of such cells joined to each other. `joined` lists the outer sides that continue into another wall.
+ */
+export function drawWall(g: Graphics, l: Look, colour: number, tex: number, joined = 0): void {
+  const full = (l.size * tex) / 2;
+  const h = tex / 2, reach = h - tex * BUILDING_MARGIN, arm = tex * 0.17, hub = arm * 1.45;
+  const line = Math.min(4, 1 + l.armour);
+  // Diagonal arms overhang the footprint a little so they overlap the neighbour's arm at the shared corner;
+  // the texture is padded evenly all round (the same for every wall), so it stays centred.
+  const pad = Math.ceil(arm + line);
+  g.rect(-full - pad, -full - pad, (full + pad) * 2, (full + pad) * 2).fill({ color: 0, alpha: 0.001 });
+  const rects: number[][] = []; // x0, y0, x1, y1 of every piece
+  const bolts: number[][] = [];
+  const slants: [number, number, number, number, boolean][] = []; // diagonal arms: centre, direction, reaches the corner
+  for (let j = 0; j < l.size; j++) {
+    for (let i = 0; i < l.size; i++) {
+      const cx = -full + (i + 0.5) * tex, cy = -full + (j + 0.5) * tex;
+      const n = j > 0 || !!(joined & WALL_N), s = j < l.size - 1 || !!(joined & WALL_S);
+      const w = i > 0 || !!(joined & WALL_W), e = i < l.size - 1 || !!(joined & WALL_E);
+      const vert = n || s, horiz = w || e;
+      // Diagonal neighbours only touch at a footprint corner.
+      const diag = DIAGONALS.map(([sx, sy, bit]) => !!(joined & bit) && (sx < 0 ? i === 0 : i === l.size - 1) && (sy < 0 ? j === 0 : j === l.size - 1));
+      const anyDiag = diag.includes(true);
+      if (!vert && !horiz && anyDiag) {
+        // Touching diagonally only: a diagonal bar (its free end capped short); no hub, which would stick out beside it.
+        DIAGONALS.forEach(([sx, sy], k) => {
+          const opposite = diag[(k + 2) % 4];
+          if (diag[k] || (opposite && !diag[(k + 1) % 4] && !diag[(k + 3) % 4])) slants.push([cx, cy, sx, sy, diag[k]]);
+        });
+      } else if (!vert && !horiz) {
+        // On its own: a plus with its arms stopping short of the tile edge.
+        rects.push([cx - arm, cy - reach, cx + arm, cy + reach], [cx - reach, cy - arm, cx + reach, cy + arm], [cx - hub, cy - hub, cx + hub, cy + hub]);
+      } else if (vert !== horiz) {
+        // One direction only: a bar (capped short of the edge on a free end).
+        if (vert) rects.push([cx - arm, cy - (n ? h : reach), cx + arm, cy + (s ? h : reach)]);
+        else rects.push([cx - (w ? h : reach), cy - arm, cx + (e ? h : reach), cy + arm]);
+      } else {
+        // A corner, T or cross: the arms that continue, round a hub.
+        if (n) rects.push([cx - arm, cy - h, cx + arm, cy]);
+        if (s) rects.push([cx - arm, cy, cx + arm, cy + h]);
+        if (w) rects.push([cx - h, cy - arm, cx, cy + arm]);
+        if (e) rects.push([cx, cy - arm, cx + h, cy + arm]);
+        rects.push([cx - hub, cy - hub, cx + hub, cy + hub]);
+      }
+      if ((vert || horiz) && anyDiag) DIAGONALS.forEach(([sx, sy], k) => { if (diag[k]) slants.push([cx, cy, sx, sy, true]); });
+      bolts.push([cx, cy]);
+    }
+  }
+  // Outline first (every piece grown a little, kept inside the footprint), then the pieces on top, so joins have no seams.
+  const clamp = (v: number) => Math.max(-full, Math.min(full, v));
+  const clampPad = (v: number) => Math.max(-full - pad, Math.min(full + pad, v));
+  // A diagonal arm is a slanted bar; where it reaches the corner it runs on past it, to overlap the diagonal neighbour's arm.
+  const slant = (cx: number, cy: number, sx: number, sy: number, len: number, w: number): number[] => {
+    const dx = sx / Math.SQRT2, dy = sy / Math.SQRT2, px = -dy, py = dx;
+    const pts = [cx + px * w, cy + py * w, cx + dx * len + px * w, cy + dy * len + py * w, cx + dx * len - px * w, cy + dy * len - py * w, cx - px * w, cy - py * w];
+    return pts.map((v) => clampPad(v));
+  };
+  const reachLen = h * Math.SQRT2 + arm * 0.3;
+  for (const [cx, cy, sx, sy, far] of slants) {
+    g.poly(slant(cx, cy, sx, sy, far ? reachLen : reach, arm + line)).fill(STEEL);
+  }
+  for (const [x0, y0, x1, y1] of rects) g.rect(clamp(x0 - line), clamp(y0 - line), clamp(x1 + line) - clamp(x0 - line), clamp(y1 + line) - clamp(y0 - line)).fill(STEEL);
+  for (const [x0, y0, x1, y1] of rects) g.rect(x0, y0, x1 - x0, y1 - y0).fill(colour);
+  for (const [cx, cy, sx, sy, far] of slants) {
+    g.poly(slant(cx, cy, sx, sy, far ? reachLen : reach, arm)).fill(colour);
+  }
+  for (const [cx, cy] of bolts) g.circle(cx, cy, Math.max(1.2, arm * 0.35)).fill({ color: DARK, alpha: 0.8 }).stroke({ width: 0.8, color: STEEL });
+}
 
 function drawBuilding(g: Graphics, l: Look, colour: number, tex: number, separate: boolean): void {
   if (l.shape) {
     drawShapedBuilding(g, l, l.shape, colour, tex, separate);
     return;
   }
-  const h = (l.size * tex) / 2 - 2;
-  plate(g, l.role, h, colour);
+  if (isWall(l)) {
+    drawWall(g, l, colour, tex);
+    return;
+  }
+  const h = buildingHalf(l.size, tex);
+  const full = (l.size * tex) / 2;
+  g.rect(-full, -full, full * 2, full * 2).fill({ color: 0, alpha: 0.001 }); // keeps the texture the size of the footprint, margin included
+  // Turrets and pylons are little more than their one module, so a framework under them covers the tile they stand on.
+  if (l.size === 1 && (l.weapon !== 'none' || (l.antenna !== 'none' && glyphs(l).length === 1))) drawFramework(g, tex, colour);
+  if (l.size === 1 && l.weapon !== 'none') {
+    // A one-tile gun emplacement is a round plinth well inside its tile, so it reads as a turret and not a block; the barrels may poke past it.
+    const pr = h * 0.9;
+    g.circle(0, 0, pr).fill({ color: colour, alpha: 0.85 }).stroke({ width: 2, color: 0xffffff, alpha: 0.5 });
+    g.circle(0, 0, pr * 0.82).stroke({ width: 1, color: DARK, alpha: 0.6 });
+    if (l.armour > 0) g.circle(0, 0, pr - 2).stroke({ width: Math.min(4, 1 + l.armour), color: STEEL, alpha: 0.9 });
+    drawGlyphs(g, l, tex, separate);
+    return;
+  }
+  // A building with few modules is a smaller block inside its tile; each module bulks it up towards the tile edge.
+  const mods = glyphs(l).length;
+  const hp = mods === 0 ? h : h * Math.min(1, 0.78 + 0.08 * mods);
+  plate(g, l.role, hp, colour);
+  hazardRim(g, [-hp, -hp, hp, -hp, hp, hp, -hp, hp], l, Math.min(4, hp * 0.35));
   if (l.armour > 0) {
-    g.rect(-h + 2, -h + 2, (h - 2) * 2, (h - 2) * 2).stroke({ width: Math.min(5, 1 + l.armour), color: STEEL, alpha: 0.9 });
+    g.rect(-hp + 2, -hp + 2, (hp - 2) * 2, (hp - 2) * 2).stroke({ width: Math.min(5, 1 + l.armour), color: STEEL, alpha: 0.9 });
   }
   drawGlyphs(g, l, tex, separate);
 }
@@ -725,7 +1008,44 @@ export function turretAnchor(l: Look, tex: number): { x: number; y: number; r: n
     return { x: 0, y: l.long ? -r * (LONG - 1) * 0.55 : 0, r };
   }
   const p = placeGlyphs(l, tex).find((q) => q.kind === 'weapon');
-  return p ? { x: p.cx, y: p.cy, r: p.s * weaponScale(l) } : null;
+  return p ? { x: p.cx, y: p.cy, r: turretRadius(l, p) } : null;
+}
+
+/** A headlight: `side` is across the hull (-1 port edge to 1 starboard, as a share of the half width), `power` its brightness and reach (0 to 1). */
+export interface Lamp {
+  readonly side: number;
+  readonly power: number;
+}
+
+const TWIN: readonly Lamp[] = [{ side: -0.4, power: 1 }, { side: 0.4, power: 1 }];
+
+/** Each body type has its own lamps: one to three, of different strength, some lopsided. */
+const LAMPS: Readonly<Record<string, readonly Lamp[]>> = {
+  'chassis.micro': [{ side: 0, power: 0.55 }],
+  'chassis.light': TWIN,
+  'chassis.medium': [{ side: -0.5, power: 0.9 }, { side: 0.5, power: 0.9 }],
+  'chassis.heavy': [{ side: -0.5, power: 1 }, { side: 0.5, power: 1 }],
+  'chassis.long.light': [{ side: -0.45, power: 0.9 }],
+  'chassis.long.medium': [{ side: -0.5, power: 1 }, { side: 0.4, power: 0.5 }],
+  'chassis.long.heavy': [{ side: -0.6, power: 1 }, { side: 0.05, power: 0.6 }, { side: 0.6, power: 0.8 }],
+  'chassis.superheavy': [{ side: -0.5, power: 0.7 }, { side: 0, power: 1 }, { side: 0.5, power: 0.7 }],
+  'chassis.colossus': [{ side: 0.5, power: 1 }, { side: -0.2, power: 0.5 }],
+};
+
+/** The headlights a unit design carries (two matched lamps if the chassis is unknown). */
+export function headlampsOf(parts: readonly string[]): readonly Lamp[] {
+  const frame = parts.find((id) => id.startsWith('chassis.'));
+  return (frame && LAMPS[frame]) || TWIN;
+}
+
+/** Every turret of a class: one for a unit, one per weapon module (that fits) for a building. */
+export function turretAnchors(l: Look, tex: number): { x: number; y: number; r: number }[] {
+  if (!l.structure) {
+    const a = turretAnchor(l, tex);
+    return a ? [a] : [];
+  }
+  if (!aims(l)) return [];
+  return placeGlyphs(l, tex).filter((q) => q.kind === 'weapon').map((p) => ({ x: p.cx, y: p.cy, r: turretRadius(l, p) }));
 }
 
 /** The turret alone, drawn round the origin facing up (the renderer turns it): its own sprite, so it can aim. */
@@ -733,17 +1053,35 @@ export function drawTurretSprite(g: Graphics, l: Look, tex: number): void {
   const a = turretAnchor(l, tex);
   if (!a) return;
   // Equal extents on every side keep the texture centred on the pivot.
-  const box = a.r * 1.6;
+  const box = a.r * 2.1; // room for the longest barrel
   g.rect(-box, -box, box * 2, box * 2).fill({ color: 0, alpha: 0.001 });
   if (!l.structure) drawTurret(g, l.weapon, a.r, l.weaponMass);
-  else placeGlyphs(l, tex).find((q) => q.kind === 'weapon')!.draw(g, 0, 0, a.r);
+  else drawTurret(g, l.weapon, a.r, l.weaponMass);
+}
+
+/**
+ * The blades of a wind turbine may overhang the walls, but must stay inside the tile (or the edge of the footprint) so
+ * the blades of two buildings side by side never touch: each is less than its own distance to the nearest edge.
+ */
+function windRadius(l: Look, p: PlacedGlyph, tex: number): number {
+  const room = l.shape ? tex / 2 : (l.size * tex) / 2 - Math.max(Math.abs(p.cx), Math.abs(p.cy));
+  return Math.min(room * 0.9, p.span * 0.5, tex * 0.9);
+}
+
+/** A working factory's door (where units come out) and exhaust stacks, in texture pixels from the building's centre; null if it has no factory cell. */
+export function factoryAnchor(l: Look, tex: number): { door: { x: number; y: number }; stacks: { x: number; y: number }[] } | null {
+  if (!l.structure || l.factories === 0) return null;
+  const p = placeGlyphs(l, tex).find((q) => q.kind === 'factory');
+  if (!p) return null;
+  const s = p.cell * 0.46, d = factoryDoor(p.cx, p.cy, s);
+  return { door: { x: d.x, y: d.y }, stacks: [-0.6, 0.6].map((sx) => ({ x: p.cx + sx * s, y: p.cy - s * 0.55 })) };
 }
 
 /** Where a building's wind turbine rotor sits, and its size; null for a class without one (or with no room to show it). */
 export function windAnchor(l: Look, tex: number): { x: number; y: number; radius: number } | null {
   if (!l.structure || l.wind === 0) return null;
   const p = placeGlyphs(l, tex).find((q) => q.kind === 'wind');
-  return p ? { x: p.cx, y: p.cy, radius: p.s * 1.15 } : null;
+  return p ? { x: p.cx, y: p.cy, radius: windRadius(l, p, tex) } : null;
 }
 
 /** Three turbine blades round a hub, centred on the origin: the renderer spins it. */

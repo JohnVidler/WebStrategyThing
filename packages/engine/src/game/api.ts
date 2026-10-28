@@ -5,7 +5,7 @@ import { ACTIVITY_OUTCOMES, ActivityKind, cancelActivity, resumeActivity, startA
 import type { Builtin, CallKind, HostApi } from '../flow/host';
 import { Caps, type Blueprint, type BlueprintStats } from './blueprint';
 import { PARTS, SLOT_CODES, TIER_NAMES, TILE } from './parts';
-import { daylight, StorageMode, wind } from './power';
+import { StorageMode } from './power';
 import type { Simulation } from './simulation';
 import { TaskFlag, TaskType } from './tasks';
 
@@ -24,6 +24,11 @@ export interface UnitContext {
 /** Shortest and longest time a speech bubble can stay up, in milliseconds. */
 export const MIN_ALERT_MS = 100;
 export const MAX_ALERT_MS = 30000;
+/** Pop-up alert kinds for `notify()`, by the value of the NOTE_* constants (the client turns the index into a colour). */
+export const NOTICE_KINDS = ['ok', 'info', 'warn', 'error'] as const;
+/** Ticks a unit must wait between pop-up alerts, and the most one player can raise in a tick (the rest are dropped). */
+export const NOTICE_COOLDOWN_TICKS = 20;
+export const MAX_NOTICES_PER_OWNER_TICK = 2;
 /** Milliseconds per simulation tick (10 ticks per second; protocol.ts cannot be imported here without a cycle). */
 const MS_PER_TICK = 100;
 
@@ -73,6 +78,7 @@ export const SCRIPT_CONSTANT_DOCS: readonly (readonly [string, number, string])[
   ['A_CHARGE', ActivityKind.Charge, 'Activity kind: charge'],
   ['A_SUPPLY', ActivityKind.Supply, 'Activity kind: supply'],
   ['A_ENGAGE', ActivityKind.Engage, 'Activity kind: engage'],
+  ...NOTICE_KINDS.map((name, kind) => [`NOTE_${name.toUpperCase()}`, kind, `Pop-up alert kind: ${name} (see notify)`] as const),
   ['PRODUCED', VisitReason.Produced, 'Visit reason: just built here'],
   ['DOCKED', VisitReason.Docked, 'Visit reason: just docked here'],
   ['CAN_MOVE', Caps.Move, 'Capability: has a working motor'],
@@ -164,7 +170,7 @@ function api(
 
 /** Calls that change the world now (statements). Everything else is a query unless it is a runtime setting. */
 const ACTIONS: ReadonlySet<string> = new Set([
-  'after', 'alert', 'radioSend', 'laserSend', 'radarPulse', 'moveTo', 'move', 'stop', 'fire', 'giveEnergy', 'order', 'queueUnit',
+  'after', 'alert', 'notify', 'radioSend', 'laserSend', 'radarPulse', 'moveTo', 'move', 'stop', 'fire', 'giveEnergy', 'order', 'queueUnit',
   'goTo', 'approach', 'harvest', 'dock', 'take', 'build', 'repair', 'charge', 'supply', 'engage', 'suspendActivity', 'resumeActivity',
   'nextOrder', 'swapOrder', 'clearOrders',
 ]);
@@ -322,6 +328,20 @@ export const UNIT_API: HostApi<UnitContext> = [
       return 1;
     },
     { text: [0] }),
+  api('Actions', 'notify(text, kind)', 2,
+    `Show your player a pop-up alert with text (in quotes, up to ${MAX_TEXT} characters); kind is NOTE_OK, NOTE_INFO, NOTE_WARN or NOTE_ERROR and sets its colour. Only the unit's owner sees it. A unit can raise one every ${NOTICE_COOLDOWN_TICKS / 10} seconds and a player at most ${MAX_NOTICES_PER_OWNER_TICK} a tick; extra ones are dropped. Returns 1 if shown, 0 if dropped.`,
+    (c, a) => {
+      const { sim, e } = c;
+      if (sim.tick < (sim.noticeReady[e] ?? 0)) return 0;
+      const owner = sim.unit.f.owner[e];
+      let n = 0;
+      for (const x of sim.notices) if (x.owner === owner) n++;
+      if (n >= MAX_NOTICES_PER_OWNER_TICK) return 0;
+      sim.noticeReady[e] = sim.tick + NOTICE_COOLDOWN_TICKS;
+      sim.notices.push({ owner, kind: Math.min(NOTICE_KINDS.length - 1, Math.max(0, a[1])), text: textAt(a[0]) });
+      return 1;
+    },
+    { text: [0] }),
   api('Actions', 'fire(h)', 2, 'Lock the weapon on a unit; returns 1 if in range. The weapon fires automatically. Energy: weapon use per shot.',
     (c, a) => {
       const { sim, e } = c;
@@ -408,9 +428,13 @@ export const UNIT_API: HostApi<UnitContext> = [
     'Switch part i on (1) or off (0). Only energy-using modules switch; a script cannot switch off its last CPU. Returns 1 on success.',
     (c, a) => (c.sim.setModule(c.e, a[0], a[1] !== 0, true) ? 1 : 0)),
 
+  api('Sensing', 'lightLevel()', 1,
+    'Light 0..100 where this unit stands: bright by day, dim at night (never fully dark), following the time of day. Unlike daylight(), which is the sun for solar power, this is what the unit can see by.',
+    (c) => c.sim.lightAt(c.sim.pos.f.x[c.e], c.sim.pos.f.y[c.e])),
+
   // --- Power network ------------------------------------------------------------
-  api('Power network', 'daylight()', 0, 'Sunlight 0..100 (solar output follows it).', (c) => daylight(c.sim.tick)),
-  api('Power network', 'wind()', 0, 'Wind 0..100 (turbine output follows it).', (c) => wind(c.sim.config.seed, c.sim.tick)),
+  api('Power network', 'daylight()', 0, 'Sunlight 0..100 (solar output follows it).', (c) => c.sim.sunNow()),
+  api('Power network', 'wind()', 0, 'Wind 0..100 (turbine output follows it).', (c) => c.sim.windNow()),
   api('Power network', 'netSupply()', 0, "This building's network: energy generated last tick (0 for units).",
     (c) => c.sim.networkFor(c.e)?.supply ?? 0),
   api('Power network', 'netDemand()', 0, "This building's network: energy normal consumers wanted last tick.",

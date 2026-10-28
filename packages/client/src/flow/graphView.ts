@@ -522,7 +522,7 @@ export class GraphView {
         const what = rest[0];
         if (what === 'call') {
           const b = this.g.host.api.find((x) => x.name === rest[1]);
-          added = addStatement(p, { k: 'call', fn: rest[1], argc: b?.argc ?? 0 });
+          added = addStatement(p, { k: 'call', fn: rest[1], argc: b?.argc ?? 0, text: b?.text });
         } else if (what === 'emit') added = addStatement(p, { k: 'emit', event: rest[1] === 'new' ? newEventName(p) : rest[1], argc: 0 });
         else if (what === 'set') added = addStatement(p, { k: 'set', name: p.doc.vars[0]?.name ?? '' });
         else if (what === 'if') added = addStatement(p, { k: 'if' });
@@ -532,7 +532,7 @@ export class GraphView {
         const what = rest[0];
         if (what === 'call') {
           const b = this.g.host.api.find((x) => x.name === rest[1]);
-          added = addExpression(p, { k: 'call', fn: rest[1], argc: b?.argc ?? 0 });
+          added = addExpression(p, { k: 'call', fn: rest[1], argc: b?.argc ?? 0, text: b?.text });
         } else if (what === 'bin') added = addExpression(p, { k: 'bin', op: rest[1] as BinOp });
         else if (what === 'un') added = addExpression(p, { k: 'un', op: rest[1] as '-' | '!' });
         else if (what === 'cond') added = addExpression(p, { k: 'cond' });

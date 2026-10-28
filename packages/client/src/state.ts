@@ -14,7 +14,8 @@ import {
   Terrain,
   TILE,
   Unit,
-  inVision,
+  VisionGrid,
+  inSight,
   viewersOf,
   wind,
   World,
@@ -152,12 +153,36 @@ export class ClientState {
     return { x: Math.round(pos.f.x[e] / TILE - size / 2), y: Math.round(pos.f.y[e] / TILE - size / 2), size };
   }
 
+  /** Dev tools: sunlight / wind fixed at a level 0..100 (-1: natural). */
+  devSun = -1;
+  devWind = -1;
+
   get daylight(): number {
-    return daylight(this.tick);
+    return this.devSun >= 0 ? this.devSun : daylight(this.tick);
   }
 
   get wind(): number {
-    return wind(this.seed, this.tick);
+    return this.devWind >= 0 ? this.devWind : wind(this.seed, this.tick);
+  }
+
+  /** Team of each player seen on the scoreboard (kept when a player drops out, so an away ally's units still lend vision). */
+  private readonly teamOf = new Map<number, number>();
+  private allySet: ReadonlySet<number> | undefined;
+
+  setTeams(players: readonly { id: number; team?: number }[]): void {
+    for (const p of players) if (p.team !== undefined) this.teamOf.set(p.id, p.team);
+    this.allySet = undefined;
+  }
+
+  /** Me and everyone on my team: the owners whose units lend vision (as on the server). */
+  private viewOwners(): ReadonlySet<number> {
+    if (!this.allySet) {
+      const mine = this.teamOf.get(this.myId);
+      const set = new Set<number>([this.myId]);
+      if (mine !== undefined) for (const [id, t] of this.teamOf) if (t === mine) set.add(id);
+      this.allySet = set;
+    }
+    return this.allySet;
   }
 
   /** Recomputes which tiles own units and buildings can see (same rule the server uses). */
@@ -166,17 +191,23 @@ export class ClientState {
     if (this.vision.length !== width * height) this.vision = new Uint8Array(width * height);
     const v = this.vision;
     for (let i = 0; i < v.length; i++) if (v[i] === 2) v[i] = 1;
-    for (const { x, y, r } of viewersOf(this.world, this.myId, (e) => this.stats(e))) {
-      const cx = x / TILE;
-      const cy = y / TILE;
-      const rt = r / TILE;
-      for (let ty = Math.max(0, Math.floor(cy - rt)); ty <= Math.min(height - 1, Math.floor(cy + rt)); ty++) {
-        for (let tx = Math.max(0, Math.floor(cx - rt)); tx <= Math.min(width - 1, Math.floor(cx + rt)); tx++) {
-          if ((tx + 0.5 - cx) ** 2 + (ty + 0.5 - cy) ** 2 <= rt * rt) v[ty * width + tx] = 2;
-        }
-      }
-    }
+    // Rock and buildings block sight, the same rule the server filters by.
+    const grid = VisionGrid.of(this.terrain);
+    grid.begin();
+    grid.add(this.terrain, viewersOf(this.world, this.viewOwners(), (e) => this.stats(e), undefined, this.daylight));
+    for (let i = 0; i < v.length; i++) if (grid.stamp[i] === grid.gen) v[i] = 2;
     this.visionVersion++;
+    // A ghost of a radar contact vanishes once the fog is pushed back over its tile: the real thing is shown there now.
+    if (this.fog && this.radarBlips.length > 0) {
+      let kept = 0;
+      for (const b of this.radarBlips) {
+        const tx = Math.floor(b.x / TILE);
+        const ty = Math.floor(b.y / TILE);
+        if (tx >= 0 && ty >= 0 && tx < width && ty < height && v[ty * width + tx] === 2) continue;
+        this.radarBlips[kept++] = b;
+      }
+      this.radarBlips.length = kept;
+    }
   }
 
   /** Own mobile units (buildings and construction sites don't count towards the unit cap). */
@@ -189,8 +220,8 @@ export class ClientState {
   /** Whether a building with its top-left on tile (x, y) would be inside own vision (the server's placement rule). */
   canPlaceInVision(x: number, y: number, size: number): boolean {
     if (!this.fog) return true;
-    const viewers = viewersOf(this.world, this.myId, (e) => this.stats(e), (e) => this.isSite(e));
-    return inVision(viewers, (x + size / 2) * TILE, (y + size / 2) * TILE);
+    const viewers = viewersOf(this.world, this.viewOwners(), (e) => this.stats(e), (e) => this.isSite(e), this.daylight);
+    return inSight(this.terrain, viewers, (x + size / 2) * TILE, (y + size / 2) * TILE);
   }
 
   /**
@@ -213,6 +244,7 @@ export class ClientState {
     this.cpuProfiles.clear();
     this.lastHp.clear();
     this.programs.clear();
+    this.allySet = undefined;
     this.setNetworks([]);
   }
 

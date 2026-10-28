@@ -87,7 +87,8 @@ export class MusicPlayer {
     // Sound effects follow the mute button but have their own volume (set in Options).
     sound.setMuted(this.saved.muted);
     this.root.append(this.toggle, this.label);
-    const bar = dock ? document.getElementById('designs-bar') : null;
+    // Docked in the left pane, just above the player and session line (the pane's bottom stack).
+    const bar = dock ? document.querySelector('#panel > header') : null;
     if (bar) {
       this.root.classList.add('docked');
       bar.before(this.root);

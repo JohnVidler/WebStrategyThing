@@ -37,10 +37,10 @@ import {
 import { missileSystem, type MissileFlight } from './missile';
 import { PARTS, SWITCHABLE, TILE } from './parts';
 import { findPath, searchWork } from './path';
-import { emptyNetwork, powerLinks, powerNetworks, powerTopology, type PowerNetwork, type PowerNode } from './power';
-import { factoryCanBuild, FACTORY_TIER_NAMES, BASE_LINK_RANGE, BUILD_RANGE, BUILDING_BUILD_RANGE, BUILDING_TRANSFER_RANGE, DEMOLISH_REFUND, DOCK_RANGE, HARVEST_RANGE, MAX_PRODUCTION_QUEUE, MAX_SITES_PER_PLAYER, PLAN_WORK_PER_TICK, RADAR_COOLDOWN_TICKS, RADAR_ENERGY_PER_TILE, SITE_START_HP, UNIT_TRANSFER_RANGE } from './rules';
+import { daylight, emptyNetwork, powerLinks, powerNetworks, powerTopology, wind, type PowerNetwork, type PowerNode } from './power';
+import { factoryCanBuild, FACTORY_TIER_NAMES, BASE_LINK_RANGE, BUILD_RANGE, BUILDING_BUILD_RANGE, BUILDING_TRANSFER_RANGE, DEMOLISH_REFUND, DOCK_RANGE, HARVEST_RANGE, MAX_PRODUCTION_QUEUE, MAX_SITES_PER_PLAYER, MOONLIGHT, PLAN_WORK_PER_TICK, RADAR_COOLDOWN_TICKS, RADAR_ENERGY_PER_TILE, SITE_START_HP, UNIT_TRANSFER_RANGE } from './rules';
 import { SpatialGrid } from './spatial';
-import { inVision, viewersOf } from './vision';
+import { inSight, viewersOf } from './vision';
 import {
   buildSystem,
   repairSystem,
@@ -56,6 +56,7 @@ import {
   productionSystem,
   resourceRegenerationSystem,
   scriptSystem,
+  unitSolarSystem,
   separationSystem,
 } from './systems';
 import { TaskFlag, TaskQueue, TaskType } from './tasks';
@@ -111,6 +112,13 @@ export interface RadarContact {
   structure: boolean;
   /** The contact's class, so clients can draw its real art. */
   blueprint: number;
+}
+
+/** A pop-up alert a program raised for its owner; `kind` indexes `NOTICE_KINDS`. */
+export interface Notice {
+  readonly owner: number;
+  readonly kind: number;
+  readonly text: string;
 }
 
 /** A radar pulse and everything not allied to its owner that it found. */
@@ -224,6 +232,10 @@ export class Simulation {
   readonly events: number[] = [];
   /** Speech bubbles raised this tick by `alert()`; the server replicates them, and commit() clears them. */
   readonly alerts: Alert[] = [];
+  /** Pop-up alerts raised this tick by `notify()`, for their owner only; the server sends them and commit() clears them. */
+  readonly notices: Notice[] = [];
+  /** Tick before which each unit (by entity index) may not raise another `notify()`. */
+  readonly noticeReady: number[] = [];
   /** Radar pulses fired this tick; the server reports them to their owners, and commit() clears them. */
   readonly radarPulses: RadarPulse[] = [];
   /** Tick at which each radar-carrying unit (by handle) may pulse again. */
@@ -271,6 +283,28 @@ export class Simulation {
   readonly teams = new Map<number, number>();
   /** Buildings may only be placed within the owner's (or their team's) vision; off when fog of war is. */
   requirePlacementVision = false;
+  /** Dev tools only: a fixed sunlight / wind level 0..100 for testing, or -1 for the natural cycle (see `sunNow`, `windNow`). */
+  devSun = -1;
+  devWind = -1;
+  /** Sunlight 0..100 now: the natural cycle, unless the dev tools fixed it. */
+  sunNow(): number {
+    return this.devSun >= 0 ? this.devSun : daylight(this.tick);
+  }
+
+  /**
+   * Ambient light 0..100 at a point (world units): the sunlight, lifted to at least `MOONLIGHT`. Today every
+   * point has the same light; the position is taken so local sources can be added without changing callers.
+   */
+  lightAt(_x: number, _y: number): number {
+    const sun = this.sunNow();
+    return MOONLIGHT + Math.floor(((100 - MOONLIGHT) * sun) / 100);
+  }
+
+  /** Wind 0..100 now: the natural drift, unless the dev tools fixed it. */
+  windNow(): number {
+    return this.devWind >= 0 ? this.devWind : wind(this.config.seed, this.tick);
+  }
+
   /** Owners kept at full energy with full silos (co-op mode bots). */
   readonly cheaters = new Set<number>();
   /** Entity -> tick until which its CPU is stunned. */
@@ -760,7 +794,14 @@ export class Simulation {
     let half = 0;
     if (this.unit.has(b)) {
       const s = this.stats(b);
-      half = s.structure ? (s.footprint * TILE) / 2 : Math.max(0, s.radius - TILE / 2);
+      if (s.structure) {
+        // Buildings are squares: measure to the nearest point of the footprint, so every side and corner counts the same.
+        const h = (s.footprint * TILE) / 2;
+        const dx = Math.max(0, Math.abs(this.pos.f.x[b] - this.pos.f.x[a]) - h);
+        const dy = Math.max(0, Math.abs(this.pos.f.y[b] - this.pos.f.y[a]) - h);
+        return Math.sqrt(dx * dx + dy * dy);
+      }
+      half = Math.max(0, s.radius - TILE / 2);
     }
     return Math.max(0, Math.sqrt(this.distSq(a, b)) - half);
   }
@@ -1270,7 +1311,7 @@ export class Simulation {
     const team = this.teams.get(owner);
     const owners = new Set([owner]);
     if (team !== undefined) for (const [o, t] of this.teams) if (t === team) owners.add(o);
-    return inVision(viewersOf(this.world, owners, (e) => this.stats(e), (e) => this.isSite(e)), x * TILE, y * TILE);
+    return inSight(this.terrain, viewersOf(this.world, owners, (e) => this.stats(e), (e) => this.isSite(e), this.sunNow()), x * TILE, y * TILE);
   }
 
   /**
@@ -1508,6 +1549,7 @@ export class Simulation {
     this.spatial.rebuild(this.pos.f.x, this.pos.f.y, this.pos.dense, this.world.capacity);
     cheatSystem(this);
     powerSystem(this);
+    unitSolarSystem(this);
     scriptSystem(this);
     activitySystem(this);
     movementSystem(this);
@@ -1532,6 +1574,7 @@ export class Simulation {
     this.world.flush();
     this.events.length = 0;
     this.alerts.length = 0;
+    this.notices.length = 0;
     this.radarPulses.length = 0;
   }
 

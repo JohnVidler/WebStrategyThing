@@ -25,7 +25,7 @@ body {
 #panel {
   position: relative;
   z-index: 10;
-  width: 340px;
+  width: 228px;
   flex: none;
   overflow-y: auto;
   background: var(--panel);
@@ -42,51 +42,43 @@ body {
 #map { flex: 1; min-height: 0; position: relative; overflow: hidden; z-index: 0; }
 #map > canvas { position: absolute; inset: 0; z-index: 0; }
 
-/* Hover bar: stats of the own unit/building under the cursor, across the top of the map. */
-#hoverbar {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  z-index: 5;
+/* Heading at the top of the left pane: the class under the cursor or selected. */
+#selection-title { margin: 0; font-size: 16px; overflow-wrap: anywhere; font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--text); }
+/* The title strip is as tall as the top bar (--topbar-h, set by Ui) and centres the name in it, so it lines up with the middle of the bar.
+   It keeps its height while empty so the sections below do not jump. */
+#panel > #selection-title {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 5px 8px;
-  background: rgb(22 27 34 / 0.92);
+  justify-content: center;
+  text-align: center;
+  box-sizing: border-box;
+  height: var(--topbar-h, 52px);
+  margin: -12px -12px -4px;
+  padding: 0 12px;
+  flex: none;
   border-bottom: 1px solid var(--line);
-  pointer-events: none;
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  overflow: hidden;
 }
-#hoverbar .stat { display: flex; align-items: center; gap: 4px; }
-#hoverbar .cpu-stat { flex: 0 0 130px; }
-#hoverbar .cpu-stat .label { flex: none; }
-#hoverbar .cpu-stat > span:last-child { min-width: 0; overflow: hidden; white-space: nowrap; }
-/* Fixed-width value cells, so the strip doesn't jiggle as numbers change. */
-#hoverbar .stat > span:last-child { display: inline-block; min-width: var(--w, 0); text-align: left; }
-#hoverbar .stat-health { --w: 9ch; }
-#hoverbar .stat-energy { --w: 5ch; }
-#hoverbar .stat-cargo { --w: 7ch; }
-#hoverbar .stat-silos { --w: 9ch; }
-#hoverbar .stat-built { --w: 4ch; }
-#hoverbar .stat-making { --w: 14ch; overflow: hidden; text-overflow: ellipsis; }
-#hoverbar .stat-tasks { --w: 2ch; }
-#hoverbar .stat-grid { --w: 11ch; }
-#hoverbar .stat-grid-store { --w: 11ch; }
-#hoverbar .label { color: var(--muted); }
-#hoverbar .bar { width: 36px; height: 6px; background: #222a35; border-radius: 3px; overflow: hidden; }
-#hoverbar .bar > i { display: block; height: 100%; }
-#hoverbar .name { margin-left: auto; font-weight: 600; }
+#panel > #selection-title[hidden] { display: flex !important; visibility: hidden; } /* beats the global [hidden] rule */
+/* Player and session, then the buttons, sit at the bottom of the pane above the music widget. */
+#panel > header { margin-top: auto; }
+#panel > header .row-spread { justify-content: flex-start; }
 
 /* Scoreboard: every present player, top-right of the playfield. */
-#scoreboard {
+/* The scoreboard and the pop-in alerts share one column, so alerts always sit just below it. */
+#alerts-column {
   position: absolute;
   top: 36px;
   right: 8px;
   z-index: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  max-width: min(360px, calc(100% - 16px));
+  pointer-events: none;
+}
+#scoreboard {
+  align-self: flex-end;
   border-collapse: collapse;
   background: rgb(22 27 34 / 0.85);
   border: 1px solid var(--line);
@@ -137,19 +129,36 @@ body {
   justify-content: center;
   background: var(--bg);
 }
-.connecting-box { width: min(420px, calc(100vw - 32px)); text-align: center; }
+.connecting-box {
+  width: min(420px, calc(100vw - 32px));
+  text-align: center;
+  /* Glass panel, like the menu screens. */
+  background: rgba(22, 27, 34, 0.5);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 18px 20px;
+  backdrop-filter: blur(3px);
+  box-shadow: 0 0 22px 8px rgba(4, 6, 10, 0.6);
+}
 #connecting h2 { margin: 0 0 14px; font-size: 26px; letter-spacing: 0.08em; font-weight: 400; }
 #connecting.failed h2 { color: var(--bad); }
 #connecting ul { margin: 0 0 16px; padding: 0; list-style: none; height: 8.4em; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; color: var(--muted); }
 #connecting li { padding: 1px 0; animation: connecting-line 0.25s ease-out; }
 #connecting li.real { color: var(--good); }
 #connecting.failed li:last-child { color: var(--bad); }
-.connecting-bar { height: 3px; background: var(--line); border-radius: 2px; overflow: hidden; }
-.connecting-bar span { display: block; width: 35%; height: 100%; background: var(--accent); animation: connecting-sweep 1.4s ease-in-out infinite alternate; }
-#connecting.failed .connecting-bar span { animation: none; background: var(--bad); width: 100%; }
+/* The progress tile: the same look as the top-bar meters (icon, value, label; the box fills as the bar). */
+.connecting-tile { position: relative; padding: 6px 10px; background: #12171e; --c: var(--accent); }
+.connecting-tile > .env-bar { position: absolute; inset: 0; grid-area: auto; height: auto; margin: 0; border-radius: inherit; background: transparent; overflow: hidden; z-index: 0; }
+.connecting-tile .env-bar i { background: color-mix(in srgb, var(--c) 34%, transparent); border-right: 2px solid var(--c); box-sizing: border-box; transition: width 0.3s ease-out; }
+.connecting-tile .env-icon, .connecting-tile .env-value, .connecting-tile .env-label { position: relative; z-index: 1; text-shadow: 0 1px 2px #000c; }
+.connecting-tile .env-icon { font-size: 22px; }
+.connecting-tile .env-value { font-size: 16px; color: var(--text); }
+.connecting-tile .env-label { color: var(--text); opacity: 0.75; }
+html[data-reduce-motion] .connecting-tile .env-bar i { transition: none; }
+#connecting.failed .connecting-tile { --c: var(--bad); }
+#connecting.failed .connecting-tile .env-bar i { width: 100% !important; }
 @keyframes connecting-line { from { opacity: 0; transform: translateY(6px); } }
-@keyframes connecting-sweep { from { margin-left: 0; } to { margin-left: 65%; } }
-@media (prefers-reduced-motion: reduce) { #connecting li, .connecting-bar span { animation: none; } }
+@media (prefers-reduced-motion: reduce) { #connecting li { animation: none; } .connecting-tile .env-bar i { transition: none; } }
 
 /* Shown over the map while the server has paused the game. */
 #pause {
@@ -207,7 +216,7 @@ body {
   pointer-events: none;
 }
 /* Spectators only watch: the controls that need forces stay out of the way. */
-body.spectating #buildbar, body.spectating #actions, body.spectating #action-hint, body.spectating #groups { display: none; }
+body.spectating #build-section, body.spectating #buildmenu, body.spectating #unitmenu, body.spectating #actions-section, body.spectating #groups { display: none; }
 
 /* Room list, shown instead of the game when no room is chosen. */
 /* Menu backdrop: a flat pre-painted tile scrolled diagonally by the compositor (no JS per frame). */
@@ -225,7 +234,7 @@ body.spectating #buildbar, body.spectating #actions, body.spectating #action-hin
 .menu-bg-spark.v.fwd { background: linear-gradient(to bottom, transparent, #cfe8ff); }
 .menu-bg-spark.v.back { background: linear-gradient(to top, transparent, #cfe8ff); }
 html[data-reduce-motion] .menu-bg-scroll { animation: none; }
-#lobby { position: relative; z-index: 1; flex: 1; display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 10vh 16px; }
+#lobby { position: relative; z-index: 1; flex: 1; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 3vh 16px 16px; }
 #lobby { font-size: 1.5em; }
 /* Menu areas sit on translucent panels so the animated backdrop shows through but text stays legible. */
 #lobby section, #lobby aside, #lobby fieldset, #lobby .lobby-name-screen, #lobby .options {
@@ -252,10 +261,12 @@ html[data-reduce-motion] .menu-bg-scroll { animation: none; }
 #lobby-create { width: min(900px, 100%); display: flex; flex-direction: column; gap: 8px; }
 .mode-picker { display: flex; flex-direction: column; gap: 4px; border: 1px solid var(--line); border-radius: 4px; }
 .mode-picker small { color: var(--muted); }
-.lobby-view { width: min(1100px, 100%); display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.lobby-view { width: min(1100px, 100%); display: flex; flex-direction: column; align-items: center; gap: 8px; }
 .menu-buttons { width: min(420px, 100%); display: flex; flex-direction: column; gap: 8px; }
 .menu-buttons button { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 10px 14px; text-align: left; font-size: 1.15em; }
 .menu-buttons button small { color: var(--muted); font-size: 0.8em; font-weight: 400; }
+/* The News and Updates caption: the latest update's date, smaller, over its headline. */
+.menu-buttons button small.news-date { font-size: 0.65em; }
 .section-head { width: 100%; display: flex; align-items: center; gap: 12px; }
 #credits { width: min(700px, 100%); display: flex; flex-direction: column; gap: 6px; }
 #credits h3 { margin: 0 0 4px; }
@@ -311,7 +322,10 @@ html[data-reduce-motion] .credits-roll { animation: none; padding: 0; }
 }
 .lobby-online { margin: 0 0 10px; font-size: 0.9em; }
 .lobby-online strong { color: var(--text); }
+/* The game list sits in its own inner glass panel, which stays when there are no games (it then holds the note). It has a fixed height and always shows its vertical scroll bar. */
+.lobby-games { box-sizing: border-box; height: 60vh; overflow-y: scroll; padding: 12px 14px; background: rgba(12, 15, 20, 0.45); border: 1px solid var(--line); border-radius: 6px; box-shadow: inset 0 0 14px rgba(4, 6, 10, 0.5); }
 #lobby-rooms-note { margin: 0 0 6px; }
+#lobby-rooms-note:not([hidden]) + #lobby-rooms:empty { display: none; }
 #lobby-create #lobby-name { width: 100%; }
 /* In the Create a room tab the map list and its preview have the whole panel width. */
 .lobby-panel .map-layout { gap: 16px; }
@@ -351,7 +365,8 @@ html[data-reduce-motion] .credits-roll { animation: none; padding: 0; }
 #scoreboard .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
 
 /* Bottom of the side panel: download / upload / reset designs. */
-#designs-bar { margin-top: auto; display: flex; flex-direction: column; gap: 6px; padding-top: 10px; border-top: 1px solid var(--line); }
+#designs-bar { margin-top: 0; display: flex; flex-direction: column; gap: 6px; padding-top: 10px; border-top: 1px solid var(--line); }
+#designs-bar .row { flex-direction: column; gap: 4px; }
 #designs-bar .row button { font-size: 12px; padding: 5px 6px; }
 button.link { background: none; border: none; padding: 0; color: var(--muted); font-size: 12px; text-align: left; text-decoration: underline; }
 button.link:hover { color: var(--text); }
@@ -375,6 +390,8 @@ button.danger { border-color: var(--bad); background: #3a1d1d; }
 .modal-body { overflow-y: auto; font-size: 13px; }
 .modal-body p { margin: 0 0 8px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+/* The touch-device warning (lobby.ts) is a caution, so its border is red like other warnings. */
+.touch-warning .modal { border-color: var(--bad); }
 .design-plan { margin: 0 0 8px; padding-left: 18px; }
 .design-choices { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
 .design-choices td { padding: 6px 4px; border-top: 1px solid var(--line); vertical-align: top; }
@@ -383,14 +400,17 @@ button.danger { border-color: var(--bad); background: #3a1d1d; }
 
 /* Selection resources: label, sparkline of the last ~30 s, current amount. */
 .resource-list { display: flex; flex-direction: column; gap: 3px; font-size: 12px; font-variant-numeric: tabular-nums; }
-.res-row { display: grid; grid-template-columns: 52px 90px 1fr; align-items: center; gap: 8px; }
+.res-row { display: grid; grid-template-columns: 44px 60px 1fr; align-items: center; gap: 6px; }
 .res-row .label { color: var(--muted); }
 .res-row .value { text-align: right; white-space: nowrap; }
 .res-row small { color: var(--muted); }
-.res-row .spark { display: block; background: #0e1116; border-radius: 3px; }
+.res-row.node { grid-template-columns: 44px 1fr auto; }
+.res-row .node-bar { display: block; height: 10px; background: #0e1116; border-radius: 3px; overflow: hidden; box-shadow: inset 0 0 0 1px rgba(126, 224, 181, 0.25); }
+.res-row .node-bar i { display: block; height: 100%; background: linear-gradient(90deg, #4fbf93, #7ee0b5); }
+.res-row .spark { display: block; width: 100%; height: auto; background: #0e1116; border-radius: 3px; }
 
 /* Action grid: square buttons for the selection's actions. */
-.action-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; }
+.action-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
 .action-grid .action {
   position: relative;
   aspect-ratio: 1;
@@ -404,7 +424,6 @@ button.danger { border-color: var(--bad); background: #3a1d1d; }
   overflow: hidden;
 }
 .action-grid .action img { width: 55%; height: 45%; object-fit: contain; }
-#production-buttons.action-grid { grid-template-columns: repeat(4, 1fr); }
 /* The factory queue: one slot per place in the queue, the one being built fills from the bottom. */
 .queue-grid { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 2px; }
 .queue-slot { position: relative; aspect-ratio: 1; padding: 2px; overflow: hidden; display: flex; align-items: center; justify-content: center; min-width: 0; }
@@ -413,13 +432,13 @@ button.danger { border-color: var(--bad); background: #3a1d1d; }
 .queue-slot .fill { position: absolute; left: 0; right: 0; bottom: 0; background: rgba(245, 197, 66, 0.4); transition: height 0.2s linear; pointer-events: none; }
 .queue-slot.current { border-color: #f5c542; }
 .queue-slot:not(.empty):hover { border-color: var(--bad); }
-.action-grid .action .icon { font-size: 20px; line-height: 1; }
-.action-grid .action .label { font-size: 10px; line-height: 1.1; text-align: center; overflow-wrap: anywhere; }
+.action-grid .action .icon, #unit-menu-toggle .icon { font-size: 26px; line-height: 1; }
+.action-grid .action .label, #unit-menu-toggle .label { font-size: 12px; line-height: 1.1; text-align: center; overflow-wrap: anywhere; }
 .action-grid .action kbd {
   position: absolute;
-  top: 2px;
-  right: 3px;
-  font: 9px ui-monospace, Consolas, monospace;
+  top: 3px;
+  right: 4px;
+  font: 11px ui-monospace, Consolas, monospace;
   color: var(--muted);
 }
 .action-grid .action.custom { border-color: #4b3a63; }
@@ -435,17 +454,11 @@ button.danger { border-color: var(--bad); background: #3a1d1d; }
 .group-bar .group { display: flex; align-items: baseline; gap: 4px; padding: 2px 7px; font-size: 12px; }
 .group-bar .group small { color: var(--muted); }
 
-/* Build bar: category buttons, then (once one is opened) its buildings, under the map. */
+/* Build section of the left pane (shown only while a builder is selected): the category buttons; the open category's buildings pop over the map. */
 #buildbar {
-  position: relative;
-  z-index: 10;
-  flex: none;
   display: flex;
-  gap: 6px;
-  padding: 6px 8px;
-  overflow-x: auto;
-  background: var(--panel);
-  border-top: 1px solid var(--line);
+  flex-direction: column;
+  gap: 4px;
 }
 #buildbar button {
   flex: none;
@@ -455,30 +468,105 @@ button.danger { border-color: var(--bad); background: #3a1d1d; }
   padding: 4px 8px 4px 4px;
   font-size: 12px;
 }
-#buildbar button.category.open { border-color: var(--accent, #6aa8ff); }
-#buildmenu {
+/* The open category is a tab: it reaches across the pane padding to the edge, where the pop-over begins level with it. */
+#buildbar button.category { transition: none; } /* no colour fade: the tab's right edge must not flash as it opens */
+/* While a category is open the other tabs step back. */
+#buildbar.has-open button.category:not(.open) { opacity: 0.5; }
+#buildbar.has-open button.category:not(.open):hover, #buildbar.has-open button.category:not(.open):focus-visible { opacity: 0.85; }
+#buildbar button.category.open {
+  border-color: var(--accent, #6aa8ff);
+  border-right-color: transparent;
+  border-radius: 6px 0 0 6px;
+  margin-right: -12px;
+  padding-right: 34px;
+  background: rgba(22, 27, 34, 0.9);
+}
+#buildbar button.category.open::after { right: 20px; }
+/* The open category's buildings: a glass pop-over over the playfield (same look as the top-bar drop-downs), buildings in a grid. */
+:is(#buildmenu, #unitmenu) {
+  /* Fixed so it can overlap the pane's border; left/top/max-height are set by Ui.positionBuildMenu. */
   position: fixed;
-  z-index: 20;
+  top: 0;
+  left: 228px;
+  z-index: 12;
+  box-sizing: border-box;
+  width: max-content;
+  max-width: min(560px, calc(100vw - 244px));
+  /* Not scrolling itself (that would clip the joint below): the grid scrolls inside it. */
   display: flex;
   flex-direction: column;
-  gap: 4px;
   padding: 6px;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  box-shadow: 0 4px 16px #0008;
+  background: rgba(22, 27, 34, 0.5);
+  border: 1px solid var(--accent, #6aa8ff);
+  border-radius: 0 6px 6px 6px; /* square corner where it meets its tab */
+  backdrop-filter: blur(6px);
+  box-shadow: 0 0 22px 8px rgba(4, 6, 10, 0.45);
 }
-#buildmenu[hidden] { display: none; }
-#buildmenu h3 { margin: 0 0 2px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
-#buildmenu button { display: flex; align-items: center; gap: 6px; padding: 4px 8px 4px 4px; font-size: 12px; }
-#buildmenu button.active { border-color: var(--good); background: #1d2b22; }
-#buildmenu img { width: 36px; height: 36px; object-fit: contain; }
-#buildmenu span { display: flex; flex-direction: column; align-items: flex-start; line-height: 1.2; }
-#buildmenu small { color: #7ee0b5; }
+:is(#buildmenu, #unitmenu)[hidden] { display: none; }
+/* Opening: slides out from under the left pane (below it while it moves, then above it again for the joint). */
+:is(#buildmenu, #unitmenu).opening { z-index: 9; animation: build-slide 0.07s ease-out; }
+/* Swapping category: the old panel slides back under the pane first. */
+:is(#buildmenu, #unitmenu).closing { z-index: 9; animation: build-slide 0.07s ease-in reverse forwards; }
+@keyframes build-slide { from { transform: translateX(-100%); } to { transform: none; } }
+html[data-reduce-motion] :is(#buildmenu, #unitmenu).opening, html[data-reduce-motion] :is(#buildmenu, #unitmenu).closing { animation: none; z-index: 12; }
+/* The joint: hides the pane's border line and the pop-over's own left edge along the tab only, so tab and content read as one piece
+   (the left edge shows again above and below the tab). */
+:is(#buildmenu, #unitmenu)::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -1px;
+  width: 2px;
+  height: calc(var(--tab-h, 0px) - 2px);
+  background: rgba(22, 27, 34, 0.9);
+  pointer-events: none;
+}
+:is(#buildmenu, #unitmenu) h3 { margin: 0 0 6px 2px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+:is(#buildmenu, #unitmenu) .build-grid { display: grid; grid-template-columns: repeat(auto-fill, 112px); gap: 6px; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+:is(#buildmenu, #unitmenu) button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 4px;
+  font-size: 12px;
+  background: rgba(18, 23, 30, 0.6);
+}
+:is(#buildmenu, #unitmenu) button:hover, :is(#buildmenu, #unitmenu) button:focus-visible { outline: 1px solid var(--accent); }
+:is(#buildmenu, #unitmenu) button.kbd-focus, #buildbar button.kbd-focus { outline: 2px solid var(--accent); }
+:is(#buildmenu, #unitmenu) button.active { border-color: var(--good); background: #1d2b22; }
+:is(#buildmenu, #unitmenu) img { width: 48px; height: 48px; object-fit: contain; }
+:is(#buildmenu, #unitmenu) span { display: flex; flex-direction: column; align-items: center; text-align: center; line-height: 1.2; }
+:is(#buildmenu, #unitmenu) small { color: #7ee0b5; }
+/* Unit pop-over: wider cards and bigger pictures than the building one, as units have more to read (name, cost, energy). */
+#unitmenu { width: 418px; max-width: calc(100vw - 244px); } /* room for 5 columns of 76px cards: 5*76 + 4*6 gaps + 12 padding + 2 border */
+#unitmenu .build-grid { grid-template-columns: repeat(auto-fill, 76px); gap: 6px; }
+#unitmenu button { padding: 4px 2px; font-size: 10px; gap: 2px; }
+#unitmenu img { width: 40px; height: 40px; }
+#unitmenu button:disabled { opacity: 0.35; cursor: default; }
+/* The button in the pane that opens it: a tab like the build categories while open. */
+/* Same height as an order button (a square cell of the 3-wide grid is a third of the pane wide), icon over label. */
+#unit-menu-toggle { width: 100%; aspect-ratio: 3 / 1; display: flex; flex-direction: row; align-items: center; justify-content: center; gap: 10px; padding: 2px 28px; }
+#unit-menu-toggle .label { text-align: center; }
+#unit-menu-toggle { position: relative; }
+#unit-menu-toggle::after { content: '▸'; position: absolute; right: 8px; top: 50%; transform: translateY(-50%); }
+#unit-menu-toggle.open {
+  border-color: var(--accent, #6aa8ff);
+  border-right-color: transparent;
+  border-radius: 6px 0 0 6px;
+  margin-right: -12px;
+  width: calc(100% + 12px);
+  background: rgba(22, 27, 34, 0.9);
+}
 #buildbar button.active { border-color: var(--good); background: #1d2b22; }
 #buildbar img { width: 36px; height: 36px; object-fit: contain; }
 #buildbar span { display: flex; flex-direction: column; align-items: flex-start; line-height: 1.2; }
 #buildbar small { color: #7ee0b5; }
+/* Categories are bold with a chevron that points at the pop-over on the map. */
+#buildbar button.category { font-weight: 600; position: relative; padding-right: 22px; }
+#buildbar button.category::after { content: '▸'; position: absolute; right: 8px; color: var(--muted); }
+#buildbar button.category.open::after { color: var(--accent); }
+#buildbar button.category small { font-weight: 400; color: var(--muted); }
 
 h1 { font-size: 16px; margin: 0; }
 h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 8px; }
@@ -520,7 +608,7 @@ pre {
   white-space: pre-wrap;
 }
 
-.row-spread { display: flex; justify-content: space-between; gap: 8px; }
+.row-spread { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 8px; }
 .muted { color: var(--muted); }
 #credits { color: #7ee0b5; font-variant-numeric: tabular-nums; }
 
@@ -536,8 +624,6 @@ pre {
 #production { display: flex; flex-direction: column; gap: 6px; }
 button:disabled { opacity: 0.45; cursor: not-allowed; }
 
-#result.ok { color: var(--good); }
-#result.bad { color: var(--bad); }
 
 a { color: var(--accent); }
 a.button {
@@ -827,8 +913,9 @@ button.primary { border-color: var(--accent); background: #1b2a40; }
 .music.blocked { opacity: 1; border-color: var(--accent); }
 .music.blocked .music-label::after { content: ' — click anywhere to start the music'; color: var(--accent); }
 /* In a match it sits at the bottom of the side panel, just above the designs bar. */
-.music.docked { position: static; max-width: none; margin-top: auto; opacity: 1; background: none; }
-.music.docked + #designs-bar { margin-top: 0; }
+.music.docked { position: static; max-width: none; margin-top: auto; opacity: 1; background: none; padding: 3px 0; }
+.music.docked input[type='range'] { width: 56px; flex: none; }
+#panel > .music.docked + header { margin-top: 0; }
 /* In the designer's top bar. */
 .music.inbar { position: static; max-width: 40vw; opacity: 1; background: none; }
 .designer-music { display: flex; }
@@ -836,6 +923,9 @@ button.primary { border-color: var(--accent); background: #1b2a40; }
 
 /* Options screen. */
 #lobby .options { display: flex; flex-direction: column; gap: 14px; width: min(920px, 100%); box-sizing: border-box; margin: 16px auto; padding: 16px 20px; }
+/* Options sits in glass tabs: the tab panel is the frame, so the rows inside it are not a second panel. */
+#lobby .options-tabs { width: min(920px, 100%); margin: 16px auto; }
+#lobby .options-panel .options { background: none; border: 0; border-radius: 0; box-shadow: none; backdrop-filter: none; width: auto; margin: 0; padding: 0; }
 .option-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .option-row input[type='range'] { width: 220px; }
 
@@ -892,13 +982,44 @@ input[type='checkbox']:disabled { opacity: 0.4; cursor: not-allowed; }
 .campaign-list .camp-progress { color: #7ee0b5; }
 .news-panel { width: 100%; }
 .news-panel .menu-buttons { width: 100%; }
-.news-list .news-summary { white-space: normal; line-height: 1.35; }
-.news-article p { margin: 0 0 10px; line-height: 1.5; }
-.news-article .news-lead { font-size: 1.05em; }
-.news-article h3 { margin: 16px 0 4px; }
-.news-article ul { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; }
-.menu-panel { width: min(420px, 100%); }
+/* News screens share the main menu pane's text styles (`.menu-news`): small muted date, headline, summary, then the changes. */
+.news-list button { gap: 4px; }
+.news-list small { color: var(--muted); font-size: 0.65em; }
+.news-list b { font-size: 0.88em; }
+.news-list .news-summary { white-space: normal; line-height: 1.35; font-size: 0.7em; color: var(--text); }
+.news-article { display: flex; flex-direction: column; gap: 6px; }
+.news-article p { margin: 0 0 6px; line-height: 1.5; font-size: 0.8em; }
+.news-article .news-date { color: var(--muted); font-size: 0.65em; }
+.news-article h3 { margin: 8px 0 0; font-size: 0.92em; }
+.news-article ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 3px; font-size: 0.75em; color: var(--muted); }
+.menu-panel { width: 100%; }
 .menu-panel .menu-buttons { width: 100%; }
+/* Main menu: the buttons sit in the middle of the window; the latest news pops in from the right edge, like the dev panel, opened by a vertical "Latest News" tab. */
+.menu-columns { width: min(460px, 100%); display: flex; flex-direction: column; gap: 12px; }
+.menu-main { display: flex; flex-direction: column; gap: 12px; }
+.menu-columns > .menu-news { position: fixed; top: 50%; right: 16px; z-index: 41; width: min(560px, calc(100vw - 64px)); max-height: 80vh; transform: translate(calc(100% + 16px), -50%); visibility: hidden; transition: transform 0.25s ease, visibility 0.25s; }
+.menu-columns > .menu-news.open { transform: translateY(-50%); visibility: visible; }
+html[data-reduce-motion] .menu-columns > .menu-news { transition: none; }
+/* The tab is part of the panel, stuck to its left edge, and stays visible while the panel is slid away. */
+.menu-news > .news-tab { position: absolute; right: calc(100% - 1px); top: 50%; transform: translateY(-50%); visibility: visible; writing-mode: vertical-rl; padding: 16px 10px; border-radius: 8px 0 0 8px; border: 1px solid var(--line); border-right: none; background: var(--panel); color: var(--text); font-size: 18px; letter-spacing: 0.05em; }
+.news-tab[aria-expanded="true"] { background: var(--accent); color: #fff; }
+.lobby-view:has(.menu-columns) { width: 100%; }
+.menu-main .menu-panel { box-sizing: border-box; }
+/* The big play buttons on the main menu centre their title and caption. */
+.menu-main .menu-buttons button { align-items: center; text-align: center; }
+.menu-links { flex-direction: row; }
+.menu-links button { flex: 1; align-items: center; text-align: center; padding: 6px 10px; font-size: 1em; }
+.menu-news { box-sizing: border-box; max-height: 70vh; display: flex; flex-direction: column; gap: 10px; }
+.menu-news-head { display: flex; flex-direction: column; gap: 6px; }
+.menu-news-body { flex: 1; min-height: 0; overflow-y: auto; padding-right: 0.5rem; display: flex; flex-direction: column; gap: 6px; }
+.menu-news .news-date { color: var(--muted); font-size: 0.65em; }
+.menu-news h2 { font-size: 1.1em; }
+.menu-news p { margin: 0; line-height: 1.35; font-size: 0.8em; }
+.menu-news ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 3px; font-size: 0.75em; color: var(--muted); }
+/* Touch-only devices get a modal on the main menu (showTouchWarning); same blur as the menu panels. */
+.touch-warning { backdrop-filter: blur(3px); }
+/* The main menu sits in the vertical middle of the window; other screens start near the top. */
+#lobby:has(.menu-columns) { justify-content: center; gap: 16px; padding-block: 3vh; }
 .campaign-panel { width: 100%; box-sizing: border-box; }
 /* Reading screens (campaigns, news) are up to 900px wide, and their header lines up with the panel. */
 .lobby-view:has(.campaign-panel, .news-panel) { width: min(900px, 100%); }
@@ -931,8 +1052,228 @@ input[type='checkbox']:disabled { opacity: 0.4; cursor: not-allowed; }
 #dev-panel input[type="number"] { width: 6em; }
 #dev-panel select { max-width: 11em; }
 #dev-panel button { font-size: 12px; padding: 4px 8px; }
+#dev-panel .dev-alert-ok { border-color: var(--good); }
+#dev-panel .dev-alert-info { border-color: var(--accent); }
+#dev-panel .dev-alert-warn { border-color: #f0b34a; }
+#dev-panel .dev-alert-error { border-color: var(--bad); }
+#dev-panel input[type='range'] { flex: 1 1 8em; min-width: 6em; }
 #dev-panel .dev-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 /* Dev Rooms (the Multiplayer screen's sidebar) sits over the page, not inside the map. */
 #dev-button.dev-lobby, #dev-panel.dev-lobby { position: fixed; }
 #dev-panel .dev-room-list { display: flex; flex-direction: column; gap: 4px; }
 #dev-panel .dev-room-item { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+
+/* Folded rows of the left pane: module list and the design/match controls stay out of the way until opened. */
+.session-menu > summary { cursor: pointer; color: var(--muted); font-size: 12px; user-select: none; }
+.session-menu[open] > summary { margin-bottom: 6px; }
+.session-menu { display: flex; flex-direction: column; gap: 6px; }
+.session-menu[open] { gap: 6px; }
+/* Pop-in alerts: glass panels sliding in from the right; the border colour says what kind of message it is. */
+#toasts { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; width: 100%; overflow: hidden; padding: 2px 2px 2px 0; }
+.toast {
+  --c: var(--accent);
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px 12px;
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--text);
+  background: rgb(22 27 34 / 0.72);
+  backdrop-filter: blur(6px);
+  border: 1px solid var(--c);
+  border-left-width: 4px;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px #0008;
+  overflow-wrap: anywhere;
+  animation: toast-in 220ms cubic-bezier(0.2, 0.8, 0.3, 1) both;
+}
+.toast.ok { --c: var(--good); }
+.toast.warn { --c: #f0b34a; }
+.toast.error { --c: var(--bad); }
+.toast.leaving { animation: toast-out 260ms cubic-bezier(0.5, 0, 0.8, 0.4) both; }
+@keyframes toast-in { from { transform: translateX(110%); opacity: 0; } }
+@keyframes toast-out { to { transform: translateX(110%); opacity: 0; } }
+html[data-reduce-motion] .toast, html[data-reduce-motion] .toast.leaving { animation: none; }
+
+/* Top bar across the stage: stores (matter, energy, units) on the left, world tiles (daylight, wind, power) on the right. */
+#topbar {
+  position: relative;
+  z-index: 10;
+  flex: none;
+  display: flex;
+  align-items: stretch;
+  padding: 6px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+/* Every meter is the same tile and the tiles share the row evenly. */
+#topbar { flex-wrap: nowrap; gap: 8px; }
+#topbar #resource-bars, #topbar .env-tiles { display: contents; }
+#topbar .env-tile { flex: 1 1 0; min-width: 0; padding: 3px 8px; }
+#topbar .env-icon { font-size: 18px; }
+#topbar .env-value { font-size: 14px; }
+#topbar .env-power { grid-column: auto; grid-template-columns: auto 1fr; }
+#topbar .env-power .env-icon { grid-row: 1 / 3; }
+#topbar .env-power .env-label { grid-column: 2; grid-row: 2; text-align: right; }
+#topbar .env-power .env-value { grid-column: 2; grid-row: 1; }
+#designs-bar > #resign { align-self: flex-start; }
+
+/* The whole tile is its own bar: a tinted fill grows behind the content from the left, with a bright edge.
+   The text stays near-white with a soft shadow so it reads over both the filled and the empty part. */
+#topbar .env-tile { position: relative; overflow: hidden; padding: 6px 10px; background: #12171e; }
+#topbar .env-tile > .env-bar {
+  position: absolute;
+  inset: 0;
+  grid-area: auto;
+  height: auto;
+  margin: 0;
+  border-radius: 0;
+  background: transparent;
+  z-index: 0;
+}
+#topbar .env-bar i {
+  background: color-mix(in srgb, var(--c) 34%, transparent);
+  border-right: 2px solid var(--c);
+  box-sizing: border-box;
+}
+#topbar .env-icon, #topbar .env-value, #topbar .env-label { position: relative; z-index: 1; text-shadow: 0 1px 2px #000c; }
+#topbar .env-icon { font-size: 22px; }
+#topbar .env-value { font-size: 16px; color: var(--text); }
+#topbar .env-label { color: var(--text); opacity: 0.75; }
+
+/* Daylight, wind and power drop down from the Energy tile, one line each (icon, value, name), each still its own bar. */
+#topbar .env-tile { overflow: visible; }
+#topbar .env-tile > .env-bar { border-radius: inherit; overflow: hidden; }
+#topbar .env-has-drop { cursor: default; }
+#topbar .env-drop {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  min-width: 100%;
+  width: max-content;
+  max-width: 380px;
+  max-height: 70vh;
+  overflow-y: auto;
+  z-index: 30;
+  display: none;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 4px; /* no gap to cross with the pointer */
+}
+#topbar .env-has-drop:hover > .env-drop, #topbar .env-has-drop:focus-within > .env-drop { display: flex; }
+#topbar .env-drop .env-tile {
+  flex: none;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  box-shadow: 0 4px 12px #0008;
+}
+#topbar .env-drop .env-icon { width: 1.3em; text-align: center; font-size: 18px; }
+#topbar .env-drop .env-value { min-width: 6ch; text-align: left; font-size: 14px; }
+#topbar .env-drop .env-label { text-align: left; }
+
+/* Rows without a fill (net matter, 'none' notes) and nested rows (the generators under Solar and Wind). */
+#topbar .env-drop .env-plain > .env-bar { display: none; }
+#topbar .env-drop .env-sub { margin-left: 18px; padding: 2px 10px; box-shadow: none; }
+#topbar .env-drop .env-sub .env-icon { font-size: 13px; }
+#topbar .env-drop .env-sub .env-value { font-size: 12px; min-width: 6ch; }
+#topbar .env-drop .env-sub .env-label { font-size: 11px; text-transform: none; letter-spacing: 0; }
+
+/* Several power grids: the Energy bar is split into one bar per grid, so a break in the network shows as a gap. */
+#topbar .env-bar.segmented { display: flex; gap: 4px; }
+#topbar .env-bar.segmented > b { position: relative; flex: 1 1 0; min-width: 0; overflow: hidden; border-radius: 4px; background: rgba(255, 255, 255, 0.06); }
+/* Grid headings in the drop-down, and storage rows (indented like the generators). */
+#topbar .env-drop .env-grid-head { margin-top: 4px; }
+#topbar .env-drop .env-grid-head:first-child { margin-top: 0; }
+#topbar .env-drop .env-grid-head .env-label { font-weight: 600; }
+/* The parts that float over the map are slightly see-through. */
+#topbar .env-drop .env-tile { background: rgba(18, 23, 30, 0.8); backdrop-filter: blur(3px); }
+
+/* The tree in the drop-downs: a heading per grid or group (total, and the change per tick on the right), its members indented under it. */
+.env-extra { position: relative; z-index: 1; margin-left: auto; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; text-shadow: 0 1px 2px #000c; white-space: nowrap; }
+.env-extra:empty { display: none; }
+.env-tile.neg > .env-extra { color: var(--bad); }
+#topbar .env-drop .env-grid-head { margin-top: 6px; }
+#topbar .env-drop .env-grid-head.env-plain .env-label { color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; font-size: 11px; opacity: 1; }
+
+/* Draining (a resource, grid, battery or silo that is losing more than it gains): the bar, edge and icon go red. The
+   important beats the colour set on the tile; bar segments (one per grid) carry their own colour. */
+.env-tile.drain { --c: var(--bad) !important; }
+#topbar .env-store.drain > .env-value { color: var(--bad); }
+/* Drop-down rows do not inherit the tile's red; they decide for themselves. */
+#topbar .env-drop .env-tile { --c: var(--accent); }
+
+/* The last tile (Units) sits at the right edge: its drop-down opens leftwards so it stays on screen. */
+#topbar .env-has-drop:last-child > .env-drop { left: auto; right: 0; }
+
+/* Rows you can click (the unit classes in the Units drop-down select their units). */
+#topbar .env-drop .env-click { cursor: pointer; }
+#topbar .env-drop .env-click:hover, #topbar .env-drop .env-click:focus-visible { outline: 1px solid var(--accent); }
+
+/* The drop-downs sit on a glass panel (like the menu screens) so the rows do not float alone over the map. */
+#topbar .env-drop {
+  padding: 6px;
+  background: rgba(22, 27, 34, 0.5);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  backdrop-filter: blur(6px);
+  box-shadow: 0 0 22px 8px rgba(4, 6, 10, 0.45);
+}
+#topbar .env-drop .env-tile { box-shadow: none; background: rgba(18, 23, 30, 0.6); }
+
+/* Controls editor (Options). */
+.controls-editor h3 { margin: 0; font-size: 1em; }
+.controls-editor h4 { margin: 10px 0 0; font-size: 0.8em; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.controls-editor p { margin: 0; font-size: 0.7em; }
+.controls-editor .glass-tab-panel { gap: 0; }
+.controls-editor .glass-tab-panel > p { margin-bottom: 6px; }
+.controls-editor .glass-tab-panel > h4:first-child, .controls-editor .glass-tab-panel > p + h4 { margin-top: 4px; }
+.controls-editor .glass-tab-list > button { padding: 6px 14px; font-size: 0.8em; }
+.control-row { display: grid; grid-template-columns: minmax(150px, 1fr) auto; column-gap: 16px; row-gap: 4px; align-items: center; padding: 4px 0; border-top: 1px solid var(--line); }
+.control-label { display: flex; flex-direction: column; font-size: 0.8em; }
+.control-label small { color: var(--muted); font-size: 0.8em; }
+.control-slots { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.ctl-slot { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.ctl-key { min-width: 130px; font-size: 0.75em; }
+.ctl-key.listening { border-color: var(--accent); color: var(--accent); }
+.ctl-clear { font-size: 0.75em; padding: 2px 8px; }
+.ctl-input { font-size: 0.7em; max-width: 210px; }
+.ctl-mods { display: inline-flex; gap: 2px; }
+.ctl-mod { font-size: 0.65em; padding: 2px 6px; }
+.ctl-mod[aria-pressed='true'] { border-color: var(--accent); color: var(--accent); }
+.control-issues { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 2px; font-size: 0.65em; }
+.ctl-issue.warn { color: #e8b84a; }
+.ctl-issue.bad { color: var(--bad); }
+.ctl-reset, .ctl-default { font-size: 0.75em; }
+.ctl-default { margin-left: auto; }
+@media (max-width: 700px) { .control-row { grid-template-columns: 1fr; } .control-slots { justify-content: flex-start; } }
+
+/* Scroll hint: the bottom 2em of a scrollable panel fades out while there is more below, and clears once scrolled to the end (or if nothing overflows). Pure CSS, no timers, so it is also fine under Reduce motion. */
+@property --scroll-fade { syntax: "<length>"; inherits: false; initial-value: 0px; }
+@keyframes scroll-fade-out { from { --scroll-fade: 2em; } to { --scroll-fade: 0px; } }
+@supports (animation-timeline: scroll()) {
+  #panel, .modal-body, #buildmenu .build-grid, #unitmenu .build-grid, .designer-tab-design > section, .menu-news-body, .test-run, .diff-body, #dev-panel {
+    animation: scroll-fade-out linear both;
+    animation-timeline: scroll(self block);
+    animation-range: calc(100% - 2em) 100%;
+    -webkit-mask-image: linear-gradient(#000 calc(100% - var(--scroll-fade)), transparent);
+    mask-image: linear-gradient(#000 calc(100% - var(--scroll-fade)), transparent);
+  }
+}
+
+/* News: a soft accent glow along the bottom edge while more articles are hidden below (same cue as the fade above). */
+@supports (animation-timeline: scroll()) {
+  .menu-news { timeline-scope: --news-scroll; }
+  .menu-news > button[data-go] { position: relative; }
+  .menu-news-body { scroll-timeline: --news-scroll block; }
+  .menu-news > button[data-go]::before {
+    content: ""; position: absolute; left: 0; right: 0; bottom: calc(100% + 4px); height: 2.5em; pointer-events: none;
+    background: radial-gradient(ellipse 70% 100% at 50% 100%, rgb(78 161 255 / 0.55), transparent);
+    animation: news-glow linear both;
+    animation-timeline: --news-scroll;
+    animation-range: calc(100% - 2em) 100%;
+  }
+}
+@keyframes news-glow { from { opacity: 1; } to { opacity: 0; } }

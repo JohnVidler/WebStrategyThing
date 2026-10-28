@@ -1,7 +1,7 @@
 import './style.css';
-import { applyTick, DEFAULT_MAP_ID, MAX_UNITS_PER_PLAYER, messageAllowed, parseGameMode, Terrain, type ClientMessage, type ServerMessage } from '@wst/engine';
+import { applyTick, DEFAULT_MAP_ID, MAX_UNITS_PER_PLAYER, messageAllowed, NOTICE_KINDS, parseGameMode, parseScenario, Terrain, type ClientMessage, type ServerMessage } from '@wst/engine';
 import { Connection } from './connection';
-import { ConnectingScreen } from './connecting';
+import { ConnectingScreen, STAGE } from './connecting';
 import { DesignStore } from './designs';
 import { GameSounds } from './gameSounds';
 import type { Designer } from './designer';
@@ -14,6 +14,7 @@ import { randomHex } from './random';
 import { Renderer } from './renderer';
 import { playSound, sound } from './sound';
 import { ClientState } from './state';
+import { showToast } from './toast';
 import { Ui } from './ui';
 import { briefingUrl, campaignUrl, fetchCampaigns } from './campaignMenu';
 import { completeLevel } from './campaignProgress';
@@ -30,8 +31,12 @@ async function main(): Promise<void> {
   const socketBase = import.meta.env.VITE_SERVER_URL ?? `${socketProtocol}//${location.host}/api/v1/ws`;
   // ?room=name picks a match; without it the page shows the room list instead of joining.
   const room = new URLSearchParams(location.search).get('room');
+  // ?title= is what the room's creator called it (any characters); the id above is what identifies it.
+  const roomTitle = new URLSearchParams(location.search).get('title') ?? '';
   const mapId = new URLSearchParams(location.search).get('map') ?? DEFAULT_MAP_ID;
   const mode = parseGameMode(new URLSearchParams(location.search).get('mode'));
+  // Single Player scenario (horde, surrounded); the server ignores it in other modes.
+  const scenario = parseScenario(new URLSearchParams(location.search).get('scenario'));
   // Campaign levels: which campaign and level (by file name), and its position in the campaign.
   const campaignId = new URLSearchParams(location.search).get('campaign') ?? '';
   const levelId = new URLSearchParams(location.search).get('level') ?? '';
@@ -52,8 +57,8 @@ async function main(): Promise<void> {
   // A cover over the whole page until the server has sent the map; real steps show as they finish.
   const connecting = new ConnectingScreen(document.getElementById('connecting')!);
   connecting.show();
-  void musicLoaded.then(() => connecting.step('Music library indexed'));
-  void soundLoaded.then(() => connecting.step('Sound bank loaded'));
+  void musicLoaded.then(() => connecting.step(STAGE.music));
+  void soundLoaded.then(() => connecting.step(STAGE.sound));
 
   // The client keeps a mirror of the networked components only; it never runs unit scripts.
   const state = new ClientState();
@@ -64,8 +69,8 @@ async function main(): Promise<void> {
   };
 
   const ui = new Ui(state, {
-    produce: (building, blueprint) => {
-      send({ t: 'produce', building, blueprint });
+    produce: (building, blueprint, count) => {
+      for (let i = 0; i < count; i++) send({ t: 'produce', building, blueprint });
       // The server refuses a unit past the cap; say so straight away.
       if (state.ownUnitCount() >= MAX_UNITS_PER_PLAYER) {
         playSound('produce.rejected');
@@ -86,6 +91,7 @@ async function main(): Promise<void> {
     iconFor: (blueprint) => renderer.iconFor(state.blueprints.get(blueprint)!),
     press: (id, queue) => input.press(id, queue),
     recallGroup: (n) => input.recallGroup(n),
+    selectClass: (blueprint, add) => input.selectClass(blueprint, add),
     startGame: () => send({ t: 'startGame' }),
     spectate: () => spectate(),
     leave: () => leave(),
@@ -105,20 +111,21 @@ async function main(): Promise<void> {
   const renderPanel = () => {
     ui.renderSelection(input.selection);
     ui.renderActions(input.actions(), input.aiming, performance.now() < input.demolishArmedUntil);
-    ui.renderInfo(input.hovered, input.selection);
+    ui.renderSelectionTitle(input.hovered, input.selection);
   };
   const input = new Input(
     state,
     send,
     renderPanel,
     () => ui.setPlacing(input.placement?.bp.id ?? -1),
-    () => ui.renderInfo(input.hovered, input.selection),
+    () => ui.renderSelectionTitle(input.hovered, input.selection),
     () => ui.renderActions(input.actions(), input.aiming, performance.now() < input.demolishArmedUntil),
     () => ui.renderGroups(input.groupList()),
+    (act) => ui.buildKey(act),
   );
   const renderer = await Renderer.create(document.getElementById('map')!, state, input);
   input.attach(renderer);
-  connecting.step('Graphics engine ready');
+  connecting.step(STAGE.graphics);
 
   // Designing and coding live in their own overlay, separate from playing. It (and the
   // code editor) loads on first use, keeping the game itself quick to start.
@@ -223,10 +230,10 @@ async function main(): Promise<void> {
         if (!msg.lobby) ui.hideWaitingRoom();
         resign.textContent = idleLabel();
         state.refreshStructures();
-        ui.setPlayer(getPlayerName(), room);
+        ui.setPlayer(getPlayerName(), roomTitle || room);
         send({ t: 'setName', name: getPlayerName() });
         renderer.configure(msg.tickRate);
-        connecting.step('Map received');
+        connecting.step(STAGE.map);
         connecting.done();
         break;
       case 'blueprints':
@@ -260,6 +267,7 @@ async function main(): Promise<void> {
         state.applyCpuProfile(msg.unit, msg.tick, msg.profile);
         break;
       case 'scoreboard':
+        state.setTeams(msg.players);
         ui.setScoreboard(msg.players);
         devTools?.setPlayers(msg.players);
         break;
@@ -297,9 +305,18 @@ async function main(): Promise<void> {
       case 'designsLoaded':
         designs.onLoaded(msg);
         break;
+      case 'weather':
+        state.devSun = msg.sun;
+        state.devWind = msg.wind;
+        break;
       case 'devNote':
         devTools?.note(msg.text, msg.ok);
         break;
+      case 'notice': {
+        const kind = NOTICE_KINDS[msg.kind];
+        if (kind) showToast(msg.text, kind);
+        break;
+      }
       case 'error':
         ui.showResult(msg.message, false);
         if (designer?.isOpen) designer.showResult(msg.message, false);
@@ -315,11 +332,11 @@ async function main(): Promise<void> {
   } catch {
     token = randomHex();
   }
-  const url = `${socketBase}${socketBase.includes('?') ? '&' : '?'}room=${encodeURIComponent(room)}&token=${token}&map=${encodeURIComponent(mapId)}&mode=${mode}${mode === 'campaign' ? `&campaign=${encodeURIComponent(campaignId)}&level=${encodeURIComponent(levelId)}` : ''}`;
+  const url = `${socketBase}${socketBase.includes('?') ? '&' : '?'}room=${encodeURIComponent(room)}&token=${token}&map=${encodeURIComponent(mapId)}&mode=${mode}${scenario !== 'standard' ? `&scenario=${scenario}` : ''}${roomTitle ? `&title=${encodeURIComponent(roomTitle)}` : ''}${mode === 'campaign' ? `&campaign=${encodeURIComponent(campaignId)}&level=${encodeURIComponent(levelId)}` : ''}`;
   const conn = new Connection(url, {
     open: () => {
       ui.setStatus('connected');
-      connecting.step('Server link open');
+      connecting.step(STAGE.link);
     },
     close: (retrying) => {
       if (retrying) connecting.retrying('Server not answering, retrying');

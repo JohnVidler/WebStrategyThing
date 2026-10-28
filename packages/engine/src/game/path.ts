@@ -93,12 +93,24 @@ const octile = (dx: number, dy: number) => {
  */
 export function findPath(t: Terrain, sx: number, sy: number, goalX: number, goalY: number, m: Mobility = WHEELS): number[] {
   const w = t.width;
-  let gx = goalX;
-  let gy = goalY;
+  const gx = goalX;
+  const gy = goalY;
+  // A goal that cannot be stood on is reached from any cell a unit fits in that is about as close to it as the nearest
+  // one, whichever side is cheapest to get to, rather than from one fixed cell that may be walled off or far round.
+  let ring = 0;
+  let reach = 0; // squared distance (tiles) a goal cell may be from the goal
   if (!t.fits(gx, gy, m)) {
     const near = t.nearestFit(gx, gy, m, BLOCKED_GOAL_RADIUS);
-    if (near) [gx, gy] = near;
+    if (near) {
+      const dx = near[0] - gx;
+      const dy = near[1] - gy;
+      ring = Math.max(Math.abs(dx), Math.abs(dy));
+      reach = dx * dx + dy * dy + ring; // takes in the cells beside the nearest one, but not the far corners of the ring
+    }
   }
+  const slack = DIAGONAL * ring; // no goal cell is further than this from the goal, so f stays a lower bound
+  const atGoal = (x: number, y: number) =>
+    ring === 0 ? x === gx && y === gy : (x - gx) ** 2 + (y - gy) ** 2 <= reach && t.fits(x, y, m);
   ensure(w * t.height);
   if (++search === 0xffffffff) {
     stamp.fill(0);
@@ -109,7 +121,7 @@ export function findPath(t: Terrain, sx: number, sy: number, goalX: number, goal
   const start = sy * w + sx;
   g[start] = 0;
   hOf[start] = octile(gx - sx, gy - sy);
-  fOf[start] = hOf[start];
+  fOf[start] = Math.max(0, hOf[start] - slack);
   parent[start] = -1;
   stamp[start] = search;
   push(start);
@@ -127,7 +139,10 @@ export function findPath(t: Terrain, sx: number, sy: number, goalX: number, goal
     if (hOf[n] < hOf[best] || (hOf[n] === hOf[best] && g[n] < g[best])) best = n;
     const x = n % w;
     const y = (n - x) / w;
-    if (x === gx && y === gy) break;
+    if (atGoal(x, y)) {
+      best = n;
+      break;
+    }
     const tight = big && !t.fits(x, y, m);
     for (const [dx, dy] of DIRS) {
       const nx = x + dx;
@@ -142,7 +157,7 @@ export function findPath(t: Terrain, sx: number, sy: number, goalX: number, goal
       g[m] = cost;
       parent[m] = n;
       hOf[m] = octile(gx - nx, gy - ny);
-      fOf[m] = cost + hOf[m];
+      fOf[m] = cost + Math.max(0, hOf[m] - slack);
       push(m);
     }
   }

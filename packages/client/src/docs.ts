@@ -1,4 +1,5 @@
 import './docs.css';
+import { defaultKeyLabel, orderControl } from './controls';
 import { MANUAL } from './manual';
 import {
   API_GROUPS,
@@ -165,6 +166,9 @@ on(Detected, { watch: [ENEMY], range: 6, interval: 5 }, (kind, h) => {
       for 2 seconds (up to ${MAX_TEXT} characters; each distinct text takes one memory slot). Join text, whole numbers and true/false values with <code>+</code>,
       as <code>alert('HP: ' + hp() + ' low=' + (hp() &lt; 20), 2000)</code>: the text is built when the call runs and cut at ${MAX_TEXT} characters. Joined text is only allowed where a function takes text.
       In the graph, type the text straight into the input, or wire an Add node.</p>
+      <p>To tell <em>you</em> something instead, use <code>notify('Fuel low', NOTE_WARN)</code>: a pop-up alert at the top right of your screen that only you see.
+      The kind (<code>NOTE_OK</code>, <code>NOTE_INFO</code>, <code>NOTE_WARN</code> or <code>NOTE_ERROR</code>) sets its colour. A unit can raise one every two seconds,
+      so a unit that notifies on every tick is simply muted between messages.</p>
       <h2>Names</h2>
       <p>Variables, event parameters and bound results cannot reuse a built-in name (so no variable called <code>x</code> or <code>hp</code>), and
       <code>const</code> results only live inside the block they are written in. Constants such as <code>MOVE</code> or <code>URGENT</code> are built in — see <a href="#/constants">Constants</a>.</p>
@@ -362,6 +366,9 @@ on(Delivered, (load) => {
       your own: at least ${tiles(UNIT_VISION)} tiles for units and ${tiles(BUILDING_VISION)} for buildings, or the range of their
       best sensor if that is further. The server only sends you what you can see, so enemy positions, health and module
       switches outside your vision never reach your browser.</p>
+      <p><b>Line of sight:</b> rock and buildings block vision. You see the face of a rock or a wall, but not what is behind it, so
+      a unit beside a cliff or a row of walls cannot see over it. A building sees out from its own footprint, and flying units look
+      down over everything.</p>
       <p>The map is shaded where you can't see: lightly where you have looked before, darker where you never have.
       Things that leave your vision disappear until you see them again.</p>
       <p class="note">Programs are limited separately, by their own sensors: ${fnLink('scan')} and <code>Detected</code> only find what the unit's
@@ -379,8 +386,8 @@ on(Delivered, (load) => {
       Each is greyed out unless at least one selected unit has the modules for it, and it only reaches the units that do. Aimed actions wait for a
       left-click on the map (right-click or Esc cancels).</p>
       <table>
-        <tr><th>Button</th><th>Key</th><th>Order</th><th>What it does</th></tr>
-        ${COMMON_ACTIONS.map((a) => `<tr><td>${a.icon} ${a.label}</td><td><kbd>${a.key}</kbd></td><td><code>${SCRIPT_CONSTANT_DOCS.find(([, v]) => v === a.task)?.[0] ?? a.task}</code>${a.aim ? ' (aimed)' : ''}</td><td>${esc(a.doc)}</td></tr>`).join('')}
+        <tr><th>Button</th><th>Default key</th><th>Order</th><th>What it does</th></tr>
+        ${COMMON_ACTIONS.map((a) => `<tr><td>${a.icon} ${a.label}</td><td><kbd>${defaultKeyLabel(orderControl(a.id))}</kbd></td><td><code>${SCRIPT_CONSTANT_DOCS.find(([, v]) => v === a.task)?.[0] ?? a.task}</code>${a.aim ? ' (aimed)' : ''}</td><td>${esc(a.doc)}</td></tr>`).join('')}
       </table>
       <h2>Your own buttons</h2>
       <p>A class declares a button with a <code>Button</code> block. The block <i>is</i> the button, and its code runs when the button is pressed:</p>
@@ -402,7 +409,7 @@ on(Button, { label: 'Lay mine', aim: true }, (px, py, target) => {
         <li>With several classes selected, the grid shows every button of every class. Buttons with the same name
         are merged, and each press only reaches units whose class has that button.</li>
         <li>Up to ${MAX_BUTTONS} buttons per class. Keys are single letters;
-        ${COMMON_ACTIONS.map((a) => `<kbd>${a.key}</kbd>`).join(' ')} belong to the common actions.</li>
+        ${COMMON_ACTIONS.map((a) => `<kbd>${a.key}</kbd>`).join(' ')} belong to the common actions (by default; players can change those keys in Options, and a class button key is never changed).</li>
       </ul>
       <p class="note">The starter fighters have a <b>Hold fire</b> toggle (<kbd>F</kbd>), and the energy storage has
       <b>Hold charge</b> / <b>Automatic</b> (<kbd>K</kbd>/<kbd>U</kbd>).</p>`,

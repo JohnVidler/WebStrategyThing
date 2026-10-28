@@ -40,7 +40,7 @@ packages/
     ecs/      component schemas, SoA stores, World (entities, handles, queries, change tracking)
     flow/     program model (IR), TypeScript-subset parser/printer, checker, compiler, resumable runtime, events, cost
     game/     parts, blueprints, components, terrain + A*, power networks, unit API, action buttons,
-              vision, systems, map setup, Simulation, designer sandbox, design files
+              vision (line of sight), systems, map setup, scenarios (Classic, Horde, Surrounded, co-op), bot AI, Simulation, designer sandbox, design files
     net/      binary tick codec, JSON protocol + validation
   server/   authoritative match loop: command queue -> step -> broadcast delta
   client/   mirror World + PixiJS renderer + DOM play UI (action grid, info bar, fog, charging zones,
@@ -51,6 +51,7 @@ packages/
 
 ## Extension points / next steps
 
+- **Playtest phases P1 to P4** (simpler UI, unit identification, combat balance, a purpose for the designer) and Single Player scenario tuning: see `PLAN.md`.
 - **Fog follow-ups:** remembered enemy buildings in explored areas, and a spatial-grid visibility pass if unit counts grow.
 - **Runtime button changes:** let programs enable, disable or relabel their buttons at runtime.
 - **Design sets:** several named loadouts per browser.

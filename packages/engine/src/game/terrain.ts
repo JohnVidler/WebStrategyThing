@@ -258,6 +258,8 @@ export function generateTerrain(
   clear: readonly ClearArea[],
   layout: TerrainLayout = 'standard',
   density = 1,
+  /** Clear areas are opened where they are given, not mirrored on all four corners (maps whose starts are not the four corners). */
+  asymmetric = false,
 ): Terrain {
   const t = new Terrain(width, height);
   const cliff = new Uint8Array(width * height);
@@ -338,10 +340,14 @@ export function generateTerrain(
       if (t.inBounds(mx, my)) t.passable[my * width + mx] = 1;
     }
   };
+  const openClear = (x: number, y: number) => {
+    if (!asymmetric) open(x, y);
+    else if (t.inBounds(x, y)) t.passable[y * width + x] = 1;
+  };
   for (const a of clear) {
     for (let y = Math.floor(a.y - a.r); y <= Math.ceil(a.y + a.r); y++) {
       for (let x = Math.floor(a.x - a.r); x <= Math.ceil(a.x + a.r); x++) {
-        if ((x - a.x) ** 2 + (y - a.y) ** 2 <= a.r * a.r) open(x, y);
+        if ((x - a.x) ** 2 + (y - a.y) ** 2 <= a.r * a.r) openClear(x, y);
       }
     }
   }
@@ -351,14 +357,14 @@ export function generateTerrain(
   const centre: [number, number] = [Math.floor(width / 2), Math.floor(height / 2)];
   open(centre[0], centre[1]);
   for (const a of clear) {
-    if (a.x > width / 2 || a.y > height / 2) continue;
+    if (!asymmetric && (a.x > width / 2 || a.y > height / 2)) continue;
     const reach = flood(t, centre[0], centre[1]);
     if (reach[Math.floor(a.y) * width + Math.floor(a.x)]) continue;
     const steps = Math.max(Math.abs(centre[0] - a.x), Math.abs(centre[1] - a.y));
     for (let s = 0; s <= steps; s++) {
       const x = Math.round(a.x + ((centre[0] - a.x) * s) / steps);
       const y = Math.round(a.y + ((centre[1] - a.y) * s) / steps);
-      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) open(x + dx, y + dy);
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) openClear(x + dx, y + dy);
     }
   }
   // Fill unreachable pockets so nothing spawns or lands where it can never leave.

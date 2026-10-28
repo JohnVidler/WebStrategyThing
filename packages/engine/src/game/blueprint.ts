@@ -1,6 +1,6 @@
 import type { FlowProgram } from '../flow/compile';
 import { PARTS, SLOT_CODES, SWITCHABLE, TIER_NAMES, type PartDef, type WeaponKind } from './parts';
-import { ANTENNA_THROUGHPUT_PER_TILE, BASE_LINK_RANGE, BASE_STACK, MAX_CLASSES_EVER_PER_PLAYER, MODULE_HP_BASE, MODULE_HP_PER_MASS, BUILD_TIME_BASE, BUILD_TIME_PER_MASS, COST_PER_MASS, CYCLE_COST, factoryTierBit, PRODUCTION_ENERGY_BY_SLOT, PRODUCTION_ENERGY_PER_MODULE, REPAIR_ARMOR_MULTIPLIER, REPAIR_MATTER_PER_HP, sizeCostMultiplier, SPEED_FACTOR, TILE } from './rules';
+import { ANTENNA_THROUGHPUT_PER_TILE, BASE_LINK_RANGE, BASE_STACK, MAX_CLASSES_EVER_PER_PLAYER, MOBILE_SOLAR_INTEGRITY_PERCENT, MOBILE_SOLAR_MASS_FACTOR, MODULE_HP_BASE, MODULE_HP_PER_MASS, BUILD_TIME_BASE, BUILD_TIME_PER_MASS, COST_PER_MASS, CYCLE_COST, factoryTierBit, PRODUCTION_ENERGY_BY_SLOT, PRODUCTION_ENERGY_PER_MODULE, REPAIR_ARMOR_MULTIPLIER, REPAIR_MATTER_PER_HP, sizeCostMultiplier, SPEED_FACTOR, TILE } from './rules';
 import { TESLA_COOLDOWN, TESLA_RANGE, type MissileTuning } from './rules';
 
 /** Converts total thrust / mass into sub-tile units per tick. */
@@ -159,11 +159,13 @@ export const moduleIntegrity = (d: PartDef): number => d.integrity ?? MODULE_HP_
 export function hitTableOf(parts: readonly string[]): HitTable {
   const slot = new Uint8Array(parts.length);
   const integrity = new Uint16Array(parts.length);
+  const mobile = !parts.some((id) => PARTS[id]?.slot === 'chassis' && PARTS[id].structure === true);
   parts.forEach((id, i) => {
     const d = PARTS[id];
     if (!d) return;
     slot[i] = d.slot === 'chassis' ? CHASSIS_HIT : SWITCHABLE.has(d.slot) ? SLOT_CODES[d.slot] : 0;
-    integrity[i] = Math.min(0xffff, moduleIntegrity(d));
+    const soft = mobile && d.generator === 'solar' ? MOBILE_SOLAR_INTEGRITY_PERCENT / 100 : 1;
+    integrity[i] = Math.max(1, Math.min(0xffff, Math.floor(moduleIntegrity(d) * soft)));
   });
   return { slot, integrity };
 }
@@ -233,7 +235,7 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
     // Passive properties: always present.
     hp += d.hp ?? 0;
     if (d.slot === 'armor') armorHp += d.hp ?? 0;
-    mass += d.mass;
+    mass += !structure && d.generator === 'solar' ? d.mass * MOBILE_SOLAR_MASS_FACTOR : d.mass;
     memory += d.memory ?? 0;
     stack += d.stack ?? 0;
     energy += d.energy ?? 0;

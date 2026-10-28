@@ -61,7 +61,7 @@ const BOT_LAYOUT: readonly { cls: ClassTemplate; x: number; y: number }[] = [
 
 export class BotPlayer {
   private wave = 0;
-  private nextWave = BOT_FIRST_WAVE_TICKS;
+  private nextWave: number;
   private rotation = 0;
 
   constructor(
@@ -70,7 +70,11 @@ export class BotPlayer {
     /** The human this bot is practice for. */
     readonly enemy: number,
     private readonly units: readonly { cls: BotUnitClass; bp: Blueprint }[],
-  ) {}
+    /** Stretches the time before the first wave and between waves (1 = normal; more is slower). */
+    private readonly pace = 1,
+  ) {
+    this.nextWave = Math.round(BOT_FIRST_WAVE_TICKS * pace);
+  }
 
   /** Number of waves already sent. */
   get wavesSent(): number {
@@ -144,7 +148,7 @@ export class BotPlayer {
       }
     }
     this.wave++;
-    this.nextWave = sim.tick + BOT_WAVE_INTERVAL_TICKS;
+    this.nextWave = sim.tick + Math.round(BOT_WAVE_INTERVAL_TICKS * this.pace);
   }
 
   /** Fighters that finished a push and sit idle away from home go straight on to the next target. */
@@ -202,7 +206,7 @@ export class BotPlayer {
 }
 
 /** Gives `owner` a bot base in `corner` and returns its controller and the classes to announce. */
-export function setUpBot(sim: Simulation, owner: number, corner: Corner, enemy: number): { bot: BotPlayer; classes: Blueprint[] } {
+export function setUpBot(sim: Simulation, owner: number, corner: Corner, enemy: number, pace = 1): { bot: BotPlayer; classes: Blueprint[] } {
   const { width, height } = sim.config;
   const classes = new Map<ClassTemplate, Blueprint>();
   for (const c of [BOT_CORE_CLASS, BOT_ASSEMBLER_CLASS, LASER_TURRET_CLASS, ...BOT_UNIT_CLASSES]) classes.set(c, defineClass(sim, owner, c));
@@ -214,5 +218,5 @@ export function setUpBot(sim: Simulation, owner: number, corner: Corner, enemy: 
   sim.cheaters.add(owner);
   for (const b of sim.stockpile.dense) if (sim.unit.f.owner[b] === owner) sim.addStock(b, sim.stats(b).resourceCapacity);
   const units = BOT_UNIT_CLASSES.map((cls) => ({ cls, bp: classes.get(cls)! }));
-  return { bot: new BotPlayer(sim, owner, enemy, units), classes: [...classes.values()] };
+  return { bot: new BotPlayer(sim, owner, enemy, units, pace), classes: [...classes.values()] };
 }

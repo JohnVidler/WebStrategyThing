@@ -41,7 +41,7 @@ Naming: `group.event`. Falling back to a parent tag is automatic (see below), so
 | `ui.type` | Key typed in a text field (optional) | ui |
 | `ui.slider` | Volume or similar slider tick | ui |
 | `menu.enter` | Main menu shown (first load or return from a match) | ui |
-| `menu.click` | Any main-menu item that opens a section or overlay (Skirmish, Multiplayer, Credits, API reference, Designer, and the Designer / Docs buttons in game) | ui |
+| `menu.click` | Any main-menu item that opens a section or overlay (Single Player, Multiplayer, Credits, API reference, Designer, and the Designer / Docs buttons in game) | ui |
 | `menu.back` | Browser/on-screen Back | ui |
 | `music.mute` / `music.unmute` | Music toggle | ui |
 

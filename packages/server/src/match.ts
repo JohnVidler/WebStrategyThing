@@ -3,8 +3,10 @@ import {
   CommandError,
   cpuProfile,
   FlowError,
-  CORNERS,
+  type Corner,
   createMatch,
+  HordeSpawner,
+  mapStarts,
   devClear,
   devFinishSites,
   devGive,
@@ -15,8 +17,11 @@ import {
   mapById,
   messageAllowed,
   parseGameMode,
-  setUpBot,
-  type BotPlayer,
+  parseScenario,
+  setUpAi,
+  setUpHorde,
+  SURROUNDED_BOT_PACE,
+  type Scenario,
   type GameMode,
   encodeTick,
   Interest,
@@ -57,10 +62,14 @@ interface Side {
   hadForces: boolean;
 }
 
-/** A co-op mode bot, paired with the human it trains. */
+/** An opponent run by the server, paired with the human it plays against: a co-op or single-player bot, or the horde. */
 interface BotSide extends Side {
-  readonly corner: number;
-  controller?: BotPlayer;
+  /** The seat it holds, an index into the match's seats (-1: it holds none, as the bots of Surrounded and the horde of a made-for-the-horde map). */
+  readonly seat: number;
+  /** Where its base goes (the horde: where its units appear, unless the map names the place). */
+  readonly start: Corner;
+  /** Stepped once per tick before the simulation. */
+  controller?: { step(): void };
 }
 
 interface Player extends Side {
@@ -86,6 +95,8 @@ export interface MatchOptions {
   readonly mapId?: string;
   /** Default 'versus'. */
   readonly mode?: GameMode;
+  /** Single Player and Co-op: how the game is set up. Default 'standard'. A map made for a scenario (`MapDefinition.scenario`) decides it; Free for all ignores it. */
+  readonly scenario?: Scenario;
   /** Campaign mode: the level's own map definition and terrain seed (replaces `mapId`). */
   readonly level?: { readonly map: MapDefinition; readonly seed: number };
   /** Accept the developer commands of the client's Dev Options menu (cheats). Default off: the server sets it from WST_DEV_TOOLS=1. */
@@ -118,8 +129,12 @@ export class Match {
   /** Per building: energy taken minus given since the last network report. */
   private readonly flowSums = new Map<number, number>();
   private readonly pending: Command[] = [];
-  /** Corner slots: player id per corner, 0 = free. */
-  private readonly corners = CORNERS.map(() => 0);
+  /** Where the humans' bases go (the four corners, the map centre, or a map's own cluster). */
+  private readonly seats: readonly Corner[];
+  /** Surrounded: where the bots' bases go. */
+  private readonly foes: readonly Corner[];
+  /** Seat slots: player id per seat, 0 = free. */
+  private readonly corners: number[];
   private nextPlayerId = 1;
   private lastScoreboard = '';
   /** Disconnected players who may still reconnect, by token. */
@@ -137,14 +152,22 @@ export class Match {
   /** Set from the Dev Options menu: the simulation stands still, or shows the waiting-for-a-player notice. */
   private devPause: 'off' | 'dev' | 'disconnect' = 'off';
   readonly mode: GameMode;
-  /** Co-op mode: each human's bot, by human player id. */
-  private readonly bots = new Map<number, BotSide>();
+  readonly scenario: Scenario;
+  /** Solo and standard co-op: each human's own opponents (one bot, or the four of Surrounded), by human player id. */
+  private readonly bots = new Map<number, BotSide[]>();
+  /** Co-op Horde and Surrounded: one set of opponents that every human faces together. */
+  private shared: BotSide[] = [];
 
   constructor(options: MatchOptions = {}) {
     this.mode = parseGameMode(options.mode);
+    const asked = options.level?.map ?? mapById(options.mapId);
+    // A map made for a scenario only suits Single Player and Co-op; a Free for all falls back to the default map.
+    this.map = asked.scenario && this.mode === 'versus' ? mapById(undefined) : asked;
+    this.scenario = this.map.scenario && this.botted ? this.map.scenario : this.mode === 'solo' ? parseScenario(options.scenario) : 'standard';
+    ({ seats: this.seats, foes: this.foes } = mapStarts(this.map, this.scenario));
+    this.corners = this.seats.map(() => 0);
     this.started = this.single;
-    this.map = options.level?.map ?? mapById(options.mapId);
-    this.sim = createMatch(options.level?.seed ?? 0x5eed, this.map);
+    this.sim = createMatch(options.level?.seed ?? 0x5eed, this.map, this.scenario);
     this.fog = options.fog ?? true;
     this.devTools = options.devTools ?? false;
     this.sim.requirePlacementVision = this.fog;
@@ -154,9 +177,14 @@ export class Match {
     return this.players.size;
   }
 
-  /** Most human players a match holds: one per map corner, or two in co-op mode (the other corners hold bots). */
+  /** Most human players a match holds: one per seat, or two in co-op mode (the other corners hold bots); co-op Horde and Surrounded fill every seat. */
   get capacity(): number {
-    return this.single ? 1 : this.mode === 'coop' ? 2 : this.corners.length;
+    return this.single ? 1 : this.mode === 'coop' ? (this.sharedOpposition ? this.seats.length : 2) : this.corners.length;
+  }
+
+  /** Co-op rooms with a scenario: the humans face one horde or one ring of bots together. */
+  private get sharedOpposition(): boolean {
+    return this.mode === 'coop' && this.scenario !== 'standard';
   }
 
   /** Solo and campaign rooms: private, one human, no lobby. */
@@ -169,18 +197,50 @@ export class Match {
     return this.mode !== 'versus';
   }
 
+  /** Every server-run opponent in the match. */
+  private get allBots(): BotSide[] {
+    return [...[...this.bots.values()].flat(), ...this.shared];
+  }
+
+  /** Surrounded starts the human in the middle of the map and gives the four corners to bots. */
+  private get surrounded(): boolean {
+    return this.scenario === 'surrounded';
+  }
+
+  /** The horde has no base and cannot be beaten: the match only ends when the human falls. */
+  private get endless(): boolean {
+    return this.scenario === 'horde';
+  }
+
+  /** The opponents for a human who starts in `corner` (-1: the map centre). */
+  private makeOpponents(corner: number): BotSide[] {
+    const side = (name: string, seat: number, start: Corner): BotSide => {
+      const bot: BotSide = { id: this.nextPlayerId++, name, hadForces: false, seat, start };
+      if (seat >= 0) this.corners[seat] = bot.id;
+      return bot;
+    };
+    // Their bases are fixed places of their own and take no seat.
+    if (this.surrounded) return this.foes.map((start, c) => side(`Bot ${c + 1}`, -1, start));
+    // The horde walks in from the opposite corner (corners come in opposite pairs: 0/1 and 2/3), or from the place the map names.
+    if (this.endless) return this.map.hordeFrom ? [side('The Horde', -1, this.seats[corner])] : [side('The Horde', corner ^ 1, this.seats[corner ^ 1])];
+    const names = new Set(this.allBots.map((b) => b.name));
+    const seat = this.randomFreeCorner();
+    return [side(names.has('Bot 1') ? 'Bot 2' : 'Bot 1', seat, this.seats[seat])];
+  }
+
   /** A random free start corner, so nobody knows where their enemies begin. -1 if none is free. */
   private randomFreeCorner(): number {
     const free = this.corners.flatMap((id, c) => (id === 0 ? [c] : []));
     return free.length ? free[Math.floor(Math.random() * free.length)] : -1;
   }
 
-  /** Bot modes need a corner for the human and another for their bot. */
+  /** Bot modes need a seat for the human and another for their bot, unless the bots' bases are elsewhere. */
   private freeCorner(): number {
-    const sides = this.botted ? 2 : 1;
+    const sides = this.botted && !this.surrounded && !(this.endless && this.map.hordeFrom) ? 2 : 1;
     const free = this.corners.filter((id) => id === 0).length;
     if (free < sides || (this.corners.length - free) / sides >= this.capacity) return -1;
-    return this.randomFreeCorner();
+    // Seats on a map made for a scenario are all close together: fill them in order.
+    return this.map.starts ? this.corners.indexOf(0) : this.randomFreeCorner();
   }
 
   get isOver(): boolean {
@@ -275,13 +335,15 @@ export class Match {
     if (token && ![...this.players.values()].some((p) => p.token === token)) player.token = token;
     this.corners[corner] = player.id;
     if (this.botted) {
-      const names = new Set([...this.bots.values()].map((b) => b.name));
-      const name = names.has('Bot 1') ? 'Bot 2' : 'Bot 1';
-      const bot: BotSide = { id: this.nextPlayerId++, name, hadForces: false, corner: this.randomFreeCorner() };
-      this.corners[bot.corner] = bot.id;
-      this.bots.set(player.id, bot);
       this.sim.teams.set(player.id, 1);
-      this.sim.teams.set(bot.id, 2);
+      if (!this.sharedOpposition) {
+        const opponents = this.makeOpponents(corner);
+        this.bots.set(player.id, opponents);
+        for (const bot of opponents) this.sim.teams.set(bot.id, 2);
+      } else if (!this.shared.length) {
+        this.shared = this.makeOpponents(corner);
+        for (const bot of this.shared) this.sim.teams.set(bot.id, 2);
+      }
     }
     this.players.set(socket, player);
     this.sendWelcome(player);
@@ -305,6 +367,7 @@ export class Match {
       spectating: player.spectating,
     });
     if (!this.started) this.send(player, this.lobbyMessage());
+    if (this.sim.devSun >= 0 || this.sim.devWind >= 0) this.send(player, { t: 'weather', sun: this.sim.devSun, wind: this.sim.devWind });
     this.send(player, { t: 'blueprints', list: this.sim.blueprints.all().map(toInfo) });
     this.send(player, this.pauseMessage());
     const view = this.fog && !player.spectating ? player.interest.reset(this.visibleTo(player)) : undefined;
@@ -416,7 +479,7 @@ export class Match {
     const paused = reasons.length > 0;
     this.reportPause(reasons);
     if (!paused) {
-      for (const bot of this.bots.values()) bot.controller?.step();
+      for (const bot of this.allBots) bot.controller?.step();
       this.sim.step();
     }
     // Without fog: one encode, broadcast to everyone. With fog: one per client, filtered to what it sees.
@@ -451,6 +514,7 @@ export class Match {
           contacts: pulse.contacts.map((c) => [c.x, c.y, c.owner, c.structure ? 1 : 0, c.blueprint]),
         });
       }
+      for (const n of this.sim.notices) if (n.owner === p.id) this.send(p, { t: 'notice', kind: n.kind, text: n.text });
       const updates = tasks.get(p.id);
       if (updates) this.send(p, { t: 'tasks', updates });
       if (this.sim.tick % NETWORK_REPORT_TICKS === 0) this.reportNetworks(p);
@@ -500,7 +564,7 @@ export class Match {
     });
     return [
       ...[...this.players.values()].map((p) => entry(p, true)),
-      ...[...this.bots.values()].map((b) => entry(b, true)),
+      ...this.allBots.map((b) => entry(b, true)),
       ...[...this.away.values()].map(({ player }) => entry(player, false)),
     ];
   }
@@ -539,15 +603,29 @@ export class Match {
   }
 
   private setUpSide(player: Player): void {
-    const corner = this.corners.indexOf(player.id);
-    const classes = setUpPlayer(this.sim, player.id, CORNERS[corner], STARTING_CREDITS);
+    const classes = setUpPlayer(this.sim, player.id, this.seats[this.corners.indexOf(player.id)], STARTING_CREDITS);
     this.announce(player, classes);
-    const bot = this.bots.get(player.id);
-    if (bot) {
-      const set = setUpBot(this.sim, bot.id, CORNERS[bot.corner], player.id);
-      bot.controller = set.bot;
+    for (const bot of this.sharedOpposition ? this.shared : this.bots.get(player.id) ?? []) {
+      let list: Blueprint[];
+      if (bot.controller) {
+        // A second human joins the siege already under way.
+        if (bot.controller instanceof HordeSpawner) bot.controller.addEnemy(player.id);
+        continue;
+      }
+      if (this.endless) {
+        const set = setUpHorde(this.sim, bot.id, bot.start, player.id, this.map.hordeFrom);
+        bot.controller = set.horde;
+        list = set.classes;
+        // It owns nothing until its first group arrives, but it is in the game from the start.
+        bot.hadForces = true;
+        this.fielded.add(bot.id);
+      } else {
+        const set = setUpAi(this.sim, bot.id, bot.start, this.surrounded ? SURROUNDED_BOT_PACE : 1);
+        bot.controller = set.bot;
+        list = set.classes;
+      }
       // Everyone needs the bot's class shapes to draw its units; nobody sees its programs.
-      this.broadcast({ t: 'blueprints', list: set.classes.map(toInfo) });
+      this.broadcast({ t: 'blueprints', list: list.map(toInfo) });
     }
   }
 
@@ -572,7 +650,7 @@ export class Match {
       owning.add(owner);
       if (this.sim.motion.has(e) && this.sim.energy.f.amount[e] >= 1) powered.add(owner);
     }
-    const bots = [...this.bots.values()];
+    const bots = this.allBots;
     const everyone: Side[] = [...this.players.values(), ...[...this.away.values()].map((a) => a.player), ...bots];
     for (const p of everyone) {
       if (!owning.has(p.id)) continue;
@@ -582,7 +660,9 @@ export class Match {
     const entry = (p: Side): ScoreEntry => ({
       id: p.id,
       name: p.name,
-      eliminated: p.hadForces && !owning.has(p.id),
+      // The horde is never "beaten": it only runs out of units between groups.
+      eliminated: p.hadForces && !owning.has(p.id) && !(this.endless && bots.includes(p as BotSide)),
+      team: this.sim.teams.get(p.id),
       score: this.sim.score(p.id),
       ...this.sim.tally(p.id),
     });
@@ -632,7 +712,7 @@ export class Match {
    * no-power rule doesn't apply.)
    */
   private checkTeamVictory(sides: { p: Side; e: ScoreEntry }[]): void {
-    const botIds = new Set([...this.bots.values()].map((b) => b.id));
+    const botIds = new Set(this.allBots.map((b) => b.id));
     const bots = sides.filter((s) => botIds.has(s.p.id));
     const humans = sides.filter((s) => !botIds.has(s.p.id));
     if (!bots.length || !humans.length) return;
@@ -669,7 +749,7 @@ export class Match {
   private visibleTo(player: Player): Set<number> {
     // Co-op-mode humans are one team: they see what each other sees.
     const team = this.botted ? new Set([...this.players.values(), ...[...this.away.values()].map((a) => a.player)].map((p) => p.id)) : undefined;
-    return visibleTo(this.sim.world, team?.has(player.id) ? team : player.id, (e) => this.sim.stats(e));
+    return visibleTo(this.sim.world, team?.has(player.id) ? team : player.id, (e) => this.sim.stats(e), this.sim.terrain, this.sim.sunNow());
   }
 
   /** Full queues of units whose tasks changed, grouped by owner (only the owner sees them). */
@@ -695,6 +775,16 @@ export class Match {
     }
   }
 
+  /** Frees what departed opponents held. */
+  private retire(bots: readonly BotSide[]): void {
+    for (const bot of bots) {
+      if (bot.seat >= 0) this.corners[bot.seat] = 0;
+      this.fielded.delete(bot.id);
+      this.sim.cheaters.delete(bot.id);
+      this.sim.teams.delete(bot.id);
+    }
+  }
+
   private apply(cmd: Command): void {
     const { player } = cmd;
     switch (cmd.kind) {
@@ -705,16 +795,23 @@ export class Match {
         this.removeForces(player.id);
         return;
       case 'leave': {
-        const bot = this.bots.get(player.id);
-        this.removeForces(player.id, bot?.id);
-        this.corners[this.corners.indexOf(player.id)] = 0;
-        if (bot) {
-          this.corners[bot.corner] = 0;
+        const opponents = this.bots.get(player.id);
+        this.removeForces(player.id, ...(opponents ?? []).map((b) => b.id));
+        const seat = this.corners.indexOf(player.id);
+        if (seat >= 0) this.corners[seat] = 0;
+        if (opponents) {
           this.bots.delete(player.id);
-          this.fielded.delete(bot.id);
-          this.sim.cheaters.delete(bot.id);
-          this.sim.teams.delete(bot.id);
           this.sim.teams.delete(player.id);
+          this.retire(opponents);
+        } else if (this.shared.length) {
+          this.sim.teams.delete(player.id);
+          for (const bot of this.shared) if (bot.controller instanceof HordeSpawner) bot.controller.removeEnemy(player.id);
+          // The opposition stays while anyone is still playing (or may come back); the last one out takes it down.
+          if (this.players.size === 0 && this.away.size === 0) {
+            this.removeForces(...this.shared.map((b) => b.id));
+            this.retire(this.shared);
+            this.shared = [];
+          }
         }
         return;
       }
@@ -854,7 +951,7 @@ export class Match {
 
   /** Whether `id` is neutral or a side of this match. */
   private knownOwner(id: number): boolean {
-    return id === NEUTRAL || [...this.players.values(), ...[...this.away.values()].map((a) => a.player), ...this.bots.values()].some((s) => s.id === id);
+    return id === NEUTRAL || [...this.players.values(), ...[...this.away.values()].map((a) => a.player), ...this.allBots].some((s) => s.id === id);
   }
 
   /** Developer commands (cheats for playtesting); a server only obeys them when started with WST_DEV_TOOLS=1. */
@@ -904,6 +1001,12 @@ export class Match {
       case 'finish':
         note(`Finished ${devFinishSites(this.sim, cmd.owner)} construction sites.`);
         return;
+      case 'weather':
+        this.sim.devSun = cmd.sun;
+        this.sim.devWind = cmd.wind;
+        this.broadcast({ t: 'weather', sun: cmd.sun, wind: cmd.wind });
+        note(`Sunlight ${cmd.sun < 0 ? 'natural' : cmd.sun}, wind ${cmd.wind < 0 ? 'natural' : cmd.wind}.`);
+        return;
       case 'pause':
         this.devPause = cmd.mode;
         note(cmd.mode === 'off' ? 'Simulation running.' : 'Simulation stopped.');
@@ -925,7 +1028,7 @@ export class Match {
   /** Ends the match now, for testing the victory and loss screens: the sender's side wins, loses or draws. */
   private devEnd(player: Player, outcome: DevOutcome): void {
     const humans = [...this.players.values()];
-    const bots = [...this.bots.values()];
+    const bots = this.allBots;
     const sides: Side[] = [...humans, ...bots];
     const owning = new Set<number>();
     for (const e of this.sim.unit.dense) if (!this.sim.isSite(e)) owning.add(this.sim.unit.f.owner[e]);

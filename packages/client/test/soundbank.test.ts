@@ -1,9 +1,46 @@
 import { describe, expect, it } from 'vitest';
-import { pick, SoundBank, type SoundFileInfo, type SoundManifest } from '../src/soundbank';
+import { pick, rollVolume, SoundBank, spatialise, type SoundFileInfo, type SoundManifest } from '../src/soundbank';
 
 const file = (name: string, tags: string[]): SoundFileInfo => ({ file: name, name, author: '', url: '', license: '', tags, volume: 1, pitchVariance: 0, loop: false });
 const tag = (t: string, use: string[] = [], extra: Partial<SoundManifest['tags'][number]> = {}) => ({ tag: t, use, only: false, cooldownMs: 0, maxVoices: 0, ...extra });
 const names = (bank: SoundBank, t: string) => bank.pool(t).sounds.map((s) => s.file).sort();
+
+describe('spatialise', () => {
+  it('is full, centred and unfiltered right at the listener', () => {
+    expect(spatialise(0, 0, 40)).toEqual({ gain: 1, pan: 0, cutoff: 0 });
+  });
+
+  it('is silent out of earshot', () => {
+    expect(spatialise(40, 0, 40)).toBeUndefined();
+    expect(spatialise(30, 30, 40)).toBeUndefined();
+  });
+
+  it('fades faster than linearly and gets duller with distance', () => {
+    const half = spatialise(20, 0, 40)!;
+    const near = spatialise(5, 0, 40)!;
+    expect(half.gain).toBeLessThan(0.25);
+    expect(half.cutoff).toBeLessThan(near.cutoff || Infinity);
+    expect(spatialise(39, 0, 40)!.cutoff).toBeLessThan(1000);
+  });
+
+  it('pans to the side it is on, fully by the screen edge', () => {
+    expect(spatialise(-30, 0, 40)!.pan).toBeCloseTo(-0.9);
+    expect(spatialise(10, 0, 40)!.pan).toBeGreaterThan(0);
+    expect(spatialise(0, 15, 40)!.pan).toBe(0);
+  });
+});
+
+describe('rollVolume', () => {
+  it('returns a fixed volume as it is', () => {
+    expect(rollVolume(0.4)).toBe(0.4);
+  });
+
+  it('draws from min to max', () => {
+    expect(rollVolume({ min: 0.2, max: 0.6 }, () => 0)).toBeCloseTo(0.2);
+    expect(rollVolume({ min: 0.2, max: 0.6 }, () => 0.5)).toBeCloseTo(0.4);
+    expect(rollVolume({ min: 0.2, max: 0.6 }, () => 1)).toBeCloseTo(0.6);
+  });
+});
 
 describe('SoundBank', () => {
   it('plays nothing for a placeholder tag', () => {

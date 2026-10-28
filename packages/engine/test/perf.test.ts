@@ -61,9 +61,11 @@ describe('performance budgets', () => {
     const sim = armies(256);
     tickTimes(sim, 40); // warm-up: JIT, first plans and sweeps
     const times = tickTimes(sim, 200);
-    // Today (2026-10-24, desktop): mean ~2 ms, p95 ~10 ms, max ~15 ms.
-    expect(mean(times)).toBeLessThan(15 * SLACK);
-    expect(quantile(times, 0.95)).toBeLessThan(50 * SLACK);
+    // Today (2026-10-27, desktop, parked armies): mean ~0.6 ms, p95 ~1.2 ms. The mean budget is 5x; p95 is 10x
+    // because it spikes when other test files compete for the CPU (7 ms seen once in a full run).
+    // perf-scaling.test.ts covers fights and the network side.
+    expect(mean(times)).toBeLessThan(3 * SLACK);
+    expect(quantile(times, 0.95)).toBeLessThan(12 * SLACK);
   }, 60_000);
 
   it('scales about linearly with the number of units', () => {
@@ -101,8 +103,8 @@ on(Idle, () => {
     const ms = performance.now() - start;
     expect(sim.cpu.dense.every((e) => sim.cpu.f.fault[e] === 0)).toBe(true);
     expect(cycles).toBeGreaterThanOrEqual(60 * 200 * 200); // every CPU saturated (a statement may overdraw): the work really ran
-    // Today: ~8000 cycles/ms for the whole tick (VM plus the rest of the engine).
-    expect(cycles / ms).toBeGreaterThan(1000 / SLACK);
+    // Today: ~7500 to 8500 cycles/ms for the whole tick (VM plus the rest of the engine). The floor is a fifth of that.
+    expect(cycles / ms).toBeGreaterThan(1500 / SLACK);
   }, 60_000);
 
   it('a purely reactive unit costs nothing between events', () => {
@@ -136,8 +138,8 @@ on(Damaged, (amount, attacker) => {
     const start = performance.now();
     for (let i = 0; i < 20; i++) findPath(t, sx, sy, gx, gy);
     const per = (performance.now() - start) / 20;
-    // Corner to corner across the 144x112 maze. Today: a few ms.
-    expect(per).toBeLessThan(25 * SLACK);
+    // Corner to corner across the 144x112 maze. Today: ~2.7 ms.
+    expect(per).toBeLessThan(14 * SLACK);
   }, 60_000);
 
   it('gives a 256-unit group order quickly', () => {
@@ -147,7 +149,7 @@ on(Damaged, (amount, attacker) => {
     tickTimes(sim, 1);
     const start = performance.now();
     for (const e of units) sim.issueOrder(1, e, 90, 90, -1, true);
-    // freeMoveTile looks at every unit's orders for each unit ordered (O(n^2)). Today: ~17 ms.
+    // freeMoveTile looks at every unit's orders for each unit ordered (O(n^2)). Today: ~34 ms, so this is only 3x (not 5x): the open item in PLAN.md.
     expect(performance.now() - start).toBeLessThan(100 * SLACK);
   }, 60_000);
 
@@ -158,7 +160,8 @@ on(Damaged, (amount, attacker) => {
     const units = Array.from({ length: 256 }, (_, i) => sim.spawnUnit(scout, (20 + (i % 16) * 2) * TILE, (20 + Math.floor(i / 16) * 2) * TILE));
     tickTimes(sim, 5);
     for (const e of units) sim.issueOrder(1, e, 90, 90, -1, true);
-    expect(Math.max(...tickTimes(sim, 10))).toBeLessThan(100 * SLACK);
+    // Today the worst of these ticks takes ~17 ms; the budget is 5x that.
+    expect(Math.max(...tickTimes(sim, 10))).toBeLessThan(90 * SLACK);
   }, 60_000);
 
   // A goal inside a building (docking, charging, approach to a building) is unwalkable: findPath retargets it to the

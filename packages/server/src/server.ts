@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { mapById, parseClientMessage, parseGameMode } from '@wst/engine';
+import { mapById, parseClientMessage, parseGameMode, parseScenario } from '@wst/engine';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { Match } from './match';
 import { campaignLevel, campaignMap, refreshCampaigns } from './campaign';
@@ -22,6 +22,13 @@ const menuSockets = new Set<unknown>();
 /** How long an empty room is kept before it is shut down. */
 const EMPTY_ROOM_MS = 60_000;
 const NAME = /^[A-Za-z0-9_-]{1,24}$/;
+/** A room's display title is free text: any characters, up to this many code points. The id (`NAME`) is what identifies the room. */
+const TITLE_MAX = 40;
+/** Trims a client-supplied title and drops control and formatting characters (newlines, bidi overrides); empty when nothing is left. */
+const cleanTitle = (raw: string | null): string => {
+  const kept = (raw ?? '').replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ' ').replace(/\s+/g, ' ').trim();
+  return Array.from(kept).slice(0, TITLE_MAX).join('');
+};
 const TOKEN = /^[A-Za-z0-9_-]{8,64}$/;
 /** Per connection, a burst of messages that refills steadily; a client that outruns it is dropped. */
 const MESSAGE_BURST = 200;
@@ -151,14 +158,16 @@ const http = createServer((req, res) => {
     const list = [...rooms]
       // Single-player rooms are private: they never appear in the list.
       .filter(([, { match }]) => match.playerCount > 0 && match.mode !== 'solo' && match.mode !== 'campaign')
-      .map(([name, { match }]) => ({
+      .map(([name, { match, title }]) => ({
       name,
+      title: title || name,
       mapId: match.map.id,
       mapName: match.map.name,
       width: match.map.width,
       height: match.map.height,
       players: match.playerCount,
       mode: match.mode,
+      scenario: match.scenario,
       capacity: match.capacity,
       over: match.isOver,
       elapsed: match.elapsedSeconds,
@@ -183,12 +192,14 @@ interface Room {
   emptySince: number | undefined;
   /** Who opened it, for the per-address room limit. */
   creator: string;
+  /** What the room is called on screen: whatever its creator typed (empty: show the id). */
+  title: string;
 }
 const rooms = new Map<string, Room>();
 /** Open sockets per client address. */
 const socketsByAddress = new Map<string, number>();
 
-function roomFor(address: string, name: string, mapId?: string, mode?: string, campaign?: string, levelId?: string): Room | undefined {
+function roomFor(address: string, name: string, title: string, mapId?: string, mode?: string, campaign?: string, levelId?: string, scenario?: string): Room | undefined {
   let room = rooms.get(name);
   if (!room) {
     if (rooms.size >= MAX_ROOMS) return undefined;
@@ -199,7 +210,7 @@ function roomFor(address: string, name: string, mapId?: string, mode?: string, c
     // A campaign room needs a level that exists; the client's saved progress is trusted (it is a single-player game).
     const level = parsed === 'campaign' ? campaignLevel(campaign ?? '', levelId ?? '') : campaignMap(mapId ?? '');
     if (parsed === 'campaign' && !level) return undefined;
-    room = { match: new Match({ fog: process.env.FOG !== 'off', mapId: mapById(mapId).id, mode: parsed, level, devTools: devToolsEnabled() }), emptySince: undefined, creator: address };
+    room = { match: new Match({ fog: process.env.FOG !== 'off', mapId: mapById(mapId).id, mode: parsed, scenario: parseScenario(scenario), level, devTools: devToolsEnabled() }), emptySince: undefined, creator: address, title };
     room.match.start();
     rooms.set(name, room);
     console.log(`room "${name}" opened`);
@@ -276,7 +287,7 @@ function accept(socket: WebSocket, request: IncomingMessage): void {
   const mapId = url.searchParams.get('map') ?? undefined;
   const mode = url.searchParams.get('mode') ?? undefined;
   const token = url.searchParams.get('token') ?? undefined;
-  const room = roomName && NAME.test(roomName) ? roomFor(address, roomName, mapId, mode, url.searchParams.get('campaign') ?? undefined, url.searchParams.get('level') ?? undefined) : undefined;
+  const room = roomName && NAME.test(roomName) ? roomFor(address, roomName, cleanTitle(url.searchParams.get('title')), mapId, mode, url.searchParams.get('campaign') ?? undefined, url.searchParams.get('level') ?? undefined, url.searchParams.get('scenario') ?? undefined) : undefined;
   if (!room) {
     socket.close(1013, 'No such room');
     return;

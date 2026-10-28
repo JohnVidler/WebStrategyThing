@@ -1,6 +1,7 @@
 import { Caps, Missile, Position, Resource, TaskType, TILE, Unit, type Blueprint, type ClientMessage } from '@wst/engine';
 import { actionsFor, type ActionButton } from './actions';
 import type { Placement, Renderer, ViewState } from './renderer';
+import { controls, WheelClassifier, type ActionId, type ModState } from './controls';
 import { playSound } from './sound';
 import type { ClientState } from './state';
 
@@ -22,12 +23,26 @@ const MAX_LINE = 12;
 /** A dragged order path adds a point whenever the mouse has moved this far (pixels). */
 const PATH_STEP = 4;
 const WHEEL_ZOOM = 1.15;
-const KEY_PAN = 60;
+/** Pinch on a trackpad: zoom factor per unit of wheel delta (the browser reports a pinch as ctrl + wheel). */
+const PINCH_ZOOM = 0.01;
+/** The zoom sound plays at most this often during a continuous pinch. */
+const ZOOM_SOUND_MS = 250;
+/** Keyboard pan speed at full tilt (screen pixels per second) and how quickly it eases in and out (seconds). */
+const KEY_PAN_SPEED = 900;
+const KEY_PAN_EASE = 0.08;
+/** Which pan action each key action moves the view in (x, y). */
+const PAN_DIRS: Partial<Record<ActionId, [number, number]>> = { panLeft: [-1, 0], panRight: [1, 0], panUp: [0, -1], panDown: [0, 1] };
+const BUILD_ACTIONS: readonly ActionId[] = ['buildMenu', 'buildCategoryPrev', 'buildCategoryNext', 'buildItemPrev', 'buildItemNext', 'buildConfirm'];
+const KEY_ACTIONS: readonly ActionId[] = ['panLeft', 'panRight', 'panUp', 'panDown', 'zoomIn', 'zoomOut', 'resetView', 'cancel'];
+const MOUSE_ACTIONS: readonly ActionId[] = ['select', 'order', 'panDrag'];
+/** Pixels per line / page for scroll events that are not in pixels. */
+const LINE_PX = 16;
+
 /** Recalling the same control group twice within this time centres the view on it. */
 const DOUBLE_TAP_MS = 400;
 
-/** Ctrl (or Cmd) queues; Shift is accepted too, but Firefox hijacks Shift + right click. */
-const isQueueModifier = (ev: MouseEvent | KeyboardEvent) => ev.ctrlKey || ev.metaKey || ev.shiftKey;
+/** The queue modifier(s) chosen in Options (Ctrl and Shift by default; Firefox hijacks Shift + right click). */
+const isQueueModifier = (ev: MouseEvent | KeyboardEvent) => controls.modifierHeld('queue', ev);
 
 /**
  * RTS controls. The client only *requests* things: every order becomes a task
@@ -39,16 +54,21 @@ const isQueueModifier = (ev: MouseEvent | KeyboardEvent) => ev.ctrlKey || ev.met
  *   Ctrl + right click  queue the order instead of marking it URGENT
  *                       (Shift works too where the browser allows it — Firefox always
  *                       opens its own context menu on Shift + right click)
+ * These are the defaults; every key, button and gesture below can be changed in Options
+ * (`controls.ts`), including the modifiers.
  *   Mouse wheel         zoom at the cursor; middle-drag or arrow keys pan; Home resets
+ *   Trackpad            pinch zooms at the cursor; two-finger scroll pans
+ *   WASD / arrows       pan smoothly; a letter that is an action hotkey for the current
+ *                       selection (H harvest, C recharge) still gives the order
  *   Build bar           pick a building, left-click to place it (Ctrl/Shift: place several);
  *                       selected builders are told to build it. Left-drag places a straight
  *                       line of them, side by side. Right-click or Esc cancels.
  *   Right drag          spreads the selected units evenly along the path dragged
- *   Action grid         common actions (M move, A attack, S stop, H harvest, D unload,
+ *   Action grid         common actions (M move, Ctrl+A attack, Ctrl+S stop, H harvest, Shift+D unload,
  *                       C recharge) and class buttons; aimed ones wait for a left-click
  *   Esc                 cancel aiming / placement, or deselect
- *   Ctrl+1..9 / 1..9    save / recall control group (twice quickly: centre on it);
- *   Shift+1..9          add the selection to a group     Ctrl+A  select all units
+ *   Ctrl+1..9 / 1..9    (modifiers configurable) save / recall control group (twice quickly: centre on it);
+ *   Shift+1..9          add the selection to a group
  */
 export class Input implements ViewState {
   readonly selection = new Set<number>();
@@ -73,6 +93,16 @@ export class Input implements ViewState {
   private readonly groups = new Map<number, number[]>();
   private lastRecall = { n: 0, at: 0 };
   private renderer!: Renderer;
+  /** Pan keys currently held (physical key -> action), the camera's eased velocity and its animation frame. */
+  private readonly panHeld = new Map<string, ActionId>();
+  /** Which action each mouse button's press started, so its release finishes the same one. */
+  private readonly down = new Map<number, ActionId>();
+  private readonly wheelClass = new WheelClassifier();
+  private panVx = 0;
+  private panVy = 0;
+  private panRaf = 0;
+  private panLast = 0;
+  private lastZoomSound = 0;
 
   constructor(
     private readonly state: ClientState,
@@ -82,6 +112,8 @@ export class Input implements ViewState {
     private readonly onHoverChanged: () => void = () => {},
     private readonly onAimChanged: () => void = () => {},
     private readonly onGroupsChanged: () => void = () => {},
+    /** A build-menu key was pressed; true if the build menu used it (false: no builder selected, so the key falls through). */
+    private readonly onBuildKey: (act: ActionId) => boolean = () => false,
   ) {}
 
   attach(renderer: Renderer): void {
@@ -96,14 +128,98 @@ export class Input implements ViewState {
     canvas.addEventListener('pointerleave', () => this.setHovered(-1));
     canvas.addEventListener(
       'wheel',
-      (ev) => {
-        ev.preventDefault();
-        this.renderer.zoomAt(ev.offsetX, ev.offsetY, ev.deltaY < 0 ? WHEEL_ZOOM : 1 / WHEEL_ZOOM);
-        playSound('camera.zoom');
-      },
+      (ev) => this.wheel(ev),
       { passive: false },
     );
+    // Safari reports a trackpad pinch as gesture events instead of ctrl + wheel.
+    let lastScale = 1;
+    const gesture = (ev: Event) => ev as Event & { scale: number; clientX: number; clientY: number };
+    canvas.addEventListener('gesturestart', (ev) => {
+      ev.preventDefault();
+      lastScale = 1;
+    });
+    canvas.addEventListener('gesturechange', (ev) => {
+      ev.preventDefault();
+      const g = gesture(ev);
+      const r = canvas.getBoundingClientRect();
+      if (controls.find('pinch', ev as unknown as ModState, ['zoom']) === 'zoom') this.zoomBy(g.clientX - r.left, g.clientY - r.top, g.scale / lastScale);
+      lastScale = g.scale;
+    });
     window.addEventListener('keydown', (ev) => this.keyDown(ev));
+    window.addEventListener('keyup', (ev) => this.panHeld.delete(ev.code));
+    window.addEventListener('blur', () => this.panHeld.clear());
+  }
+
+  private zoomBy(sx: number, sy: number, factor: number): void {
+    this.renderer.zoomAt(sx, sy, Math.min(2, Math.max(0.5, factor)));
+    const now = performance.now();
+    if (now - this.lastZoomSound >= ZOOM_SOUND_MS) {
+      this.lastZoomSound = now;
+      playSound('camera.zoom');
+    }
+  }
+
+  /** Wheel, scroll and pinch events do whatever the player bound that gesture (with the held modifiers) to. */
+  private wheel(ev: WheelEvent): void {
+    ev.preventDefault();
+    const kind = this.wheelClass.classify(ev, performance.now());
+    // A browser pinch is a wheel event with a Ctrl that the player did not press.
+    const mods = kind === 'pinch' ? { ctrlKey: false, shiftKey: ev.shiftKey, altKey: ev.altKey, metaKey: ev.metaKey } : ev;
+    const act = controls.find(kind, mods, ['zoom', 'panScroll']);
+    if (act === 'zoom') {
+      const dy = ev.deltaMode === 0 ? ev.deltaY : ev.deltaY * LINE_PX;
+      const factor = kind === 'wheel' ? (dy < 0 ? WHEEL_ZOOM : 1 / WHEEL_ZOOM) : Math.exp(-dy * PINCH_ZOOM);
+      this.zoomBy(ev.offsetX, ev.offsetY, factor);
+    } else if (act === 'panScroll') {
+      const unit = ev.deltaMode === 0 ? 1 : ev.deltaMode === 1 ? LINE_PX : this.renderer.canvas.clientHeight;
+      this.renderer.panBy(-ev.deltaX * unit, -ev.deltaY * unit);
+    }
+  }
+
+  private panFrame = (now: number): void => {
+    const dt = Math.min(0.05, (now - this.panLast) / 1000);
+    this.panLast = now;
+    let dx = 0;
+    let dy = 0;
+    for (const act of this.panHeld.values()) {
+      dx += PAN_DIRS[act]![0];
+      dy += PAN_DIRS[act]![1];
+    }
+    const len = Math.hypot(dx, dy);
+    const tx = len ? (dx / len) * KEY_PAN_SPEED : 0;
+    const ty = len ? (dy / len) * KEY_PAN_SPEED : 0;
+    const k = 1 - Math.exp(-dt / KEY_PAN_EASE);
+    this.panVx += (tx - this.panVx) * k;
+    this.panVy += (ty - this.panVy) * k;
+    if (!len && Math.hypot(this.panVx, this.panVy) < 5) {
+      this.panVx = this.panVy = 0;
+      this.panRaf = 0;
+      return;
+    }
+    this.renderer.panBy(-this.panVx * dt, -this.panVy * dt);
+    this.panRaf = requestAnimationFrame(this.panFrame);
+  };
+
+  /** The event's modifiers without the queue modifiers that are safe to use on keys (Shift, Alt), or null if none is held. */
+  private withoutQueueMods(ev: KeyboardEvent): ModState | null {
+    const m = { ctrlKey: ev.ctrlKey, shiftKey: ev.shiftKey, altKey: ev.altKey, metaKey: ev.metaKey };
+    let changed = false;
+    for (const b of controls.slotsOf('queue')) {
+      if (b?.input === 'mod:shift' && m.shiftKey) {
+        m.shiftKey = false;
+        changed = true;
+      } else if (b?.input === 'mod:alt' && m.altKey) {
+        m.altKey = false;
+        changed = true;
+      }
+    }
+    return changed ? m : null;
+  }
+
+  private startPan(): void {
+    if (this.panRaf) return;
+    this.panLast = performance.now();
+    this.panRaf = requestAnimationFrame(this.panFrame);
   }
 
   /** Drop entities that no longer exist (call after each applied tick). */
@@ -206,26 +322,29 @@ export class Input implements ViewState {
   }
 
   private pointerDown(ev: PointerEvent): void {
-    if (ev.button === 1) {
-      ev.preventDefault();
+    if (ev.button === 1) ev.preventDefault(); // no autoscroll
+    const act = controls.find(`mouse:${ev.button}`, ev, MOUSE_ACTIONS);
+    if (act) this.down.set(ev.button, act);
+    else this.down.delete(ev.button);
+    if (act === 'panDrag') {
       this.panFrom = { x: ev.offsetX, y: ev.offsetY };
       this.renderer.canvas.setPointerCapture(ev.pointerId);
     } else if (this.placement) {
-      if (ev.button === 0) {
+      if (act === 'select') {
         // Placed on release: a drag in between lays a line of them.
         this.placeStart = { x: this.placement.x, y: this.placement.y };
         this.renderer.canvas.setPointerCapture(ev.pointerId);
-      } else if (ev.button === 2) {
+      } else if (act === 'order') {
         this.cancelPlacement();
         playSound('build.cancel_placement');
       }
     } else if (this.aiming) {
-      if (ev.button === 0) this.aimAt(ev.offsetX, ev.offsetY, isQueueModifier(ev));
-      else if (ev.button === 2) this.cancelAiming();
-    } else if (ev.button === 0) {
+      if (act === 'select') this.aimAt(ev.offsetX, ev.offsetY, isQueueModifier(ev));
+      else if (act === 'order') this.cancelAiming();
+    } else if (act === 'select') {
       this.dragFrom = { x: ev.offsetX, y: ev.offsetY };
       this.renderer.canvas.setPointerCapture(ev.pointerId);
-    } else if (ev.button === 2) {
+    } else if (act === 'order') {
       // The order is sent on release: a drag in between spreads the units along the path.
       this.orderDrag = { path: [{ x: ev.offsetX, y: ev.offsetY }], moved: false };
       this.renderer.canvas.setPointerCapture(ev.pointerId);
@@ -271,11 +390,13 @@ export class Input implements ViewState {
   }
 
   private pointerUp(ev: PointerEvent): void {
-    if (ev.button === 1) {
+    const act = this.down.get(ev.button);
+    this.down.delete(ev.button);
+    if (act === 'panDrag') {
       this.panFrom = null;
       return;
     }
-    if (ev.button === 0 && this.placeStart) {
+    if (act === 'select' && this.placeStart) {
       const p = this.placement;
       this.placeStart = null;
       if (!p) return;
@@ -283,7 +404,7 @@ export class Input implements ViewState {
       else this.place(isQueueModifier(ev));
       return;
     }
-    if (ev.button === 2 && this.orderDrag) {
+    if (act === 'order' && this.orderDrag) {
       const drag = this.orderDrag;
       this.orderDrag = null;
       this.orderPath = null;
@@ -292,8 +413,9 @@ export class Input implements ViewState {
       else this.order(drag.path[0].x, drag.path[0].y, isQueueModifier(ev));
       return;
     }
-    if (ev.button !== 0 || !this.dragFrom) return;
-    if (!ev.shiftKey) this.selection.clear();
+    if (act !== 'select' || !this.dragFrom) return;
+    const add = controls.modifierHeld('addSelect', ev);
+    if (!add) this.selection.clear();
     if (this.band) {
       const { x0, y0, x1, y1 } = this.band;
       const mine = this.renderer.entitiesInRect(x0, y0, x1, y1).filter((e) => this.isMine(e));
@@ -301,7 +423,7 @@ export class Input implements ViewState {
     } else {
       const e = this.renderer.pick(ev.offsetX, ev.offsetY);
       if (e >= 0) {
-        if (ev.shiftKey && this.selection.has(e)) this.selection.delete(e);
+        if (add && this.selection.has(e)) this.selection.delete(e);
         else this.selection.add(e);
       }
     }
@@ -317,6 +439,17 @@ export class Input implements ViewState {
     if (n === 0) playSound('select.deselect');
     else if (n > 1) playSound('select.units');
     else playSound(this.state.isStructure([...this.selection][0]) ? 'select.building' : 'select.unit');
+  }
+
+  /** Selects every unit of a class the player has (all of them, wherever they are); `add` keeps the current selection. */
+  selectClass(blueprint: number, add = false): void {
+    const unit = this.state.world.store(Unit);
+    if (!add) this.selection.clear();
+    for (const e of unit.dense) {
+      if (unit.f.blueprint[e] === blueprint && this.isMine(e) && !this.state.isStructure(e)) this.selection.add(e);
+    }
+    this.onSelectionChanged();
+    this.playSelectionSound();
   }
 
   private selectClassOnScreen(ev: MouseEvent): void {
@@ -524,18 +657,45 @@ export class Input implements ViewState {
     if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable)) return;
     if (document.querySelector('#designer-overlay:not([hidden])')) return; // designing, not playing
 
-    const pans: Record<string, [number, number]> = {
-      ArrowLeft: [KEY_PAN, 0],
-      ArrowRight: [-KEY_PAN, 0],
-      ArrowUp: [0, KEY_PAN],
-      ArrowDown: [0, -KEY_PAN],
-    };
-    if (pans[ev.key]) {
+    const actions = this.actions();
+    const orders = actions.filter((a) => a.control && a.units.length > 0);
+    const orderIds = orders.map((a) => a.control!);
+    // A class's own button on a bare letter beats the camera keys, as it always has.
+    const plain = /^[a-z]$/i.test(ev.key) && !ev.ctrlKey && !ev.metaKey && !ev.altKey;
+    const custom = plain ? actions.find((a) => a.custom && a.key === ev.key.toUpperCase()) : undefined;
+    const key = `key:${ev.code}`;
+    // Orders the selection can take come first, then the build menu, then the camera and the rest.
+    let act = custom ? null : controls.find(key, ev, [...orderIds, ...BUILD_ACTIONS, ...KEY_ACTIONS]);
+    if (act && BUILD_ACTIONS.includes(act)) {
+      if (this.onBuildKey(act)) {
+        ev.preventDefault();
+        return;
+      }
+      act = controls.find(key, ev, [...orderIds, ...KEY_ACTIONS]);
+    }
+    // Holding a queue modifier (Shift by default) with an order key queues the order.
+    let queue = false;
+    const bare = custom || act ? null : this.withoutQueueMods(ev);
+    if (bare) {
+      act = controls.find(key, bare, orderIds);
+      queue = act !== null;
+    }
+    const order = act ? orders.find((a) => a.control === act) : undefined;
+    if (order) {
       ev.preventDefault();
-      this.renderer.panBy(...pans[ev.key]);
-    } else if (ev.key === 'Home') {
+      this.press(order.id, queue);
+      if (order.aim) playSound('action.hotkey');
+    } else if (act && PAN_DIRS[act]) {
+      ev.preventDefault();
+      this.panHeld.set(ev.code, act);
+      this.startPan();
+    } else if (act === 'zoomIn' || act === 'zoomOut') {
+      ev.preventDefault();
+      const { clientWidth: w, clientHeight: h } = this.renderer.canvas;
+      this.zoomBy(w / 2, h / 2, act === 'zoomIn' ? WHEEL_ZOOM : 1 / WHEEL_ZOOM);
+    } else if (act === 'resetView') {
       this.renderer.resetView();
-    } else if (ev.key === 'Escape') {
+    } else if (act === 'cancel') {
       if (this.aiming) this.cancelAiming();
       else if (this.placement) {
         this.cancelPlacement();
@@ -546,28 +706,20 @@ export class Input implements ViewState {
         this.onSelectionChanged();
         if (had) playSound('select.deselect');
       }
-    } else if (/^[a-z]$/i.test(ev.key) && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
-      // Action hotkeys (Shift queues).
-      const action = this.actions().find((a) => a.key === ev.key.toUpperCase());
-      if (action) {
-        ev.preventDefault();
-        this.press(action.id, ev.shiftKey);
-        if (action.aim) playSound('action.hotkey');
-      }
-    } else if (ev.key === 'a' && (ev.ctrlKey || ev.metaKey)) {
+    } else if (custom) {
+      // A class's own button key (set by its program); Shift queues.
       ev.preventDefault();
-      this.selection.clear();
-      for (const e of this.state.world.store(Unit).dense) {
-        if (this.isMine(e) && !this.state.isStructure(e)) this.selection.add(e);
-      }
-      this.onSelectionChanged();
-      this.playSelectionSound();
-    } else if (/^(Digit|Numpad)[1-9]$/.test(ev.code) && !ev.altKey) {
-      // By physical key, so Shift (and layouts like AZERTY) still give the digit.
-      ev.preventDefault();
+      this.press(custom.id, isQueueModifier(ev));
+      if (custom.aim) playSound('action.hotkey');
+    } else if (/^(Digit|Numpad)[1-9]$/.test(ev.code)) {
+      // By physical key, so Shift (and layouts like AZERTY) still give the digit. Save wins over add, add over select.
       const n = Number(ev.code.slice(-1));
-      if (ev.ctrlKey || ev.metaKey || ev.shiftKey) this.setGroup(n, ev.shiftKey && !ev.ctrlKey && !ev.metaKey);
-      else this.recallGroup(n);
+      const select = controls.hasModifier('groupSelect') ? controls.modifierHeld('groupSelect', ev) : !(ev.ctrlKey || ev.shiftKey || ev.altKey || ev.metaKey);
+      if (controls.modifierHeld('groupAssign', ev)) this.setGroup(n, false);
+      else if (controls.modifierHeld('groupAdd', ev)) this.setGroup(n, true);
+      else if (select) this.recallGroup(n);
+      else return;
+      ev.preventDefault();
     }
   }
 }

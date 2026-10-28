@@ -543,7 +543,8 @@ export function deleteVariable(program: Program, name: string): Program {
 // --- adding and deleting nodes ------------------------------------------------------------------------------
 
 export type NewStatement =
-  | { readonly k: 'call'; readonly fn: string; readonly argc: number }
+  /** `text` lists the arguments that are text (`Builtin.text`); they start as a sample text instead of 0. */
+  | { readonly k: 'call'; readonly fn: string; readonly argc: number; readonly text?: readonly number[] }
   | { readonly k: 'set'; readonly name: string }
   | { readonly k: 'if' }
   | { readonly k: 'while' }
@@ -554,8 +555,12 @@ export type NewExpr =
   | { readonly k: 'bin'; readonly op: BinOp }
   | { readonly k: 'un'; readonly op: '-' | '!' }
   | { readonly k: 'cond' }
-  | { readonly k: 'call'; readonly fn: string; readonly argc: number }
+  | { readonly k: 'call'; readonly fn: string; readonly argc: number; readonly text?: readonly number[] }
   | { readonly k: 'var'; readonly name: string };
+
+/** Starting arguments of a new call: 0, or a sample text where the function takes text (a number there is an error). */
+const startArgs = (argc: number, text: readonly number[] = []): Expr[] =>
+  Array.from({ length: argc }, (_, i) => (text.includes(i) ? { k: 'str', v: 'message' } : clone(LITERAL_ZERO)));
 
 /** Adds a loose statement (a one-node chain in the scratch area). Returns the program and the new node's id. */
 export function addStatement(program: Program, what: NewStatement): { program: Program; id: string } {
@@ -564,7 +569,7 @@ export function addStatement(program: Program, what: NewStatement): { program: P
   const zeros = (n: number): Expr[] => Array.from({ length: n }, () => clone(LITERAL_ZERO));
   let stmt: Stmt;
   switch (what.k) {
-    case 'call': stmt = { id, k: 'call', fn: what.fn, args: zeros(what.argc) }; break;
+    case 'call': stmt = { id, k: 'call', fn: what.fn, args: startArgs(what.argc, what.text) }; break;
     case 'set': stmt = { id, k: 'set', name: what.name, value: clone(LITERAL_ZERO) }; break;
     case 'if': stmt = { id, k: 'if', cond: clone(LITERAL_ZERO), then: [], else: [] }; break;
     case 'while': stmt = { id, k: 'while', cond: clone(LITERAL_ZERO), body: [] }; break;
@@ -585,7 +590,7 @@ export function addExpression(program: Program, what: NewExpr): { program: Progr
     case 'bin': expr = { k: 'bin', op: what.op, a: zero(), b: zero() }; break;
     case 'un': expr = { k: 'un', op: what.op, a: zero() }; break;
     case 'cond': expr = { k: 'cond', c: zero(), a: zero(), b: zero() }; break;
-    case 'call': expr = { k: 'call', fn: what.fn, args: Array.from({ length: what.argc }, zero) }; break;
+    case 'call': expr = { k: 'call', fn: what.fn, args: startArgs(what.argc, what.text) }; break;
     case 'var': expr = { k: 'ref', name: what.name }; break;
   }
   p.scratch.exprs.push({ id, expr });

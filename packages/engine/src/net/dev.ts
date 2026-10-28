@@ -35,6 +35,8 @@ export type DevCommand =
   | { kind: 'finish'; owner: number }
   /** Stop or resume the simulation; the "disconnect" kind shows the waiting-for-a-player notice instead. */
   | { kind: 'pause'; mode: 'off' | 'dev' | 'disconnect' }
+  /** Fix sunlight and wind at a level 0..100 for everyone, or -1 for the natural cycle. */
+  | { kind: 'weather'; sun: number; wind: number }
   /** End the match now with the given outcome, for the sender's side. */
   | { kind: 'end'; outcome: DevOutcome }
   /** The sender is out: shows the defeat choice (spectate or leave) without ending the match. */
@@ -78,6 +80,8 @@ export function parseDevCommand(raw: unknown): DevCommand | null {
       return inRange(m.owner, -1, 1_000_000) ? { kind: m.kind, owner: m.owner } : null;
     case 'pause':
       return m.mode === 'off' || m.mode === 'dev' || m.mode === 'disconnect' ? { kind: 'pause', mode: m.mode } : null;
+    case 'weather':
+      return inRange(m.sun, -1, 100) && inRange(m.wind, -1, 100) ? { kind: 'weather', sun: m.sun, wind: m.wind } : null;
     case 'end':
       return typeof m.outcome === 'string' && (DEV_OUTCOMES as readonly string[]).includes(m.outcome) ? { kind: 'end', outcome: m.outcome as DevOutcome } : null;
     case 'defeat':

@@ -231,6 +231,24 @@ describe('graph operations keep the program expressible as text', () => {
     roundTrips(p);
   });
 
+  it('text and kind inputs of notify() and alert() can be typed in, also on a call added from the palette', () => {
+    let p = program("on(Idle, () => {\n  notify('a', NOTE_INFO);\n});\n");
+    const [existing] = ids(p);
+    p = setLiteral(p, { owner: existing, path: 'args.0' }, 'Fuel low', FLOW_HOST);
+    p = setLiteral(p, { owner: existing, path: 'args.1' }, 'NOTE_WARN', FLOW_HOST);
+    expect(textOf(p)).toContain("notify('Fuel low', NOTE_WARN);");
+    roundTrips(p);
+    for (const [fn, second] of [['notify', 'NOTE_ERROR'], ['alert', '1500']] as const) {
+      const text = FLOW_HOST.api.find((b) => b.name === fn)!.text;
+      const added = addStatement(program('on(Idle, () => {});\n'), { k: 'call', fn, argc: 2, text });
+      let q = connectExec(added.program, { k: 'start', handler: added.program.doc.handlers[0].id }, added.id);
+      q = setLiteral(q, { owner: added.id, path: 'args.0' }, 'Hello', FLOW_HOST);
+      q = setLiteral(q, { owner: added.id, path: 'args.1' }, second, FLOW_HOST);
+      expect(textOf(q)).toContain(`${fn}('Hello', ${second});`);
+      roundTrips(q);
+    }
+  });
+
   it('adds variables and event blocks under the same rules as the text', () => {
     let p = program('on(Idle, () => {});\n');
     expect(() => addHandler(p, 'Idle')).toThrow(/only have one Idle/);

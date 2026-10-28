@@ -5,6 +5,7 @@
  * obeys it only when started with WST_DEV_TOOLS=1 (npm run dev does that); otherwise it answers that the tools are off.
  */
 import { DEV_TEMPLATES, NEUTRAL, type ClientMessage, type DevCommand, type DevOutcome, type ScoreEntry } from '@wst/engine';
+import { showToast, type ToastKind } from './toast';
 import type { ClientState } from './state';
 
 export interface DevToolsActions {
@@ -61,6 +62,8 @@ export class DevTools {
       this.matterSection(),
       this.removeSection(),
       this.repairSection(),
+      this.weatherSection(),
+      this.alertsSection(),
       this.endSection(),
     );
     toggle.onclick = () => this.show(this.panel.hidden === true);
@@ -212,6 +215,55 @@ export class DevTools {
         this.button('Finish construction sites', () => this.run({ kind: 'finish', owner: this.owner(owner) }), 'Complete every site for free'),
       ),
     );
+  }
+
+  private weatherSection(): HTMLElement {
+    const level = (value: number) => make('input', { type: 'range', min: '0', max: '100', step: '1', value: String(value) });
+    const sun = level(100);
+    const wind = level(50);
+    const sunOut = make('output', { textContent: '100' });
+    const windOut = make('output', { textContent: '50' });
+    const sunFixed = make('input', { type: 'checkbox' });
+    const windFixed = make('input', { type: 'checkbox' });
+    const apply = () => {
+      sunOut.textContent = sun.value;
+      windOut.textContent = wind.value;
+      this.run({ kind: 'weather', sun: sunFixed.checked ? Number(sun.value) : -1, wind: windFixed.checked ? Number(wind.value) : -1 });
+    };
+    for (const control of [sun, wind, sunFixed, windFixed]) control.onchange = apply;
+    for (const [range, out] of [[sun, sunOut], [wind, windOut]] as const) range.oninput = () => (out.textContent = range.value);
+    const preset = (label: string, s: number, w: number) =>
+      this.button(label, () => {
+        sunFixed.checked = windFixed.checked = true;
+        sun.value = String(s);
+        wind.value = String(w);
+        apply();
+      });
+    return this.section(
+      'Sunlight and wind',
+      this.row(make('label', { className: 'dev-check' }, sunFixed, 'Fix sunlight'), sun, sunOut),
+      this.row(make('label', { className: 'dev-check' }, windFixed, 'Fix wind'), wind, windOut),
+      this.row(
+        preset('Noon, gale', 100, 100),
+        preset('Night, calm', 0, 0),
+        this.button('Natural cycle', () => {
+          sunFixed.checked = windFixed.checked = false;
+          apply();
+        }, 'Let daylight and wind follow their normal cycle again'),
+      ),
+    );
+  }
+
+  /** Previews of the pop-in alerts, one per kind (nothing is sent to the server). */
+  private alertsSection(): HTMLElement {
+    const sample: Record<ToastKind, string> = {
+      ok: 'Restored your saved designs (1 added)',
+      info: 'Reinforcements are on the way.',
+      warn: 'Your power network is running low.',
+      error: 'Program rejected — see the designer.',
+    };
+    const alert = (kind: ToastKind) => this.button(kind === 'ok' ? 'OK' : kind[0].toUpperCase() + kind.slice(1), () => showToast(sample[kind], kind), `Show a ${kind} alert at the top right`, `dev-alert-${kind}`);
+    return this.section('Alerts', this.row(...(['ok', 'info', 'warn', 'error'] as const).map(alert)));
   }
 
   private endSection(): HTMLElement {

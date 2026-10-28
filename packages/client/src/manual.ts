@@ -59,7 +59,7 @@ export const MANUAL: ManualPage[] = [
       </ol>
       <p>When you want details rather than a walk-through, the <b>Guide</b> pages (Language, Events, Orders &amp; activities, Energy, ...) and the <b>API reference</b> list everything exactly,
       and are generated from the game itself, so they always match the version you are playing.</p>
-      ${tryIt('The quickest way to feel it: start a single-player game, open the <b>Designer</b> (side panel, or ' + key('F2') + '), pick <i>Harvester</i>, open the <b>Code</b> tab and press <b>Graph</b>. That picture is the program your harvesters are running right now.')}`,
+      ${tryIt('The quickest way to feel it: start a Single Player game, open the <b>Designer</b> (side panel, or ' + key('F2') + '), pick <i>Harvester</i>, open the <b>Code</b> tab and press <b>Graph</b>. That picture is the program your harvesters are running right now.')}`,
   },
 
   {
@@ -93,7 +93,7 @@ export const MANUAL: ManualPage[] = [
       <p>The game runs at ${TICK_RATE} <b>ticks</b> per second. Programs run on a unit's own CPU, which gets a limited number of <b>cycles</b> each tick: a small CPU is slow to react,
       a good one reacts quickly, and running out of cycles just means the rest waits for next tick. How many cycles a program costs is explained in <a href="#/cost">CPU cost &amp; memory</a>.</p>
       <h2>Fog of war</h2>
-      <p>You only see what your own units and buildings can see. Unseen terrain is dark, enemies in the dark are hidden, and you cannot place buildings where you have no vision.
+      <p>You only see what your own units and buildings can see. Rock and buildings block the view, so you cannot see past a wall or a cliff (flying units see over them). Unseen terrain is dark, enemies in the dark are hidden, and you cannot place buildings where you have no vision.
       Sensors extend sight; <a href="#/m-fight">radar</a> reveals a flash of everything in range.</p>`,
   },
 
@@ -106,8 +106,8 @@ export const MANUAL: ManualPage[] = [
       <ul>
         <li><b>Left-click</b> a unit or building to select it. <b>Drag</b> a box to select several: a box picks combat units first, then turrets, then everything of yours.
         ${key('Shift')} adds to (or removes from) the selection.</li>
-        <li><b>Double-click</b> a unit to select every unit of its class on screen. ${key('Ctrl')}+${key('A')} selects all your units.</li>
-        <li><b>Control groups:</b> ${key('Ctrl')}+${key('1')}...${key('9')} saves the selection, ${key('1')}...${key('9')} recalls it (press twice to centre the view), ${key('Shift')}+number adds to a group.</li>
+        <li><b>Double-click</b> a unit to select every unit of its class on screen.</li>
+        <li><b>Control groups:</b> ${key('Ctrl')}+${key('1')}...${key('9')} saves the selection, ${key('1')}...${key('9')} recalls it (press twice to centre the view), ${key('Shift')}+number adds to a group. The modifiers are changeable under Options &gt; Controls.</li>
       </ul>
       <h2>Giving orders</h2>
       <p><b>Right-click</b> is a context order. The game looks at what you clicked and picks the order:</p>
@@ -124,7 +124,7 @@ export const MANUAL: ManualPage[] = [
       <ul>
         <li>${key('Ctrl')}-click (or ${key('Shift')} where your browser allows) <b>queues</b> the order behind the current ones instead of replacing them.</li>
         <li><b>Right-drag</b> instead of clicking to <b>spread</b> the selected units evenly along the path you draw: line them up across a corridor or around a point.</li>
-        <li>The <b>action grid</b> in the side panel offers the common orders as buttons with hotkeys (${key('M')} move, ${key('A')} attack, ${key('S')} stop, ${key('H')} harvest, ${key('D')} unload, ${key('C')} recharge),
+        <li>The <b>action grid</b> in the side panel offers the common orders as buttons with hotkeys (${key('M')} move, ${key('Ctrl')}+${key('A')} attack, ${key('Ctrl')}+${key('S')} stop, ${key('H')} harvest, ${key('Shift')}+${key('D')} unload, ${key('C')} recharge),
         and the buttons that each selected class adds for itself, such as <b>Hold fire</b>.</li>
         <li>Orders are only <i>requests</i>: the unit's program decides what to do with them. If a class has no block for an order, it ignores it.</li>
       </ul>
@@ -137,8 +137,8 @@ export const MANUAL: ManualPage[] = [
         <li>${key('Esc')} or right-click cancels.</li>
       </ol>
       <h2>The view</h2>
-      <p>Mouse wheel zooms at the cursor, the middle button (or the arrow keys) pans, ${key('Home')} resets. ${key('F1')} opens this manual over the game without pausing it, and ${key('F2')} opens the Designer.</p>
-      ${tryIt('In a single-player game, select a Harvester, then right-click a glowing field of matter. Now drag a box around three units and right-drag a curved line across the map.')}`,
+      <p>Mouse wheel zooms at the cursor, the middle button pans, ${key('Home')} resets. The arrow keys and ${key('W')}${key('A')}${key('S')}${key('D')} pan smoothly (a letter that is an order for your selection, such as ${key('H')} harvest, still gives the order). On a trackpad, pinch to zoom and scroll with two fingers to pan. With a builder selected, ${key('B')} opens the build menu, ${key('Q')} and ${key('E')} switch category, ${key('&lt;')} and ${key('&gt;')} step through the buildings and ${key('Enter')} starts placing the highlighted one. Every one of these keys, the order keys, mouse buttons and gestures can be changed under <b>Options &gt; Controls</b>, with Ctrl, Shift, Alt or Meta if you like; the game warns you about combinations your browser would take for itself. ${key('F1')} opens this manual over the game without pausing it, and ${key('F2')} opens the Designer.</p>
+      ${tryIt('In a Single Player game, select a Harvester, then right-click a glowing field of matter. Now drag a box around three units and right-drag a curved line across the map.')}`,
   },
 
   {
@@ -176,7 +176,7 @@ export const MANUAL: ManualPage[] = [
       site until it is finished. Sites can be attacked, so build in defended places. You can only place buildings where you can see.</p>
       <p>Idle builders spread out over the open sites, and team up on one only when there are no others. If your last builder dies you are not stuck: the HQ can always make another (see below).</p>
       <h2>Factories make units</h2>
-      <p>Select a factory and pick a class from the production panel to queue one. The unit appears beside the building and goes to the <i>rally point</i>: with the building selected, right-click anywhere to set it.
+      <p>Select a factory, press <b>Build units</b> and pick a class to queue one; hold ${key('Ctrl')} (changeable under Options &gt; Controls) while you click to fill the rest of the queue with that class. The unit appears beside the building and goes to the <i>rally point</i>: with the building selected, right-click anywhere to set it.
       A factory shows the build time, and there is an overall limit of ${MAX_UNITS_PER_PLAYER} units per player (buildings do not count).</p>
       <h3>Factory modules decide what a building can make</h3>
       <p>A factory building has one or more <b>factory modules</b>. Chassis come in three size classes, and a unit is built at full speed when the building has enough modules for it:</p>

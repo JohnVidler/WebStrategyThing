@@ -10,6 +10,11 @@ describe('changelog', () => {
     ]);
   });
 
+  it('keeps blank-line separated summary paragraphs apart', () => {
+    const [e] = parseChangelog('## 2026-03-03\nOne\nstill one.\n\nTwo.\n\n- A\n');
+    expect(e.summary).toBe('One still one.\n\nTwo.');
+  });
+
   it('the shipped changelog.md has dated entries, newest first, each with a headline and a summary', () => {
     expect(CHANGELOG.length).toBeGreaterThan(1);
     const dates = CHANGELOG.map((e) => e.date);

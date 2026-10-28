@@ -12,59 +12,70 @@
     <div id="lobby" hidden></div>
     <div id="connecting" hidden></div>
     <aside id="panel">
-      <header>
-        <div class="row-spread">
-          <h1>Digital Chaos</h1>
-          <span>
-            <button id="designer-open" data-sound="menu.click" title="Design classes and edit programs (F2)">Designer</button>
-            <button id="docs-open" data-sound="menu.click" title="Manual and API documentation (F1)">Docs</button>
-            <a class="button" href="docs.html" target="_blank" rel="noopener" title="Open the docs in a new tab">↗</a>
-          </span>
-        </div>
-        <div class="sidebar-meta">
-          <span id="status">connecting…</span>
-          <div id="environment" class="env-tiles"></div>
-        </div>
-      </header>
+      <h2 id="selection-title" hidden></h2>
+      <div id="groups" class="group-bar" aria-label="Control groups" hidden></div>
 
-      <section>
-        <h2>Resources</h2>
-        <div id="resource-bars" aria-label="Resources" hidden></div>
-      </section>
-
-      <section>
-        <h2>Actions</h2>
-        <div id="groups" class="group-bar" aria-label="Control groups" hidden></div>
+      <!-- Modal sections: each one is shown only while the selection needs it (see Ui.renderSelection). -->
+      <section id="actions-section" hidden>
+        <h2>Orders</h2>
         <div id="actions" class="action-grid" role="toolbar" aria-label="Actions for the selected units"></div>
         <div id="action-hint" class="muted"></div>
       </section>
 
-      <section>
-        <h2>Selection</h2>
-        <div id="selection-resources" class="resource-list" hidden></div>
-        <div id="production" hidden>
-          <div id="production-status" class="muted"></div>
-          <div id="production-queue" class="queue-grid" aria-label="Production queue"></div>
-          <div id="production-buttons" class="action-grid"></div>
-        </div>
-        <div id="modules" hidden></div>
-        <div id="result"></div>
+      <section id="build-section" hidden>
+        <h2>Build</h2>
+        <nav id="buildbar" aria-label="Place a building"></nav>
       </section>
 
-      <footer id="designs-bar" aria-label="Your designs">
-        <div class="row">
-          <button id="designs-download" data-sound="ui.design_download" title="Save your unit and building designs and their scripts as a JSON file">⬇ Download designs</button>
-          <button id="designs-upload" title="Load designs from a JSON file (asks first)">⬆ Upload designs</button>
+      <section id="production" hidden>
+        <h2>Production</h2>
+        <button id="unit-menu-toggle" data-sound="none" title="Choose a unit class to queue (shown beside this pane)"><span class="icon" aria-hidden="true">🏭</span><span class="label">Build Units</span></button>
+        <div id="production-queue" class="queue-grid" aria-label="Production queue"></div>
+        <div id="production-status" class="muted"></div>
+      </section>
+
+      <section id="selection-section" hidden>
+        <h2>Selection</h2>
+        <div id="selection-resources" class="resource-list" hidden></div>
+      </section>
+
+      <section id="modules-box" hidden>
+        <h2>Modules</h2>
+        <div id="modules"></div>
+      </section>
+
+      <!-- Bottom of the pane, in this order: player and session, the Designer/Docs buttons, the music widget (docked here by music.ts), then the session footer. -->
+      <header>
+        <div class="sidebar-meta">
+          <span id="status">connecting…</span>
         </div>
-        <button id="designs-reset" class="link" title="Put every default class back and retire your own (asks first)">Reset designs to defaults…</button>
-        <input id="designs-file" type="file" accept=".json,application/json" hidden>
+        <div class="row-spread">
+          <button id="designer-open" data-sound="menu.click" title="Design classes and edit programs (F2)">Designer</button>
+          <button id="docs-open" data-sound="menu.click" title="Manual and API documentation (F1)">Docs</button>
+          <a class="button" href="docs.html" target="_blank" rel="noopener" title="Open the docs in a new tab">↗</a>
+        </div>
+      </header>
+
+      <footer id="designs-bar" aria-label="Session">
+        <details class="session-menu">
+          <summary>Designs and match</summary>
+          <div class="row">
+            <button id="designs-download" data-sound="ui.design_download" title="Save your unit and building designs and their scripts as a JSON file">⬇ Download designs</button>
+            <button id="designs-upload" title="Load designs from a JSON file (asks first)">⬆ Upload designs</button>
+          </div>
+          <button id="designs-reset" class="link" title="Put every default class back and retire your own (asks first)">Reset designs to defaults…</button>
+          <input id="designs-file" type="file" accept=".json,application/json" hidden>
+        </details>
         <button id="resign" data-sound="none" title="Give up this match (press twice); you can then spectate or go back to the room list">Resign</button>
       </footer>
     </aside>
     <main id="stage">
+      <!-- Top bar: the player's stores (matter, energy, units). Daylight, wind and power drop down from the Energy tile. -->
+      <div id="topbar">
+        <div id="resource-bars" aria-label="Resources" hidden></div>
+      </div>
       <div id="map">
-        <div id="hoverbar" hidden></div>
-        <table id="scoreboard" aria-label="Players" hidden></table>
+        <div id="alerts-column"><table id="scoreboard" aria-label="Players" hidden></table><div id="toasts" role="status" aria-live="polite"></div></div>
         <div id="standings" hidden></div>
         <div id="pause" hidden></div>
         <div id="waiting" hidden></div>
@@ -83,8 +94,14 @@
           <iframe id="docs-frame" title="Script API documentation"></iframe>
         </div>
       </div>
-      <nav id="buildbar" aria-label="Place a building"></nav>
     </main>
+    <!-- Pop-over over the playfield, lined up with the open build tab in the left pane (see Ui.positionBuildMenu). -->
+    <div id="buildmenu" role="dialog" aria-label="Buildings" hidden></div>
+    <!-- The same kind of pop-over for the units a selected factory can build (see Ui.renderProduction). -->
+    <div id="unitmenu" role="dialog" aria-label="Units" hidden>
+      <h3>Build units</h3>
+      <div id="production-buttons" class="build-grid"></div>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

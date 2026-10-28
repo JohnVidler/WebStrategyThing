@@ -1,4 +1,4 @@
-import { pick, SoundBank, type Pool, type SoundFileInfo, type SoundManifest } from './soundbank';
+import { pick, rollVolume, SoundBank, spatialise, type Pool, type SoundFileInfo, type SoundManifest } from './soundbank';
 
 const STORAGE_KEY = 'wst-sfx';
 
@@ -132,14 +132,13 @@ export class SoundPlayer {
 
     let gain = options?.volume ?? 1;
     let pan = 0;
+    let cutoff = 0;
     if (pool.positional && options?.x !== undefined && options.y !== undefined) {
-      const dx = options.x - this.listener.x;
-      const dy = options.y - this.listener.y;
-      const distance = Math.hypot(dx, dy);
-      if (distance >= this.listener.radius) return undefined;
-      const near = 1 - distance / this.listener.radius;
-      gain *= near * near;
-      pan = Math.max(-1, Math.min(1, dx / this.listener.radius)) * 0.8;
+      const heard = spatialise(options.x - this.listener.x, options.y - this.listener.y, this.listener.radius);
+      if (!heard) return undefined;
+      gain *= heard.gain;
+      pan = heard.pan;
+      cutoff = heard.cutoff;
     }
 
     const sound = pick(pool);
@@ -147,7 +146,7 @@ export class SoundPlayer {
     const buffer = this.buffer(sound);
     if (!buffer) return undefined; // still loading: skipped this once
     pool.lastPlayed = now;
-    return this.start(ctx, this.master, pool, sound, buffer, gain * sound.volume, pan, options);
+    return this.start(ctx, this.master, pool, sound, buffer, gain * rollVolume(sound.volume), pan, cutoff, options);
   }
 
   /**
@@ -185,6 +184,7 @@ export class SoundPlayer {
     buffer: AudioBuffer,
     gain: number,
     pan: number,
+    cutoff: number,
     options?: PlayOptions,
   ): SoundHandle {
     const source = ctx.createBufferSource();
@@ -200,11 +200,19 @@ export class SoundPlayer {
     }
     source.connect(level);
     let tail: AudioNode = level;
+    let muffle: BiquadFilterNode | undefined;
+    if (cutoff > 0) {
+      muffle = ctx.createBiquadFilter();
+      muffle.type = 'lowpass';
+      muffle.frequency.value = cutoff;
+      level.connect(muffle);
+      tail = muffle;
+    }
     let panner: StereoPannerNode | undefined;
     if (pan !== 0) {
       panner = ctx.createStereoPanner();
       panner.pan.value = pan;
-      level.connect(panner);
+      tail.connect(panner);
       tail = panner;
     }
     tail.connect(out);
@@ -216,6 +224,7 @@ export class SoundPlayer {
       pool.voices--;
       source.disconnect();
       level.disconnect();
+      muffle?.disconnect();
       panner?.disconnect();
     };
     source.start();

@@ -1,19 +1,21 @@
+import { timeOfDay, weatherOf } from './weather';
 import { placeMusic } from './music';
 import {
   buildEnergyCost,
   MAX_UNITS_PER_PLAYER,
-  Cargo,
+  Caps,
   Construction,
-  CpuStatus,
   type Blueprint,
   EnergyView,
   factoryCanBuild,
   FACTORY_TIER_NAMES,
   MAX_PRODUCTION_QUEUE,
-  Health,
   Modules,
   PARTS,
   Production,
+  Resource,
+  RESOURCE_PATCH_AMOUNT,
+  ResourcePatch,
   Stockpile,
   SWITCHABLE,
   Unit,
@@ -22,11 +24,17 @@ import {
   type ServerMessage,
 } from '@wst/engine';
 import { playSound } from './sound';
+import { controls } from './controls';
+import { collapseByClass, generationPerTick } from './energy';
 import { isShown, revealScreen, setShown } from './transition';
 import type { ActionButton } from './actions';
 import { ownerColour } from './renderer';
+import { showToast, type ToastKind } from './toast';
 import { HISTORY_EVERY, HISTORY_SAMPLES, METRICS, ResourceHistory, sparkline } from './resources';
 import type { ClientState } from './state';
+
+/** Ticks the net matter income is averaged over (10 ticks = 1 second). */
+const MATTER_RATE_WINDOW = 50;
 
 /** What the end-of-mission screens offer in a campaign level. */
 export interface CampaignEnd {
@@ -37,7 +45,8 @@ export interface CampaignEnd {
 }
 
 export interface UiActions {
-  produce(building: number, blueprint: number): void;
+  /** Queues `count` of a class (a full queue refuses the extras). */
+  produce(building: number, blueprint: number, count: number): void;
   /** Remove the item at `index` (0 = being built) from a factory's queue. */
   dequeue(building: number, index: number): void;
   setModule(entity: number, index: number, on: boolean): void;
@@ -49,6 +58,8 @@ export interface UiActions {
   press(id: string, queue: boolean): void;
   /** Select control group n (like pressing its number key). */
   recallGroup(n: number): void;
+  /** Select all the player's units of a class (`add`: keep the current selection too). */
+  selectClass(blueprint: number, add: boolean): void;
   /** The waiting room's host starts the match. */
   startGame(): void;
   /** Switch to watching the whole map (after defeat, or once the match is decided). */
@@ -61,7 +72,6 @@ export interface UiActions {
 
 const el = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
-const CPU_STATES = ['running', 'asleep', 'NO POWER', 'offline', 'STUNNED'];
 
 /** The invite link row shared by the pause and waiting-room panels. */
 const inviteHtml = (url?: string): string =>
@@ -82,28 +92,40 @@ function bindInvite(root: HTMLElement, url?: string): void {
   });
 }
 
-/** Plain-DOM play UI: header, selection details, production, module switches, build bar, hover bar. */
+/** Plain-DOM play UI: header, selection details, production, module switches, build options, top-bar meters. */
 export class Ui {
   private readonly status = el<HTMLSpanElement>('status');
   private readonly resourceBars = el<HTMLDivElement>('resource-bars');
-  private readonly envView = el<HTMLSpanElement>('environment');
   private readonly productionPanel = el<HTMLDivElement>('production');
   private readonly productionStatus = el<HTMLDivElement>('production-status');
   private readonly productionButtons = el<HTMLDivElement>('production-buttons');
+  /** The units a selected factory can build: a button in the pane opens them as a pop-over beside it, like the build menu. */
+  private readonly unitMenu = el<HTMLDivElement>('unitmenu');
+  private readonly unitToggle = el<HTMLButtonElement>('unit-menu-toggle');
+  private unitMenuOpen = false;
   private readonly queueGrid = el<HTMLDivElement>('production-queue');
   private queueSlots: { btn: HTMLButtonElement; img: HTMLImageElement; fill: HTMLSpanElement; bp: number }[] = [];
   private queueIcons = new Map<number, string>();
   private queueFor = -1;
   private readonly modulesPanel = el<HTMLDivElement>('modules');
-  private readonly result = el<HTMLDivElement>('result');
+  private readonly modulesBox = el<HTMLElement>('modules-box');
+  /** Modal sections of the left pane: each is shown only while the selection needs it. */
+  private readonly buildSection = el<HTMLElement>('build-section');
+  private readonly actionsSection = el<HTMLElement>('actions-section');
+  private readonly selectionSection = el<HTMLElement>('selection-section');
   private readonly docsOverlay = el<HTMLDivElement>('docs-overlay');
   private readonly docsFrame = el<HTMLIFrameElement>('docs-frame');
   private readonly buildBar = el<HTMLDivElement>('buildbar');
   /** Build-bar category currently expanded, or null at the top level. */
   private openCategory: string | null = null;
+  /** Keyboard highlight in the open pop-over (or the flat building list), or -1. */
+  private buildCursor = -1;
   private buildGroups = new Map<string, Blueprint[]>();
-  private buildMenu: HTMLDivElement | null = null;
-  private readonly hoverBar = el<HTMLDivElement>('hoverbar');
+  /** True while the build pop-over finishes a category swap (its old panel has just slid away). */
+  private swapped = false;
+  /** The open category's buildings, as a grid in a pop-over over the map. */
+  private readonly buildMenu = el<HTMLDivElement>('buildmenu');
+  private readonly selectionTitle = el<HTMLDivElement>('selection-title');
   private readonly scoreboard = el<HTMLTableElement>('scoreboard');
   private readonly standings = el<HTMLDivElement>('standings');
   private readonly pauseView = el<HTMLDivElement>('pause');
@@ -120,6 +142,12 @@ export class Ui {
   private placing = -1;
 
   private credits = 0;
+  /** Recent (tick, matter pool) samples, for the matter-per-tick figure. */
+  private poolSamples: { tick: number; pool: number }[] = [];
+  /** Per silo: its amount a window ago and how much it changed over the last full window (negative = draining). */
+  private readonly siloMarks = new Map<number, { tick: number; amount: number; delta: number }>();
+  /** Building classes that carry a battery (for the energy storage list). */
+  private readonly batteryClass = new Map<number, boolean>();
   /** Rebuild buttons/toggles only when these change, so clicks aren't lost to DOM churn. */
   private productionKey = '';
   private productionCosts: { btn: HTMLButtonElement; cost: number; fits: boolean }[] = [];
@@ -129,6 +157,8 @@ export class Ui {
     private readonly state: ClientState,
     private readonly actions: UiActions,
   ) {
+    this.wireBuildMenuDismiss();
+    this.wireUnitMenu();
     // Docs open over the game area (the game keeps running) or in a new tab.
     el<HTMLButtonElement>('docs-open').onclick = () => this.toggleDocs(true);
     el<HTMLButtonElement>('docs-close').onclick = () => this.toggleDocs(false);
@@ -141,15 +171,19 @@ export class Ui {
         this.toggleDocs(false);
       }
     });
-    // The Power tile is rebuilt every tick, so its hover is tracked on the stable container.
+    // The Power tile sits in the Energy drop-down; its hover is tracked on the stable container.
     const track = (e: PointerEvent) => {
       const over = !!(e.target as Element | null)?.closest?.('.env-power');
       if (over && !this.state.showPowerLabels) playSound('ui.power_overlay');
       this.state.showPowerLabels = over;
     };
-    this.envView.addEventListener('pointerover', track);
-    this.envView.addEventListener('pointermove', track);
-    this.envView.addEventListener('pointerleave', () => (this.state.showPowerLabels = false));
+    this.resourceBars.addEventListener('pointerover', track);
+    this.resourceBars.addEventListener('pointermove', track);
+    this.resourceBars.addEventListener('pointerleave', () => (this.state.showPowerLabels = false));
+    // The selection title strip in the left pane is as tall as the top bar, so its text lines up with the bar's middle.
+    const topbar = document.getElementById('topbar');
+    if (topbar && typeof ResizeObserver !== 'undefined')
+      new ResizeObserver(() => document.documentElement.style.setProperty('--topbar-h', `${topbar.offsetHeight}px`)).observe(topbar);
   }
 
   setStatus(text: string): void {
@@ -307,22 +341,338 @@ export class Ui {
 
   /** One bar per resource type the player has capacity for: matter in silos, energy in power networks. */
   renderResourceBars(): void {
-    const { pool, poolCapacity, networks } = this.state;
-    const energy = networks.reduce((a, n) => a + n.stored, 0);
-    const energyMax = networks.reduce((a, n) => a + n.capacity, 0);
+    const { pool, poolCapacity, networks, world } = this.state;
+    const unit = world.store(Unit);
+    const stock = world.store(Stockpile).f.amount;
+    const energyPct = world.store(EnergyView).f.pct;
+    const sun = this.state.daylight;
+    const air = this.state.wind;
+    const fmt = (n: number): string => (n >= 10 || n === 0 ? String(Math.round(n)) : n.toFixed(1));
+    const signed = (n: number): string => `${n >= 0 ? '+' : '-'}${fmt(Math.abs(n))}/t`;
+
+    // Silos: every finished one of the player's.
+    const silos: { e: number; name: string; amount: number; cap: number }[] = [];
+    const unitCounts = new Map<number, number>(); // class id -> how many of the player's units
+    for (const e of unit.dense) {
+      if (unit.f.owner[e] !== this.state.myId || this.state.isSite(e)) continue;
+      const st = this.state.stats(e);
+      if (st && !st.structure) unitCounts.set(unit.f.blueprint[e], (unitCounts.get(unit.f.blueprint[e]) ?? 0) + 1);
+      if (st?.structure && st.resourceCapacity > 0) silos.push({ e, name: this.state.blueprints.get(unit.f.blueprint[e])?.name ?? 'Silo', amount: stock[e], cap: st.resourceCapacity });
+    }
+    silos.sort((a, b) => a.e - b.e);
+
+    // Grids: a power network that has a generator or a battery. A split network is a separate grid.
+    interface Gen { kind: 'sun' | 'wind'; bp: number; name: string; count: number; rate: number; peak: number }
+    interface Grid {
+      first: number;
+      stored: number;
+      capacity: number;
+      buildings: number;
+      balance: number;
+      cover: number;
+      supply: number;
+      delivered: number;
+      stores: { e: number; name: string; pct: number; cap: number; flow: number }[];
+      gens: Map<string, Gen>;
+    }
+    const grids: Grid[] = [];
+    let unlinked = 0;
+    for (const net of [...networks].sort((a, b) => a.members[0] - b.members[0])) {
+      const g: Grid = {
+        first: net.members[0],
+        stored: net.stored,
+        capacity: net.capacity,
+        buildings: 0,
+        balance: net.supply - net.delivered,
+        cover: net.demand > 0 ? (net.delivered / net.demand) * 100 : 100,
+        supply: net.supply,
+        delivered: net.delivered,
+        stores: [],
+        gens: new Map(),
+      };
+      let relevant = false;
+      for (let mi = 0; mi < net.members.length; mi++) {
+        const e = net.members[mi];
+        if (!world.isAlive(e) || !unit.has(e) || this.state.isSite(e)) continue;
+        const st = this.state.stats(e);
+        if (!st) continue;
+        g.buildings++;
+        const bpId = unit.f.blueprint[e];
+        const name = this.state.blueprints.get(bpId)?.name ?? 'Building';
+        if (this.hasBattery(bpId)) {
+          relevant = true;
+          g.stores.push({ e, name, pct: energyPct[e], cap: st.energyCapacity, flow: net.flow[mi] ?? 0 });
+        }
+        for (const [kind, output] of [['sun', st.solar], ['wind', st.wind]] as const) {
+          if (output <= 0) continue;
+          relevant = true;
+          const key = `${kind}:${bpId}`;
+          const gen = g.gens.get(key) ?? { kind, bp: bpId, name, count: 0, rate: 0, peak: 0 };
+          gen.count++;
+          gen.rate += kind === 'sun' ? generationPerTick(output, 0, sun, 0) : generationPerTick(0, output, 0, air);
+          gen.peak += kind === 'sun' ? generationPerTick(output, 0, 100, 0) : generationPerTick(0, output, 0, 100);
+          g.gens.set(key, gen);
+        }
+      }
+      if (relevant) grids.push(g);
+      else unlinked += g.buildings;
+    }
+    const energy = grids.reduce((a, g) => a + g.stored, 0);
+    const energyMax = grids.reduce((a, g) => a + g.capacity, 0);
+
+    // Net matter per tick over the last few seconds (harvesting minus spending).
+    const samples = this.poolSamples;
+    const lastSample = samples[samples.length - 1];
+    if (lastSample && this.state.tick < lastSample.tick) samples.length = 0; // the match restarted
+    if (!lastSample || lastSample.tick !== this.state.tick) samples.push({ tick: this.state.tick, pool });
+    while (samples.length > 2 && this.state.tick - samples[0].tick > MATTER_RATE_WINDOW) samples.shift();
+    const span = this.state.tick - samples[0].tick;
+    const rate = span > 0 ? (pool - samples[0].pool) / span : 0;
+    const energyDelta = grids.reduce((a, g) => a + g.balance, 0);
+
     const rows = [
-      { icon: '◆', label: 'Matter', colour: '#7ee0b5', value: pool, max: poolCapacity },
-      { icon: 'ϟ', label: 'Energy', colour: '#f5c542', value: energy, max: energyMax },
-      { icon: '▲', label: 'Units', colour: '#7eb6ff', value: this.state.ownUnitCount(), max: MAX_UNITS_PER_PLAYER },
-    ].filter((r) => r.max > 0);
-    const html = rows
-      .map((r) => {
-        const pct = Math.round(Math.min(1, r.value / r.max) * 100);
-        return `<div class="res"><span class="label"><span class="icon" aria-hidden="true">${r.icon}</span>${r.label}</span><span class="track"><i style="width:${pct}%;background:${r.colour}"></i></span><span class="amount">${Math.round(r.value)} / ${r.max}</span></div>`;
-      })
-      .join('');
-    this.resourceBars.hidden = rows.length === 0;
-    if (this.resourceBars.innerHTML !== html) this.resourceBars.innerHTML = html;
+      { key: 'matter', icon: '◆', label: 'Matter', colour: '#7ee0b5', value: pool, max: poolCapacity },
+      { key: 'energy', icon: 'ϟ', label: 'Energy', colour: '#f5c542', value: energy, max: energyMax },
+      { key: 'units', icon: '▲', label: 'Units', colour: '#7eb6ff', value: this.state.ownUnitCount(), max: MAX_UNITS_PER_PLAYER },
+    ].filter((r) => r.max > 0 || r.key !== 'units'); // Matter and Energy always show: they hold the drop-downs
+    this.resourceBars.hidden = false;
+    const tiles = rows.map((r) => {
+      const drop = true; // every tile opens a drop-down: matter (silos), energy (grids), units (classes)
+      const split = r.key === 'energy' && grids.length > 1;
+      return this.tileIn(this.resourceBars, r.key, {
+        cls: `env-store${drop ? ' env-has-drop' : ''}`,
+        icon: r.icon,
+        value: String(Math.round(r.value)),
+        label: `${r.label} / ${r.max}${split ? ` · ${grids.length} grids` : ''}${r.key === 'matter' ? ` · ${signed(rate)}` : r.key === 'energy' ? ` · ${signed(energyDelta)}` : ''}${drop ? ' ▾' : ''}`,
+        drain: r.key === 'matter' ? rate < -0.05 : r.key === 'energy' ? energyDelta < 0 : false,
+        pct: r.max > 0 ? (r.value / r.max) * 100 : 0,
+        // One bar per grid: a break in the network shows as a gap in the bar.
+        segments: r.key === 'energy' ? grids.map((g) => ({ w: g.capacity, pct: g.capacity > 0 ? (g.stored / g.capacity) * 100 : 0, drain: g.balance < 0 })) : undefined,
+        colour: r.colour,
+        title: `${r.label}: ${Math.round(r.value)} of ${r.max}${r.key === 'matter' ? '. Hover for your silos and the matter income.' : r.key === 'energy' ? `${split ? `, in ${grids.length} separate grids` : ''}. Hover for storage, solar, wind and power.` : '. Hover for your unit classes.'}`,
+        drop,
+      });
+    });
+    this.keepOnly(this.resourceBars, tiles);
+
+    // Units drop-down: an information list (no bars) of the classes in play and how many of each.
+    const unitsDrop = this.resourceBars.querySelector<HTMLElement>('[data-tile="units"] > .env-drop');
+    if (unitsDrop) {
+      const classes = [...unitCounts].map(([bp, n]) => ({ bp, n, name: this.state.blueprints.get(bp)?.name ?? 'Unit' })).sort((a, b) => b.n - a.n || a.name.localeCompare(b.name));
+      const out: HTMLElement[] = [
+        this.tileIn(unitsDrop, 'head', { cls: 'env-plain env-grid-head', icon: '▲', value: String(this.state.ownUnitCount()), label: `Units / ${MAX_UNITS_PER_PLAYER}`, pct: 0, title: 'Your units, by class' }),
+      ];
+      for (const c of classes) {
+        const row = this.tileIn(unitsDrop, `class:${c.bp}`, { cls: 'env-plain env-sub env-click', icon: '', value: String(c.n), label: c.name, pct: 0, title: `${c.n} × ${c.name}. Click to select them all (Shift adds to your selection).` });
+        row.tabIndex = 0;
+        row.setAttribute('role', 'button');
+        out.push(row);
+      }
+      if (!unitsDrop.dataset.wired) {
+        // One delegated handler: the rows are kept between updates but come and go with the classes.
+        unitsDrop.dataset.wired = '1';
+        const pick = (ev: Event, add: boolean) => {
+          const key = (ev.target as Element | null)?.closest<HTMLElement>('[data-tile^="class:"]')?.dataset.tile;
+          if (key) this.actions.selectClass(Number(key.slice(6)), add);
+        };
+        unitsDrop.addEventListener('click', (ev) => pick(ev, ev.shiftKey));
+        unitsDrop.addEventListener('keydown', (ev) => {
+          if (ev.key === 'Enter' || ev.key === ' ') {
+            ev.preventDefault();
+            pick(ev, ev.shiftKey);
+          }
+        });
+      }
+      if (classes.length === 0) out.push(this.tileIn(unitsDrop, 'none', { cls: 'env-plain env-sub', icon: '', value: '', label: 'No units yet', pct: 0, title: '' }));
+      this.keepOnly(unitsDrop, out);
+    }
+
+    // Matter drop-down: net income per tick, then every silo with its fill.
+    const matterDrop = this.resourceBars.querySelector<HTMLElement>('[data-tile="matter"] > .env-drop');
+    if (matterDrop) {
+      const deltas = new Map<number, number>(); // matter each silo gained or lost over the last window
+
+      for (const sl of silos) {
+        let m = this.siloMarks.get(sl.e);
+        if (!m || this.state.tick < m.tick) this.siloMarks.set(sl.e, (m = { tick: this.state.tick, amount: sl.amount, delta: 0 }));
+        else if (this.state.tick - m.tick >= MATTER_RATE_WINDOW) {
+          m.delta = sl.amount - m.amount;
+          m.tick = this.state.tick;
+          m.amount = sl.amount;
+        }
+        deltas.set(sl.e, m.delta);
+      }
+      if (this.siloMarks.size > silos.length) for (const e of [...this.siloMarks.keys()]) if (!silos.some((sl) => sl.e === e)) this.siloMarks.delete(e);
+      const out: HTMLElement[] = [
+        this.tileIn(matterDrop, 'silos', {
+          cls: 'env-grid-head',
+          drain: rate < -0.05,
+          icon: '◆',
+          value: String(Math.round(pool)),
+          label: `Silos / ${poolCapacity}`,
+          extra: signed(rate),
+          negative: rate < 0,
+          pct: poolCapacity > 0 ? (pool / poolCapacity) * 100 : 0,
+          colour: '#7ee0b5',
+          title: `All your silos: ${Math.round(pool)} of ${poolCapacity} matter. The change per tick is harvesting minus what you spend, over the last ${MATTER_RATE_WINDOW / 10} seconds.`,
+        }),
+      ];
+      for (const row of collapseByClass(silos)) {
+        const amount = row.items.reduce((a, sl) => a + sl.amount, 0);
+        const cap = row.items.reduce((a, sl) => a + sl.cap, 0);
+        out.push(
+          this.tileIn(matterDrop, `silo:${row.key}`, {
+            cls: 'env-sub',
+            drain: row.items.reduce((a, sl) => a + (deltas.get(sl.e) ?? 0), 0) < 0,
+            icon: '▣',
+            value: String(amount),
+            label: `${row.label} / ${cap}`,
+            pct: (amount / cap) * 100,
+            colour: '#7ee0b5',
+            title: `${row.label}: ${amount} of ${cap}`,
+          }),
+        );
+      }
+      if (silos.length === 0) out.push(this.tileIn(matterDrop, 'none', { cls: 'env-plain env-sub', icon: '', value: '', label: 'No silos yet', pct: 0, title: 'Build a silo to store matter' }));
+      this.keepOnly(matterDrop, out);
+    }
+
+    // Energy drop-down, a strict tree: each grid (total and change per tick) with its storage and generators
+    // beneath it, then the world (solar and wind levels) that the generators follow.
+    const drop = this.resourceBars.querySelector<HTMLElement>('[data-tile="energy"] > .env-drop');
+    if (!drop) return;
+    const env: HTMLElement[] = [];
+    grids.forEach((g, gi) => {
+      const k = `g${g.first}`;
+      env.push(
+        this.tileIn(drop, `${k}:head`, {
+          cls: 'env-grid-head',
+          drain: g.balance < 0,
+          icon: 'ϟ',
+          value: String(Math.round(g.stored)),
+          label: `Grid ${gi + 1} / ${g.capacity}`,
+          extra: `${g.balance >= 0 ? '+' : ''}${g.balance}/t`,
+          negative: g.balance < 0,
+          pct: g.capacity > 0 ? (g.stored / g.capacity) * 100 : 0,
+          colour: '#f5c542',
+          title: `Grid ${gi + 1}: ${g.buildings} linked building${g.buildings === 1 ? '' : 's'}, ${Math.round(g.stored)} of ${g.capacity} energy stored. Generated ${g.supply}/tick, delivered to consumers ${g.delivered}/tick. ${grids.length > 1 ? 'It is cut off from your other grids.' : ''}`,
+        }),
+      );
+      for (const row of collapseByClass(g.stores)) {
+        const amount = row.items.reduce((a, st) => a + Math.round((st.pct * st.cap) / 100), 0);
+        const cap = row.items.reduce((a, st) => a + st.cap, 0);
+        env.push(
+          this.tileIn(drop, `${k}:store:${row.key}`, {
+            cls: 'env-sub',
+            drain: row.items.reduce((a, st) => a + st.flow, 0) < 0,
+            icon: '▮',
+            value: String(amount),
+            label: `${row.label} / ${cap}`,
+            pct: cap > 0 ? (amount / cap) * 100 : 0,
+            colour: '#f5c542',
+            title: `${row.label}: ${amount} of ${cap} energy stored`,
+          }),
+        );
+      }
+      for (const x of [...g.gens.values()].sort((p, q) => p.bp - q.bp)) {
+        const solar = x.kind === 'sun';
+        env.push(
+          this.tileIn(drop, `${k}:${x.kind}:${x.bp}`, {
+            cls: 'env-sub',
+            icon: solar ? '☀' : '≋',
+            value: `${fmt(x.rate)}/t`,
+            label: `${x.name} (x${x.count})`,
+            pct: x.peak > 0 ? (x.rate / x.peak) * 100 : 0,
+            colour: solar ? '#ffd54a' : '#6fd3ff',
+            title: `${x.count} × ${x.name}: about ${fmt(x.rate)} of at most ${fmt(x.peak)} energy per tick right now, before transmission losses`,
+          }),
+        );
+      }
+    });
+    if (grids.length === 0) env.push(this.tileIn(drop, 'none', { cls: 'env-plain env-sub', icon: '', value: '', label: 'No generators or batteries yet', pct: 0, title: 'Build solar panels, wind turbines or batteries' }));
+    if (unlinked > 0) env.push(this.tileIn(drop, 'unlinked', { cls: 'env-plain env-sub', icon: '', value: '', label: `${unlinked} building${unlinked === 1 ? '' : 's'} on a grid with no generator or battery`, pct: 0, title: 'Link them to a grid with a generator by building closer or adding a power pylon' }));
+    env.push(this.tileIn(drop, 'world', { cls: 'env-plain env-grid-head', icon: '◍', value: '', label: 'World', extra: `${timeOfDay(this.state.tick, sun, this.state.devSun >= 0)} · ${weatherOf(air)}`, pct: 0, title: `The conditions your generators follow: ${timeOfDay(this.state.tick, sun, this.state.devSun >= 0).toLowerCase()}, ${weatherOf(air).toLowerCase()}` }));
+    env.push(this.tileIn(drop, 'sun', { cls: 'env-sub', icon: '☀', value: `${sun}%`, label: 'Solar', pct: sun, colour: '#ffd54a', title: 'Daylight: solar panels follow it' }));
+    env.push(this.tileIn(drop, 'wind', { cls: 'env-sub', icon: '≋', value: `${air}%`, label: 'Wind', pct: air, colour: '#6fd3ff', title: 'Wind: turbines follow it' }));
+    this.keepOnly(drop, env);
+  }
+
+  /** Whether a building class carries a battery module (cached: classes never change under an id). */
+  private hasBattery(bp: number): boolean {
+    let v = this.batteryClass.get(bp);
+    if (v === undefined) {
+      v = !!this.state.blueprints.get(bp)?.parts.some((id) => PARTS[id]?.slot === 'battery');
+      this.batteryClass.set(bp, v);
+    }
+    return v;
+  }
+
+  /**
+   * Creates or updates one meter tile inside `host`. The elements are kept between updates (only changed
+   * text and widths are written), so a drop-down under the pointer is never torn down while it is open.
+   * `segments` splits the tile's bar into several (one per power grid), each as wide as its weight.
+   */
+  private tileIn(
+    host: HTMLElement,
+    key: string,
+    o: { cls: string; icon: string; value: string; label: string; pct: number; colour?: string; title: string; drop?: boolean; segments?: { w: number; pct: number; drain?: boolean }[]; extra?: string; negative?: boolean; drain?: boolean },
+  ): HTMLElement {
+    let t = (Array.from(host.children) as HTMLElement[]).find((c) => c.dataset.tile === key);
+    if (!t) {
+      t = document.createElement('div');
+      t.dataset.tile = key;
+      if (o.drop) t.tabIndex = 0; // keyboard and touch users open the drop-down by focusing the tile
+      t.innerHTML = '<span class="env-icon" aria-hidden="true"></span><span class="env-value"></span><span class="env-label"></span><span class="env-extra"></span><span class="env-bar"><i></i></span>' + (o.drop ? '<div class="env-drop"></div>' : '');
+    }
+    const cls = `env-tile ${o.cls}`;
+    if (t.className !== cls) t.className = cls;
+    // Not a `title`: a hover tooltip would cover the bar it describes. Screen readers get the text instead.
+    if (t.getAttribute('aria-label') !== o.title) o.title ? t.setAttribute('aria-label', o.title) : t.removeAttribute('aria-label');
+    if (!t.hasAttribute('role')) t.setAttribute('role', 'group');
+    if (o.colour && t.style.getPropertyValue('--c') !== o.colour) t.style.setProperty('--c', o.colour);
+    const set = (sel: string, text: string) => {
+      const n = t!.querySelector<HTMLElement>(`:scope > ${sel}`)!;
+      if (n.textContent !== text) n.textContent = text;
+    };
+    set('.env-icon', o.icon);
+    set('.env-value', o.value);
+    set('.env-label', o.label);
+    set('.env-extra', o.extra ?? '');
+    t.classList.toggle('neg', o.negative === true);
+    t.classList.toggle('drain', o.drain === true); // draining: the whole bar goes red
+    const clamp = (n: number): string => `${Math.max(0, Math.min(100, n))}%`;
+    const bar = t.querySelector<HTMLElement>(':scope > .env-bar')!;
+    if (o.segments) {
+      const segs = o.segments.length ? o.segments : [{ w: 1, pct: 0 }];
+      if (bar.firstElementChild?.tagName === 'I') bar.replaceChildren(); // was a plain bar
+      bar.classList.add('segmented');
+      while (bar.children.length > segs.length) bar.lastElementChild!.remove();
+      while (bar.children.length < segs.length) bar.append(document.createElement('b')), bar.lastElementChild!.append(document.createElement('i'));
+      const total = segs.reduce((a, sg) => a + Math.max(0, sg.w), 0) || 1;
+      segs.forEach((sg, n) => {
+        const seg = bar.children[n] as HTMLElement;
+        const grow = String(Math.max(0.08, Math.max(0, sg.w) / total)); // never a sliver too thin to see
+        if (seg.style.flexGrow !== grow) seg.style.flexGrow = grow;
+        const colour = sg.drain ? 'var(--bad)' : (o.colour ?? 'var(--accent)');
+        if (seg.style.getPropertyValue('--c') !== colour) seg.style.setProperty('--c', colour);
+        const fill = seg.firstElementChild as HTMLElement;
+        const width = clamp(sg.pct);
+        if (fill.style.width !== width) fill.style.width = width;
+      });
+      return t;
+    }
+    const fill = bar.firstElementChild as HTMLElement;
+    const width = clamp(o.pct);
+    if (fill.style.width !== width) fill.style.width = width;
+    return t;
+  }
+
+  /** Makes `host` hold exactly `tiles`, in order, moving or removing elements only when they differ. */
+  private keepOnly(host: HTMLElement, tiles: readonly HTMLElement[]): void {
+    tiles.forEach((t, i) => {
+      if (host.children[i] !== t) host.insertBefore(t, host.children[i] ?? null);
+    });
+    while (host.children.length > tiles.length) host.lastElementChild!.remove();
   }
 
   setCredits(amount: number): void {
@@ -331,110 +681,33 @@ export class Ui {
   }
 
   /**
-   * The info bar across the top of the map: the unit/building under the cursor,
-   * otherwise the selection. One object shows its own stats; several own units
-   * show totals. Health, energy, then other resources; the name (or "N selected
-   * units") sits at the far right so the columns don't jump around.
+   * The heading at the top of the left pane: the class of the unit or building under the cursor, otherwise of the
+   * selection ("Scout", "5 × Scout", or "7 selected units" when the classes differ). An enemy or neutral unit
+   * says so. Hidden when there is nothing to name.
    */
-  renderInfo(hovered: number, selection: ReadonlySet<number>): void {
-    const { world } = this.state;
-    const alive = (e: number) => e >= 0 && world.isAlive(e) && world.store(Unit).has(e);
-    const ids = alive(hovered) ? [hovered] : [...selection].filter(alive);
-    const html = ids.length === 1 ? this.singleInfo(ids[0]) : this.groupInfo(ids.filter((e) => this.state.isMine(e)));
-    this.hoverBar.hidden = !html;
-    if (html && this.hoverBar.innerHTML !== html) this.hoverBar.innerHTML = html;
-  }
-
-  private stat(label: string, text: string, fraction?: number, colour?: string): string {
-    const kind = label.toLowerCase().replace(/\W+/g, '-');
-    const className = label === 'CPU' ? 'stat cpu-stat' : `stat stat-${kind}`;
-    return `<span class="${className}"><span class="label">${label}</span>${
-      fraction === undefined
-        ? ''
-        : `<span class="bar"><i style="width:${Math.round(Math.max(0, Math.min(1, fraction)) * 100)}%;background:${colour}"></i></span>`
-    }<span>${text}</span></span>`;
-  }
-
-  private singleInfo(e: number): string {
+  renderSelectionTitle(hovered: number, selection: ReadonlySet<number>): void {
     const { world, blueprints } = this.state;
-    const bp = blueprints.get(world.store(Unit).f.blueprint[e]);
-    const s = this.state.stats(e);
-    if (!bp || !s) return '';
-    const stat = this.stat.bind(this);
-    const items: string[] = [];
-    const hp = world.store(Health);
-    if (hp.has(e)) items.push(stat('Health', `${hp.f.hp[e]}/${s.hp}`, hp.f.hp[e] / s.hp, '#5bd68a'));
-    if (!this.state.isMine(e)) {
-      items.push(`<span class="name">${esc(bp.name)} <span class="muted">(${world.store(Unit).f.owner[e] === 0 ? 'neutral' : 'enemy'})</span></span>`);
-      return items.join('');
-    }
-    const energy = world.store(EnergyView);
-    if (energy.has(e)) {
-      const pct = energy.f.pct[e];
-      items.push(stat('Energy', `${pct}%`, pct / 100, '#f5c542'));
-    }
-    const cargo = world.store(Cargo);
-    if (cargo.has(e)) items.push(stat('Cargo', `${cargo.f.amount[e]}/${s.cargo}`, cargo.f.amount[e] / Math.max(1, s.cargo), '#7ee0b5'));
-    const stock = world.store(Stockpile);
-    if (stock.has(e)) {
-      items.push(stat('Silos', `${stock.f.amount[e]}/${s.resourceCapacity}`, stock.f.amount[e] / Math.max(1, s.resourceCapacity), '#7ee0b5'));
-    }
-    const site = world.store(Construction);
-    if (site.has(e)) items.push(stat('Built', `${site.f.progress[e]}%`, site.f.progress[e] / 100, '#4fd1c5'));
-    const prod = world.store(Production);
-    if (prod.has(e) && prod.f.queued[e] > 0) {
-      const name = blueprints.get(prod.f.blueprint[e])?.name ?? '…';
-      items.push(stat('Making', `${esc(name)} ${prod.f.progress[e]}%${prod.f.queued[e] > 1 ? ` +${prod.f.queued[e] - 1}` : ''}`, prod.f.progress[e] / 100, '#f5c542'));
-    }
-    const cpu = world.store(CpuStatus);
-    if (cpu.has(e) && s.cyclesPerTick > 0 && !site.has(e)) {
-      items.push(stat('CPU', `${CPU_STATES[cpu.f.state[e]]} ${cpu.f.used[e]}/${s.cyclesPerTick}c`));
-    }
-    const tasks = this.state.tasks.get(e);
-    if (tasks?.length) items.push(stat('Tasks', String(tasks.length / 4)));
-    const net = s.structure ? this.state.networkOf(e) : undefined;
-    if (net) {
-      const balance = net.supply - net.demand;
-      items.push(stat('Grid', `+${net.supply} −${net.demand}/t`, net.demand ? net.supply / net.demand : 1, balance >= 0 ? '#5bd68a' : '#ff6b5b'));
-      if (net.capacity) items.push(stat('Grid store', `${net.stored}/${net.capacity}`, net.stored / net.capacity, '#f5c542'));
-    }
-    items.push(`<span class="name">${esc(bp.name)}</span>`);
-    return items.join('');
-  }
-
-  /** Totals over several own units/buildings. */
-  private groupInfo(ids: number[]): string {
-    if (ids.length < 2) return ids.length ? this.singleInfo(ids[0]) : '';
-    const { world } = this.state;
-    const hp = world.store(Health);
-    const energy = world.store(EnergyView);
-    const cargo = world.store(Cargo);
-    const stock = world.store(Stockpile);
-    const cpu = world.store(CpuStatus);
-    const t = { hp: 0, hpMax: 0, en: 0, enMax: 0, cargo: 0, cargoMax: 0, stock: 0, stockMax: 0, running: 0, cpus: 0, tasks: 0 };
-    for (const e of ids) {
-      const s = this.state.stats(e);
-      if (!s) continue;
-      if (hp.has(e)) (t.hp += hp.f.hp[e], (t.hpMax += s.hp));
-      if (energy.has(e)) (t.en += Math.round((energy.f.pct[e] * s.energyCapacity) / 100), (t.enMax += s.energyCapacity));
-      if (cargo.has(e)) (t.cargo += cargo.f.amount[e], (t.cargoMax += s.cargo));
-      if (stock.has(e)) (t.stock += stock.f.amount[e], (t.stockMax += s.resourceCapacity));
-      if (cpu.has(e) && s.cyclesPerTick > 0 && !this.state.isSite(e)) {
-        t.cpus++;
-        if (cpu.f.state[e] === 0) t.running++;
+    const unit = world.store(Unit);
+    const alive = (e: number) => e >= 0 && world.isAlive(e) && unit.has(e);
+    const ids = alive(hovered) ? [hovered] : [...selection].filter(alive);
+    let text = '';
+    const resource = world.store(Resource);
+    const nodes = alive(hovered) ? 0 : [...selection].filter((e) => world.isAlive(e) && resource.has(e)).length;
+    if (ids.length === 0 && nodes > 0) {
+      text = nodes === 1 ? 'Matter deposit' : `${nodes} × Matter deposit`;
+    } else if (ids.length === 1) {
+      const name = blueprints.get(unit.f.blueprint[ids[0]])?.name;
+      if (name) text = this.state.isMine(ids[0]) ? name : `${name} (${unit.f.owner[ids[0]] === 0 ? 'neutral' : 'enemy'})`;
+    } else {
+      const own = ids.filter((e) => this.state.isMine(e));
+      if (own.length > 1) {
+        const first = unit.f.blueprint[own[0]];
+        const same = own.every((e) => unit.f.blueprint[e] === first);
+        text = same ? `${own.length} × ${blueprints.get(first)?.name ?? 'units'}` : `${own.length} selected units`;
       }
-      t.tasks += (this.state.tasks.get(e)?.length ?? 0) / 4;
     }
-    const stat = this.stat.bind(this);
-    const items: string[] = [];
-    if (t.hpMax) items.push(stat('Health', `${t.hp}/${t.hpMax}`, t.hp / t.hpMax, '#5bd68a'));
-    if (t.enMax) items.push(stat('Energy', `${t.en}/${t.enMax}`, t.en / t.enMax, '#f5c542'));
-    if (t.cargoMax) items.push(stat('Cargo', `${t.cargo}/${t.cargoMax}`, t.cargo / t.cargoMax, '#7ee0b5'));
-    if (t.stockMax) items.push(stat('Silos', `${t.stock}/${t.stockMax}`, t.stock / t.stockMax, '#7ee0b5'));
-    if (t.cpus) items.push(stat('CPU', `${t.running}/${t.cpus} running`));
-    if (t.tasks) items.push(stat('Tasks', String(t.tasks)));
-    items.push(`<span class="name">${ids.length} selected units</span>`);
-    return items.join('');
+    this.selectionTitle.hidden = !text;
+    if (this.selectionTitle.textContent !== text) this.selectionTitle.textContent = text;
   }
 
   /**
@@ -463,6 +736,8 @@ export class Ui {
       btn.classList.toggle('armed', demolishArmed && a.id === 'ui:demolish');
       btn.title = `${a.label}${a.key ? ` (${a.key})` : ''}: ${a.doc}${a.units.length ? ` — ${a.units.length} unit${a.units.length > 1 ? 's' : ''}` : ''}`;
     }
+    // Orders only appear while the selection can take some.
+    this.actionsSection.hidden = !actions.some((a) => a.units.length > 0);
     const demolish = actions.find((a) => a.id === 'ui:demolish');
     this.actionHint.textContent = aiming
       ? `${aiming.label}: left-click a target (Ctrl keeps aiming), right-click or Esc cancels`
@@ -489,7 +764,7 @@ export class Ui {
   setPlacing(blueprint: number): void {
     this.placing = blueprint;
     const buttons = [...this.buildBar.querySelectorAll<HTMLButtonElement>('button')];
-    if (this.buildMenu) buttons.push(...this.buildMenu.querySelectorAll<HTMLButtonElement>('button'));
+    buttons.push(...this.buildMenu.querySelectorAll<HTMLButtonElement>('button'));
     for (const b of buttons) {
       b.classList.toggle('active', Number(b.dataset.blueprint) === blueprint);
     }
@@ -556,7 +831,7 @@ export class Ui {
           img.alt = '';
           this.actions.iconFor(list[0].id).then((src) => (img.src = src)).catch(() => img.remove());
           const label = document.createElement('span');
-          label.innerHTML = `${cat}<small>${list.length} buildings ▴</small>`;
+          label.innerHTML = `${cat}<small>${list.length} buildings</small>`;
           btn.append(img, label);
           btn.dataset.sound = 'none'; // opens or closes below, with its own sound
           btn.onclick = () => {
@@ -583,60 +858,243 @@ export class Ui {
     const label = document.createElement('span');
     label.innerHTML = `${esc(bp.name)}<small>◆${bp.stats.cost} ϟ${buildEnergyCost(bp.stats.area)}</small>`;
     btn.append(img, label);
-    btn.onclick = () => this.actions.place(bp.id);
+    btn.onclick = (ev) => {
+      this.actions.place(bp.id);
+      // Placing starts: clear the pop-over off the map, unless Ctrl/Shift says keep building.
+      if (!ev.ctrlKey && !ev.shiftKey) this.closeBuildMenu();
+    };
     return btn;
   }
 
-  /** Pop-up listing the open category's buildings, floating over the map above its button. */
+  private navButtons(): HTMLButtonElement[] {
+    if (this.openCategory) return [...this.buildMenu.querySelectorAll<HTMLButtonElement>('.build-grid button')];
+    if (!this.buildBar.querySelector('button.category')) return [...this.buildBar.querySelectorAll<HTMLButtonElement>('button[data-blueprint]')];
+    return [];
+  }
+
+  private showBuildCursor(): void {
+    const buttons = this.navButtons();
+    buttons.forEach((b, i) => b.classList.toggle('kbd-focus', i === this.buildCursor));
+    buttons[this.buildCursor]?.scrollIntoView({ block: 'nearest' });
+  }
+
+  /**
+   * Build-menu hotkeys (configurable under Options > Controls): open or close the pop-over, step through
+   * categories and buildings, place the highlighted one. False if the key does nothing right now (no
+   * builder selected, nothing highlighted), so it can fall through to another control.
+   */
+  buildKey(act: string): boolean {
+    if (this.buildSection.hidden) return false;
+    const tabs = [...this.buildBar.querySelectorAll<HTMLButtonElement>('button.category')].map((b) => b.dataset.category!);
+    const openCategory = (cat: string | null) => {
+      this.openCategory = cat;
+      this.buildCursor = -1;
+      playSound(cat ? 'build.menu_open' : 'build.menu_close');
+      this.renderBuildMenu();
+    };
+    const dir = act.endsWith('Next') ? 1 : -1;
+    switch (act) {
+      case 'buildMenu':
+        if (!tabs.length) return false;
+        openCategory(this.openCategory ? null : tabs[0]);
+        return true;
+      case 'buildCategoryPrev':
+      case 'buildCategoryNext': {
+        if (!tabs.length) return false;
+        const at = this.openCategory ? tabs.indexOf(this.openCategory) : -1;
+        openCategory(tabs[at < 0 ? (dir > 0 ? 0 : tabs.length - 1) : (at + dir + tabs.length) % tabs.length]);
+        return true;
+      }
+      case 'buildItemPrev':
+      case 'buildItemNext': {
+        const n = this.navButtons().length;
+        if (!n) return false;
+        this.buildCursor = this.buildCursor < 0 ? (dir > 0 ? 0 : n - 1) : (this.buildCursor + dir + n) % n;
+        this.showBuildCursor();
+        return true;
+      }
+      case 'buildConfirm': {
+        const button = this.navButtons()[this.buildCursor];
+        if (!button) return false;
+        button.click();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private closeBuildMenu(): void {
+    if (!this.openCategory) return;
+    this.openCategory = null;
+    playSound('build.menu_close');
+    this.renderBuildMenu();
+  }
+
+  /** Lines the pop-over up with its category tab: top edge level with the button, left edge over the pane's border line. */
+  private positionBuildMenu(): void {
+    const menu = this.buildMenu;
+    const cat = this.openCategory;
+    if (!cat || menu.hidden) return;
+    const tab = [...this.buildBar.querySelectorAll<HTMLButtonElement>('button.category')].find((b) => b.dataset.category === cat);
+    if (!tab) return;
+    const pane = el<HTMLElement>('panel').getBoundingClientRect();
+    const tabRect = tab.getBoundingClientRect();
+    const top = Math.max(0, tabRect.top);
+    menu.style.setProperty('--tab-h', `${tabRect.height}px`);
+    menu.style.left = `${pane.right - 1}px`;
+    menu.style.top = `${top}px`;
+    menu.style.maxHeight = `${Math.max(120, window.innerHeight - top - 8)}px`;
+  }
+
+  /** Closes the build pop-over on Escape, or on a click anywhere but the pop-over and the category buttons. */
+  private wireBuildMenuDismiss(): void {
+    // The tab moves when the window or the pane scrolls.
+    window.addEventListener('resize', () => this.positionBuildMenu());
+    el<HTMLElement>('panel').addEventListener('scroll', () => this.positionBuildMenu(), { passive: true });
+    window.addEventListener(
+      'keydown',
+      (ev) => {
+        if (ev.key !== 'Escape' || !this.openCategory) return;
+        ev.stopImmediatePropagation(); // before the input handler, which would deselect
+        this.closeBuildMenu();
+      },
+      true,
+    );
+    window.addEventListener(
+      'pointerdown',
+      (ev) => {
+        if (!this.openCategory) return;
+        const t = ev.target as Element | null;
+        if (t?.closest('#buildmenu, #buildbar')) return;
+        this.closeBuildMenu();
+      },
+      true,
+    );
+  }
+
+  private wireUnitMenu(): void {
+    this.unitToggle.onclick = () => {
+      playSound(this.unitMenuOpen ? 'build.menu_close' : 'build.menu_open');
+      this.setUnitMenu(!this.unitMenuOpen);
+    };
+    window.addEventListener('resize', () => this.positionUnitMenu());
+    el<HTMLElement>('panel').addEventListener('scroll', () => this.positionUnitMenu(), { passive: true });
+    window.addEventListener(
+      'keydown',
+      (ev) => {
+        if (ev.key !== 'Escape' || !this.unitMenuOpen) return;
+        ev.stopImmediatePropagation(); // before the input handler, which would deselect
+        playSound('build.menu_close');
+        this.setUnitMenu(false);
+      },
+      true,
+    );
+    window.addEventListener(
+      'pointerdown',
+      (ev) => {
+        if (!this.unitMenuOpen || (ev.target as Element | null)?.closest('#unitmenu, #unit-menu-toggle')) return;
+        this.setUnitMenu(false);
+      },
+      true,
+    );
+  }
+
+  private setUnitMenu(open: boolean): void {
+    const opening = open && !this.unitMenuOpen;
+    this.unitMenuOpen = open;
+    this.unitToggle.classList.toggle('open', open);
+    this.unitMenu.hidden = !open;
+    if (!open) {
+      this.unitMenu.classList.remove('opening');
+      return;
+    }
+    this.positionUnitMenu();
+    if (opening && !document.documentElement.hasAttribute('data-reduce-motion')) {
+      const menu = this.unitMenu;
+      menu.classList.remove('opening');
+      void menu.offsetWidth; // restart the animation if it is still running
+      menu.classList.add('opening');
+      menu.addEventListener('animationend', () => menu.classList.remove('opening'), { once: true });
+    }
+  }
+
+  /** Lines the unit pop-over up with its button, the way positionBuildMenu does for a category tab. */
+  private positionUnitMenu(): void {
+    if (!this.unitMenuOpen) return;
+    const menu = this.unitMenu;
+    const pane = el<HTMLElement>('panel').getBoundingClientRect();
+    const btn = this.unitToggle.getBoundingClientRect();
+    const top = Math.max(0, btn.top);
+    menu.style.setProperty('--tab-h', `${btn.height}px`);
+    menu.style.left = `${pane.right - 1}px`;
+    menu.style.top = `${top}px`;
+    menu.style.maxHeight = `${Math.max(120, window.innerHeight - top - 8)}px`;
+  }
+
+  /** Shows the open category's buildings as a grid in a pop-over over the map. */
   private renderBuildMenu(): void {
     const cat = this.openCategory;
     const list = cat ? this.buildGroups.get(cat) : undefined;
-    if (!this.buildMenu) {
-      const menu = document.createElement('div');
-      menu.id = 'buildmenu';
-      menu.hidden = true;
-      document.body.appendChild(menu);
-      this.buildMenu = menu;
-      document.addEventListener('pointerdown', (e) => {
-        const t = e.target as Node;
-        if (this.openCategory && !menu.contains(t) && !this.buildBar.contains(t)) {
-          playSound('build.menu_close');
-          this.openCategory = null;
-          this.renderBuildMenu();
-        }
-      });
-    }
     const menu = this.buildMenu;
     for (const b of this.buildBar.querySelectorAll<HTMLButtonElement>('button.category')) {
       b.classList.toggle('open', b.dataset.category === cat);
     }
+    this.buildBar.classList.toggle('has-open', !!cat);
     if (!cat || !list) {
+      this.buildCursor = -1;
+      menu.classList.remove('opening', 'closing');
       menu.hidden = true;
       menu.innerHTML = '';
       delete menu.dataset.key;
       return;
     }
+    if (menu.classList.contains('closing')) return; // the slide-away ends in a render of whatever is open by then
     const menuKey = `${cat}:${list.map((bp) => bp.id).join('.')}`;
-    if (menu.dataset.key === menuKey && !menu.hidden) return;
+    if (menu.dataset.key === menuKey && !menu.hidden) {
+      this.positionBuildMenu(); // the same category after a rebuild of the bar: the tab may have moved
+      return;
+    }
+    // Switching category: the current panel slides away under the pane, then the new one slides out.
+    if (!menu.hidden && !this.swapped && !document.documentElement.hasAttribute('data-reduce-motion')) {
+      menu.classList.remove('opening');
+      menu.classList.add('closing');
+      menu.addEventListener(
+        'animationend',
+        () => {
+          menu.classList.remove('closing');
+          this.swapped = true;
+          this.renderBuildMenu();
+          this.swapped = false;
+        },
+        { once: true },
+      );
+      return;
+    }
     menu.dataset.key = menuKey;
+    this.buildCursor = -1;
     menu.innerHTML = '';
-    const title = document.createElement('h3');
-    title.textContent = cat;
-    menu.appendChild(title);
-    for (const bp of list) menu.appendChild(this.buildingButton(bp));
+    const heading = document.createElement('h3');
+    heading.textContent = cat;
+    const grid = document.createElement('div');
+    grid.className = 'build-grid';
+    for (const bp of list) grid.appendChild(this.buildingButton(bp));
+    menu.append(heading, grid);
+    const opening = menu.hidden || this.swapped;
     menu.hidden = false;
-    const anchor = this.buildBar.querySelector<HTMLElement>(`button[data-category="${CSS.escape(cat)}"]`);
-    if (anchor) {
-      const r = anchor.getBoundingClientRect();
-      menu.style.left = `${Math.max(4, Math.min(r.left, window.innerWidth - menu.offsetWidth - 4))}px`;
-      menu.style.bottom = `${window.innerHeight - this.buildBar.getBoundingClientRect().top + 4}px`;
+    this.positionBuildMenu();
+    // Slides out from under the pane (CSS keeps it beneath the pane while `opening`); not with Reduce motion.
+    if (opening && !document.documentElement.hasAttribute('data-reduce-motion')) {
+      menu.classList.remove('opening');
+      void menu.offsetWidth; // restart the animation if it is still running
+      menu.classList.add('opening');
+      menu.addEventListener('animationend', () => menu.classList.remove('opening'), { once: true });
     }
     this.setPlacing(this.placing);
   }
 
-  showResult(text: string, ok: boolean): void {
-    this.result.textContent = text;
-    this.result.className = ok ? 'ok' : 'bad';
+  /** A message for the player: a pop-in alert at the right of the playfield, below the scoreboard. */
+  showResult(text: string, ok: boolean, kind: ToastKind = ok ? 'ok' : 'error'): void {
+    showToast(text, kind);
   }
 
   /** Call once per applied tick: records resource levels for the sparklines. */
@@ -648,7 +1106,7 @@ export class Ui {
    * One row per resource the selected own units have: label, a sparkline of the
    * last ~30 s (totals for a group) and the current amount out of the maximum.
    */
-  private renderResources(ids: readonly number[]): void {
+  private renderResources(ids: readonly number[], nodes: readonly number[] = []): void {
     const own = ids.filter((e) => this.state.isMine(e));
     const rows: string[] = [];
     const seconds = (HISTORY_SAMPLES * HISTORY_EVERY) / this.state.tickRate;
@@ -670,6 +1128,23 @@ export class Ui {
           `<span class="label">${m.label}</span>${line}<span class="value">${value}<small>/${max}</small></span></div>`,
       );
     }
+    // Selected matter nodes: how much is left of how much they hold (a bar, not a history: nodes regrow slowly).
+    if (nodes.length) {
+      const res = this.state.world.store(Resource);
+      const patches = this.state.world.store(ResourcePatch);
+      let left = 0;
+      let full = 0;
+      for (const e of nodes) {
+        const amount = res.f.amount[e];
+        left += amount;
+        full += Math.max(amount, patches.has(e) ? patches.f.maximum[e] : RESOURCE_PATCH_AMOUNT);
+      }
+      const pct = full > 0 ? Math.round((left / full) * 100) : 0;
+      rows.push(
+        `<div class="res-row node" title="Matter left in ${nodes.length > 1 ? `these ${nodes.length} deposits` : 'this deposit'}. Harvesters take it; it slowly grows back.">` +
+          `<span class="label">Matter</span><span class="node-bar"><i style="width:${pct}%"></i></span><span class="value">${left}<small>/${full}</small></span></div>`,
+      );
+    }
     this.resourceList.hidden = rows.length === 0;
     this.resourceList.innerHTML = rows.join('');
   }
@@ -677,43 +1152,39 @@ export class Ui {
   /** Called on selection change and every tick. */
   renderSelection(selection: ReadonlySet<number>): void {
     const { world } = this.state;
-    const nets = this.state.networks;
-    const supply = nets.reduce((t, n) => t + n.supply, 0);
-    const demand = nets.reduce((t, n) => t + n.demand, 0);
-    // What consumers really received, not the free room in every store: a surplus is generation
-    // nobody took, a deficit is storage being drained to cover the load.
-    const delivered = nets.reduce((t, n) => t + n.delivered, 0);
-    const balance = supply - delivered;
-    const tile = (cls: string, icon: string, label: string, pct: number, text: string): string =>
-      `<div class="env-tile ${cls}" title="${label}"><span class="env-icon">${icon}</span>` +
-      `<span class="env-value">${text}</span><span class="env-label">${label}</span>` +
-      `<span class="env-bar"><i style="width:${Math.max(0, Math.min(100, pct))}%"></i></span></div>`;
-    const cover = demand > 0 ? (delivered / demand) * 100 : 100;
-    this.envView.innerHTML =
-      tile('env-sun', '☀', 'Daylight', this.state.daylight, `${this.state.daylight}%`) +
-      tile('env-wind', '≋', 'Wind', this.state.wind, `${this.state.wind}%`) +
-      tile(balance >= 0 ? 'env-power' : 'env-power env-deficit', 'ϟ', 'Power', cover, `${balance >= 0 ? '+' : ''}${balance}/t`);
-    this.envView.title = `Daylight and wind; your power grids: generated ${supply}/tick, delivered to consumers ${delivered}/tick (bar: share of what they could take) across ${nets.length} network(s)`;
     const unit = world.store(Unit);
     const ids = [...selection];
 
-    this.renderResources(ids.filter((e) => world.isAlive(e) && unit.has(e)));
+    const resource = world.store(Resource);
+    this.renderResources(
+      ids.filter((e) => world.isAlive(e) && unit.has(e)),
+      ids.filter((e) => world.isAlive(e) && resource.has(e)),
+    );
 
     const single = ids.length === 1 && this.state.isMine(ids[0]) ? ids[0] : -1;
     this.renderModules(single);
     this.renderProduction(single);
+
+    // Modal pane: building options only while a builder is selected, details only while there are some.
+    const builder = ids.some((e) => this.state.isMine(e) && ((this.state.stats(e)?.caps ?? 0) & Caps.Build) !== 0);
+    this.buildSection.hidden = !builder || this.buildBar.childElementCount === 0;
+    if (this.buildSection.hidden && this.openCategory) {
+      this.openCategory = null; // no builder, no pop-over
+      this.renderBuildMenu();
+    }
+    this.selectionSection.hidden = this.resourceList.hidden;
   }
 
   private renderModules(e: number): void {
     const bp = e >= 0 ? this.state.blueprints.get(this.state.world.store(Unit).f.blueprint[e]) : undefined;
-    this.modulesPanel.hidden = !bp;
+    this.modulesBox.hidden = !bp;
     if (!bp) return;
     const mask = this.state.world.store(Modules).f.off[e];
     const broken = this.state.world.store(Modules).f.broken[e];
     const key = `${e}|${bp.id}|${mask}|${broken}`;
     if (key === this.modulesKey) return;
     this.modulesKey = key;
-    this.modulesPanel.innerHTML = '<div class="muted">Modules (switch off to save energy)</div>';
+    this.modulesPanel.innerHTML = '<div class="muted">Switch a module off to save energy</div>';
     bp.parts.forEach((id, i) => {
       const def = PARTS[id];
       const label = document.createElement('label');
@@ -738,7 +1209,11 @@ export class Ui {
     const prod = world.store(Production);
     const isFactory = b >= 0 && prod.has(b);
     this.productionPanel.hidden = !isFactory;
-    if (!isFactory) return;
+    if (!isFactory) {
+      if (this.unitMenuOpen) this.setUnitMenu(false);
+      return;
+    }
+    this.positionUnitMenu(); // the button moves as the pane's contents change
 
     const current = blueprints.get(prod.f.blueprint[b]);
     this.productionStatus.textContent = prod.f.queued[b]
@@ -757,7 +1232,6 @@ export class Ui {
       this.productionCosts = [];
       for (const bp of buildable) {
         const btn = document.createElement('button');
-        btn.className = 'action';
         const fits = factoryCanBuild(tiers, bp.stats.size);
         const tier = FACTORY_TIER_NAMES[bp.stats.size] ?? 'this size of';
         btn.title = !fits
@@ -767,11 +1241,14 @@ export class Ui {
         img.alt = '';
         this.actions.iconFor(bp.id).then((src) => (img.src = src)).catch(() => img.remove());
         const label = document.createElement('span');
-        label.className = 'label';
-        label.innerHTML = `${esc(bp.name)}<br>◆${bp.stats.cost} ϟ${bp.stats.buildEnergy}`;
+        label.innerHTML = `${esc(bp.name)}<small>◆${bp.stats.cost} ϟ${bp.stats.buildEnergy}</small>`;
         btn.append(img, label);
         btn.dataset.sound = 'none';
-        btn.onclick = () => this.actions.produce(b, bp.id);
+        btn.onclick = (ev) => {
+          // With the fill modifier (Ctrl by default) the clicked unit takes every free place in the queue.
+          const free = MAX_PRODUCTION_QUEUE - this.state.world.store(Production).f.queued[b];
+          this.actions.produce(b, bp.id, controls.modifierHeld('fillQueue', ev) ? Math.max(1, free) : 1);
+        };
         this.productionButtons.appendChild(btn);
         this.productionCosts.push({ btn, cost: bp.stats.cost, fits });
       }

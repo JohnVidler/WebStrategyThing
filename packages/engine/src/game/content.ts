@@ -273,9 +273,18 @@ ${BASICS(25)}
 `;
 export const NEW_CLASS_PROGRAM = programFromText('New class', NEW_CLASS_TEXT);
 
-export const NEUTRAL_CLASS: ClassTemplate = template('Wanderer', ['chassis.light', 'cpu.basic', 'motor.small'], `// Wanders: every 10 ticks, if it is standing still, it picks a random spot nearby.
+export const NEUTRAL_CLASS: ClassTemplate = template('Wanderer', ['chassis.light', 'cpu.basic', 'motor.small', 'solar.panel', 'solar.panel'],`// Wanders: every 10 ticks, if it is standing still, it picks a random spot nearby.
+// Its solar panels are weak, so when the battery drops below a quarter it stops and sits
+// still until the panels have filled it again (above 95%), however long that takes.
+let resting = 0;
 on(Every, { ticks: 10 }, () => {
-  if (moving() === 0) {
+  if (energy() * 100 < energyMax() * 25) {
+    resting = 1;
+  }
+  if (energy() * 100 > energyMax() * 95) {
+    resting = 0;
+  }
+  if (resting === 0 && moving() === 0) {
     move(rand(9) - 4, rand(9) - 4);
   }
 });

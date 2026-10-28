@@ -1,4 +1,5 @@
-import { COMMON_ACTIONS, DEMOLISH_KEY, DEMOLISH_REFUND, Unit } from '@wst/engine';
+import { COMMON_ACTIONS, DEMOLISH_REFUND, Unit } from '@wst/engine';
+import { controls, orderControl, type ActionId } from './controls';
 import type { ClientState } from './state';
 
 /** One square in the sidebar action grid. */
@@ -6,7 +7,10 @@ export interface ActionButton {
   /** `cmd:<task>` for common actions, `ui:demolish`, or `btn:<name>` for class-declared buttons. */
   readonly id: string;
   readonly label: string;
+  /** Text shown for its hotkey: the player's choice for common actions, the class's letter for its own buttons. */
   readonly key: string;
+  /** The configurable control (`controls.ts`) that presses it; class buttons have none. */
+  readonly control?: ActionId;
   readonly icon: string;
   readonly aim: boolean;
   readonly doc: string;
@@ -26,7 +30,8 @@ export function actionsFor(state: ClientState, selection: readonly number[]): Ac
   const out: ActionButton[] = COMMON_ACTIONS.map((a) => ({
     id: `cmd:${a.task}`,
     label: a.label,
-    key: a.key,
+    key: controls.keyLabel(orderControl(a.id)),
+    control: orderControl(a.id),
     icon: a.icon,
     aim: a.aim,
     doc: a.doc,
@@ -42,7 +47,8 @@ export function actionsFor(state: ClientState, selection: readonly number[]): Ac
   out.push({
     id: 'ui:demolish',
     label: sitesOnly ? 'Cancel' : 'Demolish',
-    key: DEMOLISH_KEY,
+    key: controls.keyLabel('orderDemolish'),
+    control: 'orderDemolish',
     icon: '✖',
     aim: false,
     doc: `Press twice. Sites refund everything invested; finished buildings refund ${DEMOLISH_REFUND * 100}% of their cost, plus any silo contents.`,

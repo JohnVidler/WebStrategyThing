@@ -7,8 +7,8 @@ export const Health = defineComponent('Health', { hp: 'i32' }, { networked: true
 /** `state` is a CpuState; `fault` a VM Fault code. */
 export const CpuStatus = defineComponent('CpuStatus', { used: 'u16', fault: 'u8', state: 'u8' }, { networked: true });
 export const Resource = defineComponent('Resource', { amount: 'u16' }, { networked: true });
-/** Server-only marker for natural resource patches, capped at their initial amount. */
-export const ResourcePatch = defineComponent('ResourcePatch', { maximum: 'u16' });
+/** Marker for natural resource patches, capped at their initial amount. Networked (once, at spawn) so clients can show how full a node is. */
+export const ResourcePatch = defineComponent('ResourcePatch', { maximum: 'u16' }, { networked: true });
 export const Cargo = defineComponent('Cargo', { amount: 'u16' }, { networked: true });
 /**
  * Factory progress for the UI. `blueprint` is the item being built, `progress` its percent and `queued`

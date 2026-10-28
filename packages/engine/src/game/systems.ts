@@ -8,9 +8,9 @@ import { CpuState } from './components';
 import { launchMissile, shotHitsMissile } from './missile';
 import { SimEvent } from './events';
 import { PART_LIST, TILE } from './parts';
-import { daylight, routeEnergy, share, StorageMode, wind } from './power';
+import { routeEnergy, share, StorageMode } from './power';
 import { GENERATION_SCALE } from './parts';
-import { BUILDER_ENERGY_RESERVE, CLIMB_SPEED_PERMILLE, SEPARATION_GAP, DECAY_TICKS, MAX_TRANSMISSION_LOSS, RESOURCE_REGEN_INTERVAL_TICKS, SOLAR_GENERATION_MULTIPLIER, STORAGE_DISCHARGE_FRACTION, STORAGE_RESERVE_FRACTION, TESLA_SELF_STUN_FACTOR, TESLA_STUN_TICKS, TRANSMISSION_LOSS_PER_TILE, WIND_GENERATION_MULTIPLIER, buildEnergyCost } from './rules';
+import { BUILDER_ENERGY_RESERVE, CLIMB_SPEED_PERMILLE, SEPARATION_GAP, DECAY_TICKS, MAX_TRANSMISSION_LOSS, MOBILE_SOLAR_EFFICIENCY_PERCENT, RESOURCE_REGEN_INTERVAL_TICKS, SOLAR_GENERATION_MULTIPLIER, STORAGE_DISCHARGE_FRACTION, STORAGE_RESERVE_FRACTION, TESLA_SELF_STUN_FACTOR, TESLA_STUN_TICKS, TRANSMISSION_LOSS_PER_TILE, WIND_GENERATION_MULTIPLIER, buildEnergyCost } from './rules';
 import { CHARGE_PAD_RATE_MULTIPLIER, CHARGE_RANGE, FLAK_BURST_RADIUS, factoryCanBuild } from './rules';
 import type { Simulation } from './simulation';
 
@@ -20,8 +20,8 @@ const reserveOf = (capacity: number): number => Math.max(1, Math.ceil(capacity *
 /** Generation, then distribution inside each power network (consumers first, then storage). */
 export function powerSystem(sim: Simulation): void {
   if (sim.powerDirty) sim.rebuildNetworks();
-  const sun = daylight(sim.tick);
-  const air = wind(sim.config.seed, sim.tick);
+  const sun = sim.sunNow();
+  const air = sim.windNow();
   const store = sim.energy.f.amount;
   for (const net of sim.networks) {
     let generated = 0;
@@ -140,6 +140,25 @@ export function powerSystem(sim: Simulation): void {
       net.stored += store[b];
       net.capacity += sim.stats(b).energyCapacity;
     }
+  }
+}
+
+/**
+ * Mobile units with solar panels charge themselves from daylight (they are on no power network).
+ * Same output formula as a building's panels, with the leftover fraction carried in `genCarry`.
+ */
+export function unitSolarSystem(sim: Simulation): void {
+  const sun = sim.sunNow();
+  const amount = sim.energy.f.amount;
+  const unit = 100 * GENERATION_SCALE;
+  for (const e of sim.unit.dense) {
+    if (!sim.motion.has(e) || !sim.energy.has(e)) continue;
+    const s = sim.stats(e);
+    if (s.solar <= 0 || sim.isSite(e)) continue;
+    const total = (s.solar * sun * SOLAR_GENERATION_MULTIPLIER * MOBILE_SOLAR_EFFICIENCY_PERCENT) / 100 + (sim.genCarry[e] ?? 0);
+    const whole = Math.floor(total / unit);
+    sim.genCarry[e] = total - whole * unit;
+    amount[e] = Math.min(s.energyCapacity, amount[e] + whole);
   }
 }
 

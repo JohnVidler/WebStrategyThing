@@ -1,9 +1,56 @@
 import { describe, expect, it } from 'vitest';
-import { applyTick, encodeTick, FLOW_HOST, parseText, printText, GAME_COMPONENTS, Simulation, TILE, World } from '../src';
+import { applyTick, encodeTick, FLOW_HOST, MAX_NOTICES_PER_OWNER_TICK, NOTICE_KINDS, parseText, printText, GAME_COMPONENTS, Simulation, TILE, World } from '../src';
 import { prog } from './helpers';
 
 const lines = (...l: string[]): string => l.join('\n');
 const unit = ['chassis.light', 'cpu.basic', 'battery.cell'];
+
+describe('notify(text, kind)', () => {
+  const make = (source: string, owner = 1) => {
+    const sim = new Simulation({ width: 20, height: 20, seed: 1 });
+    const bp = sim.blueprints.define(owner, 'Talker', unit);
+    sim.setProgram(bp.id, prog(source));
+    sim.spawnUnit(bp, 5 * TILE, 5 * TILE);
+    return sim;
+  };
+
+  it('takes text in quotes and a NOTE_* kind', () => {
+    const src = "on(Spawned, () => {\n  notify('Low power', NOTE_WARN);\n});\n";
+    const parsed = parseText(src, FLOW_HOST);
+    expect(parsed.errors.map((e) => e.message)).toEqual([]);
+    expect(printText(parsed.doc, FLOW_HOST)).toBe(src);
+    expect(parseText("on(Spawned, () => {\n  notify(5, 1);\n});", FLOW_HOST).errors[0].message).toMatch(/is text: write it in quotes/);
+  });
+
+  it('raises a pop-up for the unit owner with the kind and text', () => {
+    const sim = make("on(Spawned, () => {\n  notify('HP: ' + hp(), NOTE_ERROR);\n});");
+    sim.step();
+    expect(sim.notices.map((n) => [n.owner, NOTICE_KINDS[n.kind], n.text.startsWith('HP: ')])).toEqual([[1, 'error', true]]);
+    sim.commit();
+    expect(sim.notices).toEqual([]);
+  });
+
+  it('clamps an out-of-range kind', () => {
+    const sim = make("on(Spawned, () => {\n  notify('a', 99);\n});");
+    sim.step();
+    expect(sim.notices[0].kind).toBe(NOTICE_KINDS.length - 1);
+  });
+
+  it('lets a unit raise one every couple of seconds, and drops the rest', () => {
+    const sim = make("on(Spawned, () => {\n  const a = notify('one', NOTE_INFO);\n  const b = notify('two', NOTE_INFO);\n});");
+    sim.step();
+    expect(sim.notices.map((n) => n.text)).toEqual(['one']);
+  });
+
+  it('caps what one player can raise in a tick', () => {
+    const sim = new Simulation({ width: 20, height: 20, seed: 1 });
+    const bp = sim.blueprints.define(1, 'Talker', unit);
+    sim.setProgram(bp.id, prog("on(Spawned, () => {\n  notify('x', NOTE_OK);\n});"));
+    for (let i = 0; i < 5; i++) sim.spawnUnit(bp, (5 + i) * TILE, 5 * TILE);
+    sim.step();
+    expect(sim.notices.length).toBe(MAX_NOTICES_PER_OWNER_TICK);
+  });
+});
 
 describe('alert(text, duration_ms)', () => {
   const text = "on(Spawned, () => {\n  alert('Hello, it\\'s me', 2500);\n});\n";

@@ -93,7 +93,7 @@ describe('terrain and movement', () => {
   });
 
   it('lays out every map symmetrically, so no corner has a shortcut the others lack', () => {
-    for (const map of MAPS) {
+    for (const map of MAPS.filter((m) => !m.starts)) {
       const t = createMapTerrain(map.id);
       for (let y = 0; y < t.height; y++) {
         for (let x = 0; x < t.width; x++) {
@@ -646,6 +646,26 @@ describe('construction and resources', () => {
     expect(sim.tasks[made[0]]!.type(0)).not.toBe(TaskType.Harvest);
   });
 
+  it('a building counts as reached from any side or corner, not just straight on', () => {
+    const { sim, own, cls } = makeMatch();
+    const [scout] = own(1, 'Scout');
+    const [tx, ty] = tileOf(sim, scout);
+    const silo = sim.spawnStructure(cls(1, 'Resource Silo'), tx + 5, ty);
+    const half = (sim.stats(silo).footprint * TILE) / 2;
+    const cx = sim.pos.f.x[silo];
+    const cy = sim.pos.f.y[silo];
+    // One tile out from the edge, level with the side and diagonally off a corner: the same distance.
+    sim.pos.f.x[scout] = cx + half + TILE;
+    sim.pos.f.y[scout] = cy;
+    const side = sim.edgeDistance(scout, silo);
+    sim.pos.f.x[scout] = cx + half + TILE;
+    sim.pos.f.y[scout] = cy + half;
+    expect(sim.edgeDistance(scout, silo)).toBeCloseTo(side);
+    sim.pos.f.x[scout] = cx + half + TILE / 2;
+    sim.pos.f.y[scout] = cy + half + TILE / 2;
+    expect(sim.edgeDistance(scout, silo)).toBeLessThanOrEqual(TILE);
+  });
+
   it('the Resource Silo sends docked harvesters to one of the nearest fields, chosen at random', () => {
     const { sim, own, cls } = makeMatch();
     const [scout] = own(1, 'Scout');
@@ -664,7 +684,8 @@ describe('construction and resources', () => {
       const harvester = sim.spawnUnit(passiveHarvester, sim.pos.f.x[silo], sim.pos.f.y[silo]);
       run(sim, 3);
       expect(sim.dock(harvester, silo)).toBe(true);
-      run(sim, 2); // long enough for the silo to react, too short for the harvester to finish (and drop) the order
+      // Long enough for the silo to react (it sees one visitor a tick, and earlier harvesters may dock too), too short for the harvester to finish (and drop) the order.
+      for (let t = 0; t < 6 && (sim.tasks[harvester]?.count ?? 0) === 0; t++) run(sim, 1);
       const queue = sim.tasks[harvester]!;
       expect(queue.type(queue.count - 1)).toBe(TaskType.Harvest);
       const target = sim.world.resolve(queue.target(queue.count - 1));
@@ -776,5 +797,24 @@ describe('simulation', () => {
       for (const e of visible) expect(Math.abs(mirror.store(Position).f.x[e] - sim.pos.f.x[e])).toBeLessThanOrEqual(8);
     }
     expect(sawHq).toBe(true);
+  });
+});
+
+describe('lightLevel()', () => {
+  it('follows the time of day, never fully dark, and can be read by a script', async () => {
+    const { UNIT_API } = await import('../src');
+    const sim = new Simulation({ width: 20, height: 20, seed: 1 });
+    const bot = sim.blueprints.define(1, 'Bot', ['chassis.light', 'motor.small']);
+    const u = sim.spawnUnit(bot, at(5), at(5));
+    const read = () => UNIT_API.find((b) => b.name === 'lightLevel')!.fn({ sim, e: u } as never, new Int32Array(0));
+    sim.tick = 300; // midday
+    expect(read()).toBe(100);
+    sim.tick = 150;
+    expect(read()).toBeGreaterThan(50);
+    expect(read()).toBeLessThan(100);
+    sim.tick = 900; // night
+    expect(read()).toBe(8);
+    sim.devSun = 50;
+    expect(read()).toBe(54);
   });
 });

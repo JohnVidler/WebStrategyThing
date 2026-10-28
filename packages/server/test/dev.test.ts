@@ -48,6 +48,31 @@ describe('developer commands', () => {
     expect(last('devNote')).toMatchObject({ ok: false });
   });
 
+  it('fix sunlight and wind for everyone, tell clients, and go back to the natural cycle', () => {
+    const { match, socket, run, last } = startMatch(true);
+    run({ kind: 'weather', sun: 40, wind: 90 });
+    expect(match.sim.sunNow()).toBe(40);
+    expect(match.sim.windNow()).toBe(90);
+    expect(last('weather')).toMatchObject({ sun: 40, wind: 90 });
+    expect(socket.messages.some((m) => m.t === 'weather')).toBe(true);
+    run({ kind: 'weather', sun: -1, wind: -1 });
+    expect(match.sim.devSun).toBe(-1);
+    expect(match.sim.sunNow()).toBe(match.sim.sunNow());
+    expect(socket.messages.filter((m) => m.t === 'weather')).toHaveLength(2);
+  });
+
+  it('tell a player who joins later about fixed sunlight and wind', () => {
+    const match = new Match({ mode: 'coop', mapId: 'small-basin', devTools: true });
+    const host = new FakeSocket();
+    match.join(asSocket(host));
+    match.receive(asSocket(host), { t: 'startGame' });
+    match.receive(asSocket(host), { t: 'dev', cmd: { kind: 'weather', sun: 10, wind: 20 } });
+    ticks(match, 2);
+    const late = new FakeSocket();
+    match.join(asSocket(late));
+    expect(late.messages.find((m) => m.t === 'weather')).toMatchObject({ sun: 10, wind: 20 });
+  });
+
   it('spawn units and buildings for neutral and other teams, and tell clients about new classes', () => {
     const { match, socket, id, run } = startMatch(true);
     const neutral = entityCount(match, 0);

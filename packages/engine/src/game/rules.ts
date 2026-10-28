@@ -47,6 +47,10 @@ export const BUILDER_ENERGY_RESERVE = 0.25;
 /** A unit with no energy for this many ticks falls apart into a matter block worth its cost. */
 export const DECAY_TICKS = 600;
 
+/** A solar panel on a mobile unit (not a building): weighs this many times as much, breaks after this percent of the damage, and yields this percent of the output. */
+export const MOBILE_SOLAR_MASS_FACTOR = 4;
+export const MOBILE_SOLAR_INTEGRITY_PERCENT = 25;
+export const MOBILE_SOLAR_EFFICIENCY_PERCENT = 25;
 /** Multiplier applied to solar output after scaling by daylight (1 = unchanged). */
 export const SOLAR_GENERATION_MULTIPLIER = 5;
 /** Multiplier applied to wind output after scaling by wind intensity (1 = unchanged). */
@@ -101,12 +105,17 @@ export const MISSILE_EDGE_DAMAGE = 0.4;
 
 /** Ticks in one day/night cycle (2 minutes at 10 Hz). Daylight during the first half. */
 export const DAY_LENGTH = 1200;
+/** Light left at night (0..100): starlight and moonlight, so `lightLevel()` never drops to nothing. */
+export const MOONLIGHT = 8;
 /** Ticks between new random wind targets; the wind drifts smoothly between them. */
 export const WIND_CHANGE_TICKS = 100;
 
 /** How far (sub-tile units) a unit sees with no sensor, and a building. A longer sensor range wins. */
 export const UNIT_VISION = 4 * TILE;
 export const BUILDING_VISION = 6 * TILE;
+/** At full dark every viewer loses a quarter of its sight range, but never more than this (in world units); the loss follows daylight. */
+export const NIGHT_VISION_LOSS = 3 * TILE;
+export const NIGHT_VISION_FRACTION = 0.25;
 
 /** Units closer than this (sub-tile units) push each other apart: the two hull radii plus SEPARATION_GAP. */
 export const SEPARATION_GAP = Math.floor(0.1 * TILE);
@@ -238,6 +247,20 @@ export const BOT_WAVE_GROWTH = 1;
 /** Idle fighters further than this many tiles from their base press on to the next target instead of waiting. */
 export const BOT_STAGING_RADIUS = 8;
 
+// --- Single Player scenarios (scenario.ts) -------------------------------------------------
+/** Surrounded: the four bots start and wave more slowly than a lone bot (multiplies BOT_FIRST_WAVE_TICKS and BOT_WAVE_INTERVAL_TICKS). */
+export const SURROUNDED_BOT_PACE = 1.75;
+/** Horde: first group after this many ticks, then one every HORDE_INTERVAL_TICKS (10 ticks = 1 second). */
+export const HORDE_FIRST_TICKS = 900;
+export const HORDE_INTERVAL_TICKS = 60;
+/** A group is HORDE_GROUP_BASE units, plus one more per HORDE_GROWTH_TICKS elapsed. */
+export const HORDE_GROUP_BASE = 1;
+export const HORDE_GROWTH_TICKS = 3000;
+/** The next class in the bot roster joins the rotation every HORDE_TIER_TICKS. */
+export const HORDE_TIER_TICKS = 3600;
+/** Most horde units alive at once; spawning pauses until some fall. */
+export const HORDE_MAX_ALIVE = 120;
+
 // --- Generators --------------------------------------------------------------------
 
 /** Peak output of one solar panel and one wind turbine, in energy per tick (before the multipliers above). */
@@ -318,16 +341,16 @@ export const PART_TUNING: Readonly<Record<string, PartTuning>> = {
   'chassis.micro': { mass: 1, hp: 15, slots: 3, energy: 300 },
   'chassis.superheavy': { mass: 20, hp: 480, slots: 14, energy: 4800 },
   'chassis.colossus': { mass: 40, hp: 1000, slots: 20, energy: 9000 },
-  // Building frames
-  'frame.small': { mass: 10, hp: 300, slots: 8, energy: 200 },
-  'frame.medium': { mass: 20, hp: 600, slots: 16, energy: 500 },
-  'frame.large': { mass: 40, hp: 1200, slots: 31, energy: 1000 },
-  // Shaped frames: per tile roughly what the square ones give (slots 3.4, mass 4.4, hp 135, energy 110).
-  'frame.l': { mass: 24, hp: 700, slots: 17, energy: 560 },
-  'frame.t': { mass: 24, hp: 700, slots: 17, energy: 560 },
-  'frame.plus': { mass: 24, hp: 700, slots: 17, energy: 560 },
-  'frame.u': { mass: 32, hp: 950, slots: 24, energy: 780 },
-  'frame.h': { mass: 32, hp: 950, slots: 24, energy: 780 },
+  // Building frames: a token buffer only; real storage comes from battery modules.
+  'frame.small': { mass: 10, hp: 300, slots: 8, energy: 20 },
+  'frame.medium': { mass: 20, hp: 600, slots: 16, energy: 50 },
+  'frame.large': { mass: 40, hp: 1200, slots: 31, energy: 100 },
+  // Shaped frames: per tile roughly what the square ones give (slots 3.4, mass 4.4, hp 135, energy 11).
+  'frame.l': { mass: 24, hp: 700, slots: 17, energy: 56 },
+  'frame.t': { mass: 24, hp: 700, slots: 17, energy: 56 },
+  'frame.plus': { mass: 24, hp: 700, slots: 17, energy: 56 },
+  'frame.u': { mass: 32, hp: 950, slots: 24, energy: 78 },
+  'frame.h': { mass: 32, hp: 950, slots: 24, energy: 78 },
 
   'cpu.basic': { mass: 1, cycles: 20, stack: 8, memory: 16, use: 1 },
   'cpu.fast': { mass: 1, cycles: 60, stack: 8, memory: 24, use: 1 },

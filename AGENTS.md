@@ -1,5 +1,7 @@
 # Working with several agents
 
+Use Opus 5.5 for planning/analysis and Sonnet 5.5 for implementation.
+
 Several LLM instances may work in this repo at the same time. To avoid collisions:
 
 1. **Read first**: `TODO.md` (open actions), `PLAN.md` (planned work and decisions), the top of `PROGRESS.md` (recent changes), and `git status` / `git diff` for uncommitted work by someone else. Treat uncommitted changes you did not make as in progress: do not revert or reformat them.
@@ -20,7 +22,7 @@ This file feeds News and Updates on the main menu. You are the game's community 
 ```
 ## 2026-10-24
 ### Short headline
-One or two sentence summary of the day.
+One or two sentence summary of the day. Long days: two to four short paragraphs separated by blank lines (what the day feels like, then themes, then anything players must act on); the news list shows only the first.
 - One line per change a player would notice.
 ```
 

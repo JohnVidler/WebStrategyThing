@@ -6,7 +6,8 @@ export interface SoundFileInfo {
   url: string;
   license: string;
   tags: string[];
-  volume: number;
+  /** A fixed level, or a range to draw from on each play. */
+  volume: number | { min: number; max: number };
   pitchVariance: number;
   loop: boolean;
 }
@@ -159,6 +160,45 @@ export class SoundBank {
     if (!path.length) this.flat.set(tag, result);
     return result;
   }
+}
+
+/** Louder-to-quieter curve over distance: a little steeper than the old square, since maps are small. */
+const FALLOFF_POWER = 2.5;
+/** Fraction of the hearing radius at which a sound is panned fully to one side (about the screen edge). */
+const PAN_FULL_AT = 0.55;
+const PAN_MAX = 0.9;
+/** Low-pass cutoff in Hz for a sound right here and at the edge of hearing: distance muffles it. */
+const CUTOFF_NEAR = 20000;
+const CUTOFF_FAR = 600;
+/** Closer than this fraction of the radius, no filter is needed. */
+const MUFFLE_FROM = 0.1;
+
+export interface Spatial {
+  gain: number;
+  /** -1 (left) to 1 (right). */
+  pan: number;
+  /** Low-pass cutoff in Hz, or 0 for none. */
+  cutoff: number;
+}
+
+/**
+ * How an event at offset (dx, dy) tiles from the middle of the view sounds: quieter with distance,
+ * panned towards the side it is on (fully by the screen edge, so off-screen events sit hard to one side)
+ * and duller the further away. Undefined beyond `radius`: out of earshot.
+ */
+export function spatialise(dx: number, dy: number, radius: number): Spatial | undefined {
+  const far = Math.hypot(dx, dy) / radius;
+  if (far >= 1) return undefined;
+  return {
+    gain: (1 - far) ** FALLOFF_POWER,
+    pan: Math.max(-1, Math.min(1, dx / (radius * PAN_FULL_AT))) * PAN_MAX,
+    cutoff: far <= MUFFLE_FROM ? 0 : CUTOFF_NEAR * (CUTOFF_FAR / CUTOFF_NEAR) ** ((far - MUFFLE_FROM) / (1 - MUFFLE_FROM)),
+  };
+}
+
+/** A sound's level for one play: the fixed value, or a random one between the range's min and max. */
+export function rollVolume(volume: SoundFileInfo['volume'], random: () => number = Math.random): number {
+  return typeof volume === 'number' ? volume : volume.min + (volume.max - volume.min) * random();
 }
 
 /** Picks a sound at random, never the one chosen last time when there is a choice. Returns undefined for an empty pool. */

@@ -14,6 +14,8 @@ export interface Spark {
   ms: number;
   colour: number;
   width: number;
+  /** Flies in: starts `reach` tiles out along `angle` and speeds up into (x, y), instead of flying out from it. */
+  inward?: boolean;
 }
 
 /** Never hold more than this many at once: a mass of harvesters must not slow the frame. */
@@ -28,6 +30,8 @@ export interface BurstOptions {
   reach?: [number, number];
   ms?: [number, number];
   width?: number;
+  /** Sparks converge on (x, y) from all around (or from the cone) instead of leaving it. */
+  inward?: boolean;
 }
 
 /** Adds `count` sparks at (x, y) (tiles). */
@@ -45,6 +49,7 @@ export function burstSparks(list: Spark[], x: number, y: number, count: number, 
       ms: ms[0] + Math.random() * (ms[1] - ms[0]),
       colour: o.colour,
       width: o.width ?? 1.6,
+      inward: o.inward,
     });
   }
 }
@@ -64,8 +69,9 @@ export function drawSparks(g: Graphics, list: readonly Spark[], now: number, off
   for (const s of list) {
     const t = (now - s.born) / s.ms;
     if (t < 0 || t >= 1) continue;
-    const head = flown(t) * s.reach;
-    const tail = flown(Math.max(0, t - 0.18)) * s.reach;
+    // Outward: fast at first, easing out. Inward: drawn in, speeding up towards the centre.
+    const head = s.inward ? (1 - t * t) * s.reach : flown(t) * s.reach;
+    const tail = s.inward ? (1 - Math.max(0, t - 0.18) ** 2) * s.reach : flown(Math.max(0, t - 0.18)) * s.reach;
     const c = Math.cos(s.angle), sn = Math.sin(s.angle);
     g.moveTo(offX + (s.x + c * tail) * scale, offY + (s.y + sn * tail) * scale)
       .lineTo(offX + (s.x + c * head) * scale, offY + (s.y + sn * head) * scale)

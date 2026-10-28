@@ -18,6 +18,11 @@ const TYPES: Record<string, string> = {
   '.opus': 'audio/ogg',
 };
 
+export interface VolumeRange {
+  min: number;
+  max: number;
+}
+
 /** A sound file that plays on every tag in `tags`. */
 export interface SoundFile {
   /** File name inside SOUND_DIR; also the id used in the URL. */
@@ -27,8 +32,8 @@ export interface SoundFile {
   url: string;
   license: string;
   tags: string[];
-  /** 0..1, default 1. */
-  volume: number;
+  /** 0..1, default 1; or a { min, max } range the player draws from at random on each play. */
+  volume: number | VolumeRange;
   /** Random pitch spread, 0.05 = up to 5% either way. */
   pitchVariance: number;
   loop: boolean;
@@ -60,6 +65,19 @@ export interface SoundBank {
 const text = (v: unknown) => (typeof v === 'string' ? v : '');
 const num = (v: unknown, fallback: number, min: number, max: number) =>
   typeof v === 'number' && Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : fallback;
+/** A number, or an object with `min` and `max` (either order); anything else gives the fallback. */
+export const level = (v: unknown, fallback: number): number | VolumeRange => {
+  if (typeof v === 'object' && v !== null) {
+    const { min, max } = v as Record<string, unknown>;
+    if (typeof min === 'number' && typeof max === 'number' && Number.isFinite(min) && Number.isFinite(max)) {
+      const a = num(min, 1, 0, 1);
+      const b = num(max, 1, 0, 1);
+      return { min: Math.min(a, b), max: Math.max(a, b) };
+    }
+    return fallback;
+  }
+  return num(v, fallback, 0, 1);
+};
 const tagList = (v: unknown): string[] => (Array.isArray(v) ? v.filter((t): t is string => typeof t === 'string' && TAG.test(t)) : []);
 
 /**
@@ -100,7 +118,7 @@ export async function loadSounds(dir = SOUND_DIR): Promise<SoundBank> {
       url: text(item.url),
       license: text(item.license) || text(item.License),
       tags,
-      volume: num(item.volume, 1, 0, 1),
+      volume: level(item.volume, 1),
       pitchVariance: num(item.pitchVariance, 0, 0, 0.5),
       loop: item.loop === true,
     });

@@ -3,7 +3,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { loadSounds, sendSound } from '../src/sound';
+import { level, loadSounds, sendSound } from '../src/sound';
 
 async function folder(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'wst-sound-'));
@@ -46,6 +46,13 @@ describe('sound', () => {
     expect(bank.sounds[0]).toMatchObject({ tags: ['ui.click', 'ui.confirm'], license: 'L', volume: 1 });
     expect(bank.tags.map((t) => t.tag)).toEqual(['ui.cancel', 'ui.hover']);
     expect(bank.tags[0]).toMatchObject({ use: ['ui.click'], only: true, cooldownMs: 50 });
+  });
+
+  it('reads volume as a number or a min/max range', () => {
+    expect(level(0.5, 1)).toBe(0.5);
+    expect(level({ min: 0.8, max: 0.3 }, 1)).toEqual({ min: 0.3, max: 0.8 });
+    expect(level({ min: -2, max: 5 }, 1)).toEqual({ min: 0, max: 1 });
+    expect(level({ min: 'x' }, 0.9)).toBe(0.9);
   });
 
   it('returns nothing when there is no manifest', async () => {

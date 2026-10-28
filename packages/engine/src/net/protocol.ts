@@ -118,8 +118,12 @@ export type ServerMessage =
   /** Result of a loadDesigns request. */
   | { t: 'designsLoaded'; reason: 'session' | 'upload' | 'reset'; defined: number; updated: number; retired: number; errors: string[] }
   | { t: 'error'; message: string }
+  /** A pop-up alert raised by one of the player's own programs (`notify()`); `kind` indexes `NOTICE_KINDS`. Only sent to the owner. */
+  | { t: 'notice'; kind: number; text: string }
   /** The outcome of a developer command: shown in the Dev Options menu. */
-  | { t: 'devNote'; text: string; ok: boolean };
+  | { t: 'devNote'; text: string; ok: boolean }
+  /** Dev tools: sunlight and wind are fixed at these levels (-1: natural). Sent to everyone when they change, and on joining. */
+  | { t: 'weather'; sun: number; wind: number };
 
 /**
  * Why a match ended: every other side was destroyed, every other player left,
@@ -139,6 +143,8 @@ export interface ScoreEntry {
   readonly name: string;
   /** No units or buildings left. */
   readonly eliminated: boolean;
+  /** Players on the same team share vision (co-op: the humans share one); absent when on no team. */
+  readonly team?: number;
   /** Stored resources plus the cost of finished buildings and living units. */
   readonly score: number;
   readonly createdUnits: number;

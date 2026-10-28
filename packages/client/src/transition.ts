@@ -55,7 +55,7 @@ export async function swapContent(el: HTMLElement, mutate: () => void, dir: 1 | 
 }
 
 /** What counts as a list row in a menu screen: the screen header, then every button or row in a list. */
-const LIST_ROWS = '.section-head, .menu-buttons > button, .campaign-levels > li, .option-row, .lobby-room, .end-actions > button';
+const LIST_ROWS = '.section-head, .menu-buttons > button, .campaign-levels > li, .option-row, .control-row, .lobby-room, .end-actions > button';
 /** The translucent glass panels of a menu screen (see the `#lobby section` rule in style.css). */
 const PANELS = 'section, aside, fieldset, .options, .lobby-name-screen, .glass-tab-list, .glass-tab-panel';
 const PANEL_MS = 150;

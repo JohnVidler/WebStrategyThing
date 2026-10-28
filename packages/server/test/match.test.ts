@@ -55,9 +55,9 @@ describe('match', () => {
       expect(roster.map((r) => r.name)).toContain('Bot 1');
       const botId = id + 1;
       expect(ownedBy(match, botId).length).toBeGreaterThan(0);
-      expect(match.sim.cheaters.has(botId)).toBe(true);
+      expect(match.sim.cheaters.has(botId)).toBe(false); // it plays by the same rules: it mines and pays for everything
       ticks(match, 600);
-      expect(ownedBy(match, botId).filter((e) => match.sim.motion.has(e)).length).toBeGreaterThanOrEqual(2); // building its small first wave
+      expect(ownedBy(match, botId).filter((e) => match.sim.motion.has(e)).length).toBeGreaterThanOrEqual(5); // its starting units and what it has trained since
 
       const b = new FakeSocket();
       match.join(asSocket(b));
