@@ -5,9 +5,128 @@
 # one "- " line per change. Write for players: no file names or internals.
 # Other lines starting with # and blank lines are ignored.
 
+## 2026-10-30
+### Lakes, rivers, lava and chasms to fight across, plus clearer building alerts, opponent skill levels, the flamethrower, rain and thunderstorms
+The battlefield now has depth. Maps can hold shallow and deep water, winding rivers with bridged crossings, pools of lava and bottomless chasms, drawn with smooth, curving shores, foam on the water and a hot glow on the lava. Ground units wade the shallows slowly, new amphibious and hover drives take you across deep water and lava, and the same day brings clear alerts when a building cannot go where you wanted it, opponent skill levels, the flamethrower, rain and thunderstorms, bolder blasts and some gentler-on-the-eyes options.
+
+Four new maps put the liquids to work: Lakeland, Twin Rivers, Cinder Fields and The Rift. Most of them are deliberately uneven, with lakes, rivers and lava pools wherever the land took them, though every base can still reach the others on foot. Water is no wall to the eye or to a shell, so you can see and shoot across a lake you cannot drive over. Three new starter units take advantage: the Skimmer, a quick hover scout that skims across water and can cross lava (scorched as it goes), the Amphibian, a cannon carrier that wades deep water, and the Wader, a harvester for fields across a lake. Computer opponents field hover units on these maps too.
+
+If you write programs, take note: heightAt still reads 0 over water and lava, so use the new depthAt(x, y) to tell liquid from dry ground (passable now says 0 on liquid as well). wade() tells a unit how deep it can go, escapeX() and escapeY() find the nearest ground that is not lava, and the new LeaveLava block uses them to walk a hover unit off lava it stopped on. Existing programs and designs keep working.
+You now choose how tough your computer opponents are. Free-for-all and Co-op hosts add computer players in the waiting room, naming each one and setting a difficulty from Patsy, a gentle first opponent, up through Beginner, Normal, Experienced and Hard to Insane, for players who want a real fight. On the Single Player form you pick your opponents the same way, and Surrounded has one difficulty that all four bots share. Computer opponents used to play at what is now Hard, so everything starts at Normal: if you liked the old challenge, pick Hard.
+
+Co-op changes a little with this. The host now decides how many bots the team faces (at least one, leaving a seat for the second player) instead of each player getting a bot of their own.
+
+The weather has more to say now. Every so often rain, a thunderstorm, a heatwave, a dust storm or a bank of mist drifts over the battlefield, and each one slides in and out gradually rather than switching on. Rain is light on the eyes and ears, with a soft patter that swells and fades with the weather, and little splashes where drops land in the parts of the map you can see. Storms add lightning, and a strike briefly stuns the controls of whatever it hits, so it is worth knowing when one is overhead. Heat favours solar power, dust and mist close your sight in, and the World section of the Energy drop-down names whatever is in the air.
+
+There is a new weapon to play with: the flamethrower. It sprays a jet of slow balls of burning fuel, about five a second, that land, stick and burn where they fell, glowing and smoking, and hurt everything standing in the flames a little at a time, yours as well as theirs, so aim with care. The fires add up, so a steady stream wears a target down fast while using very little matter. Enemy shields turn the fireballs back. The fuel is dangerous to carry: a unit or building with a flamethrower takes extra damage, and when it is destroyed it throws fire in every direction at once. Try the new Flamer, a costly and slow unit that holds its fire when one of your own stands beside its target, or add the part to your own designs. Keep Flamers well spread out: packed together, one loss can set off the whole group. Rain helps, though: fires burn out much faster the wetter it is, and a downpour smothers them in moments.
+
+The main menu also has a small live indicator beside Multiplayer showing how many players are in a game right now and how many are online, so you can see at a glance whether it is a good time to join someone.
+
+Explosions and gunfire have more character too. Cannon hits, missiles, falling units and collapsing buildings each blow up in their own style, battery banks and failing shields go out with a flourish of their own, shot-down aircraft sometimes tumble on for a moment, trailing fire, before they hit the ground, and lasers, guns and flak cannons now look like what they are instead of a plain line.
+
+Please note: the game now shows a photosensitivity warning the first time you load any part of the game, whether the main menu or a join link (once you accept it, it stays away), because lightning and flickering lamps can be a problem for people with photosensitive epilepsy. Nothing flashes or flickers while that message is open. In Options you can now turn off full-screen flashes and light flicker, and choose Simple or Fancy weather; the Reduce motion option still turns all of it off at once.
+
+- Lakeland now has far more lakes, scattered wherever the land took them
+- The Rift now has a vast bottomless void at its heart: only fliers cross the middle, so the lanes around it matter more
+- When a building cannot be placed, an alert now tells you why (something in the way, rock, water, lava, a chasm, the map edge, no vision there, or too many construction sites), and each reason has its own sound cue.
+- Lava has more character: darker, cooled patches drift through the glow, and every so often a glowing fragment is spat out and arcs back down
+- You can now keep up to 128 classes at once (it was 48), so there is room for plenty of your own designs beside the starter ones
+- Maps can now have shallow water, deep water, lava and chasms with no floor, drawn with smooth, curving shores: foam on the waterline, darker colour towards the middle of a lake, a cooled crust and a glowing line on lava, and a dark crumbling edge on chasms
+- Water glints drift on the wind, lava bubbles and glows at night, and units wading leave a ring behind them (all of it still when Reduce motion is on; the glints, bubbles and wakes with Fancy weather effects)
+- Ground units wade shallow water at about 60% speed and plan their route round the water when the detour is short; deep water stops them
+- New Amphibious drive: wades deep water (at under half speed). New Hover skirt: skims over water at full speed and can cross lava, which scorches it. Neither can climb rock or mix with legs or rotors
+- A ground unit left in lava burns up, a unit over a chasm is lost, and only flying units cross a chasm
+- Liquid does not block sight or shots, but you cannot build on it
+- Four new maps: Lakeland (lakes and shallows), Twin Rivers (two winding rivers, each bridged in two places), Cinder Fields (pools of lava) and The Rift (chasms and lava); the map previews show the liquids
+- New Skimmer, Amphibian and Wader units in the starter classes, and computer opponents send hover Skimmers on maps with liquid
+- For programs: new depthAt(x, y), wade(), escapeX() and escapeY() calls and a LeaveLava block; heightAt reads 0 over liquid and passable reads 0 on it
+- New Flamethrower weapon: a jet of slow, lobbed fireballs that land and burn in place for several seconds, hurting every unit and building in the fires, whoever owns it. It uses matter as fuel, one for every four fireballs
+- Shields glow brighter when struck, with a soft bloom that swells where a shot lands, and a hot bloom in both colours where two shields overlap
+- Enemy shields turn flamethrower fireballs back
+- Anything carrying a flamethrower is fragile and explodes in a ring of fire when it is destroyed, and units packed close together can set each other off in a chain, so keep Flamers apart and away from your own army and base
+- Rain and storms put out flamethrower fires faster, the heavier the weather
+- Shot-down aircraft that crash are now sometimes left burning where they come down for a while: the bigger the aircraft, the likelier and longer the fire, and the very biggest throw fragments now and then as they burn (less often, and not for long, in the rain)
+- Fragments that bounce away from an explosion now and then leave a small fire where they come to rest (rain smothers them)
+- New Flamer unit in the starter classes: expensive to build and slow, and it will not fire when its own units are right next to the target
+- Shot-down aircraft now sometimes spin out of control and fly on a short way, burning, before they crash and explode (not shown with Reduce motion).
+- The main menu shows how many players are playing right now and how many are online, floating beside the Multiplayer button
+- Hosts can add computer players to a free-for-all or a co-op game in the waiting room, up to the number of seats on the map, and remove them again
+- Each computer player has its own name and a difficulty: Patsy, Beginner, Normal, Experienced, Hard or Insane (new ones start at Normal), changeable until the match starts
+- Easier levels build up and attack later and with smaller armies; Insane thinks fastest, expands furthest and builds the biggest economy
+- You can start a free-for-all on your own against computer players
+- Single Player lets you add up to three opponents, each with its own name and difficulty
+- Surrounded has a single difficulty for all four bots, chosen when you create the game
+- Computer opponents in Single Player, Co-op and Surrounded now start at Normal rather than the old, tougher level, which is now called Hard
+- Rain and storms now appear now and then, shown in the World section of the Energy drop-down
+- Under rain, solar panels get less sunlight, and the wind never drops as low as it can on a clear day
+- Rain now has a sound: a soft, steady patter that fades in as the rain sets in, swells as it gets heavier and fades away as it clears
+- Storms take more sun away and blow harder still, so a wind farm is worth having when the sky turns dark
+- Lightning flashes during a storm with a jagged bolt across the sky, and a strike briefly stuns the controls of any unit or building it hits (a short, tesla-style stun), so a storm can catch a group off guard
+- Heatwaves make solar panels produce more, but the wind drops away
+- Dust storms and mist close in your sight range; dust also dims the sun and blows a strong wind
+- Mist now plays like a real fog: soft wisps drift across the battlefield, over units and effects, and the edge of what you can see closes in with a pale, soft haze
+- In mist, muzzle flashes, laser zaps, fire and explosions light up the air around them with a soft halo
+- In mist and dust, headlights come on even in the middle of the day, with wider, whiter beams and a pale glow round each vehicle
+- The edge of what you can see now fades softly instead of stepping tile by tile
+- Lightning flashes are gentler on the eyes, and the ring of sparks now appears on some strikes only, centred where the bolt lands
+- Falling raindrops that splash now fall at the same speed and in the same style as the rest of the rain
+- Weather now creeps in gradually, taking anywhere from about 15 to 45 seconds to change, so sun, wind and sight shift a step at a time
+- The World section of the Energy drop-down now names the weather (for example "Storm, windy") and, while it rains, shows a bar for how heavy it is
+- Raindrops splash on the ground as they land, but only where you can see
+- Rain eases in and clears gradually rather than switching on and off
+- Solar-powered units charge more slowly in the rain, just like solar buildings
+- Wind turbines spin faster when the wind is kept up, and the Solar and Wind bars in the Energy drop-down show the real figures
+- With Reduce motion on, the rain stands still and the lightning flashes are left out
+- Units now burst in one of three flavours (a classic fireball, a quick bright flash, or a slow smoky burn)
+- Cannon shells go off with a short, sharp pop; missiles with a bigger fireball and a rolling smoke plume
+- Buildings collapse in a chain of blasts inside a cloud of dust and smoke
+- Battery banks discharge in a ring of blue-white arcs, bigger the fuller they were
+- A shield that gives out folds in on itself, then shatters into glowing shards in its owner's colour
+- Lasers are now glowing beams in their owner's colour, with a bloom at the muzzle, a hot spot and ripple where they land, and lights that pick out the ground at night; stronger lasers burn thicker
+- Guns fire bright tracers that cross the gap, with a muzzle flash and sparks on impact; rotary guns send two at once
+- Flak cannons leave a string of puffs and end in a pale air-burst with hanging smoke
+- A photosensitivity warning appears the first time you load the game, from the main menu or a join link, and no flashing or flickering happens until you close it; you can also choose Go to Options Menu there without connecting to anything
+- New Options: turn full-screen flashes (lightning) on or off, and turn light flicker (lamps stuttering as they switch) on or off
+- New Options: choose Simple weather for just the basic effect of rain, storms, dust, mist and heat, or Fancy for splashes, grit, mist banks, heat shimmer and lightning bolts (Fancy is the default)
+
+## 2026-10-29
+### Energy shields, smarter harvesters, cannon shells and shorter nights
+Missiles finally meet their match: the new shield emitter casts a glowing arc of energy that enemy units cannot cross and enemy shells, missiles and gunfire cannot get through. It drinks power every moment it is up and pays for every hit from the battery, so a shielded unit or tower is a real commitment, and one that is pushed too far blows up. Units move more like they mean it: ground units steer around each other instead of jamming, and flyers sweep through the air in smooth arcs and circle before landing. Harvesters work like a crew that knows its base: they favour fields close to a silo or depot, spread out so no field or depot gets swamped, and move on to another depot when one is overcrowded. Cannons fire real shells you can watch cross the battlefield, and nights are much shorter, so you spend more of the match fighting in the light: each two-minute day gives you 84 seconds of sun and 36 seconds of darkness. Attacking units are smarter about distance too: they stop and fire as soon as the enemy, or the shield in front of it, is in range, rather than charging in.
+
+The new Shield Tower and Aegis escort carry a shield and a ready-made behaviour that turns it to face the nearest incoming fire. If you write your own unit programs, you can aim a shield yourself, widen it and push it further out, and there is also a new toolkit for choosing well: find calls that return lists of resources, depots, enemies and more, and short chains such as filter, sort and minBy to pick the best one. The Docs have a new Lists & chains page with worked examples.
+
+Heads up for cannon users: shells take a moment to arrive, so fast movers can dodge them, and rock higher than the gun now blocks the shot. New tanks and other matter-fed units leave the factory with ten shots already loaded. Harvesters built from the ready-made behaviour now choose their fields differently from before; programs you wrote yourself are unchanged.
+- New shield emitter module: a translucent arc of energy that enemy units cannot walk through and that stops enemy shells, missiles, guns and lasers. Your own units and allies pass straight through.
+- Shields run on the unit's or building's battery: a steady drain while they are up (more for a wider or longer arc), and a share of every hit they stop. If the battery runs flat under fire the emitter is destroyed in an explosion as big as the energy it held, and the unit or building takes damage too.
+- A new ShieldGuard behaviour turns a shield to face the nearest incoming shell or missile, or the nearest enemy; shields do nothing on their own, so your own programs can aim them any way you like. Switching the module off in the Modules list drops the shield.
+- Shields throw sparks where a shot lands, light up where they are struck, and throw showers of sparks where two shields overlap.
+- New Shield Tower building and Aegis escort unit, both with a shield emitter. Tesla pulses and flak pass through shields.
+- New script calls to take charge of a shield: config.shieldAngle, config.shieldArc, config.shieldRange, plus shieldUp, bearing and incomingBearing; the Docs and Manual cover them.
+- Harvesters favour fields closest to a depot or silo instead of the biggest or farthest ones.
+- Harvesters spread over fields and depots, and move to another depot when one is overcrowded.
+- Harvesters with a full load wait for room at a silo instead of circling it, and pick a new field when theirs cannot be reached.
+- New list tools for unit programs: find lists of resources, depots, chargers, sites, damaged friends and enemies, then filter, sort, map and reduce them with short chains.
+- New Lists & chains page in the Docs.
+- Flying units now fly in smooth arcs with a gentle weave, circle briefly over their destination, and then come in to land.
+- Ground units now steer around each other when they meet head on or find a unit in their way, instead of shoving into it and getting stuck.
+- Cannons and siege cannons fire visible shells instead of instant hits.
+- Shells sometimes glance off rock or units in a shower of sparks, and explode with a small blast on a hit.
+- Cannons, siege cannons and missile launchers now see a thin wedge along their barrel out to their full range, so long guns can spot targets far down the line they are aiming along.
+- Cannon range is three times longer: 21 tiles for the cannon, 27 for the siege cannon.
+- Guns standing on higher ground than their target reach further.
+- New units with cannons or missiles start with ten shots in the cargo bay.
+- Nights last 36 seconds instead of a full minute.
+- Daylight lasts longer, so solar panels have more time to charge, and dusk and dawn come round sooner.
+- Gun lamps on turrets and tanks have a shorter, dimmer beam, easier to tell from headlights.
+- Units sent to attack now stop and fight as soon as the enemy is in weapon range, instead of charging right up to it. On an Attack order across open ground they halt to deal with the first enemy they meet, then carry on. Enemy shields count too: a unit stops once it can hit the shield in front of its target.
+
 ## 2026-10-28
-### Nightfall, line of sight and a harder look at the battlefield
-The sun now sets on the battlefield. After dusk the map goes dark, vehicles switch on their headlights, and your buildings show lit windows against the gloom. Nights are harder to fight in, and a long match now has a rhythm of daylight to work in and darkness to survive.
+### Steam vents, settlements, nightfall and a harder look at the battlefield
+The map has more to find. Wrecked units now leave piles of scrap that harvesters can recycle. Steam vents now hiss in open ground, one for each quarter of the map, and a building with a steam turbine standing on one gets a low, steady trickle of power, day and night, wind or no wind. Small clusters of old neutral buildings (shacks, tanks, halls and ruins) now dot the open country: they do nothing, but they block the way and give you cover to fight around. And the sun now sets on the battlefield: after dusk the map goes dark, vehicles switch on their headlights, and your buildings show lit windows against the gloom.
+
+Nights are harder to fight in, and a long match now has a rhythm of daylight to work in and darkness to survive.
+
+The ground itself also has a little more character: faint contour lines now sweep across open country.
 
 Sight has limits. Fog of war follows line of sight, so a ridge or a wall hides whatever is behind it, and an enemy can sit just out of view until you go round the cover and look. After dark your units and buildings see a little less, so the fog closes in round them. Flying units still see over everything, and at night they throw a pale spotlight on the ground beneath them.
 
@@ -17,6 +136,13 @@ Horde and Surrounded can now be played co-op, up to four players on maps built f
 
 Please note: the default Unload key has moved to Shift + D, so W, A, S and D are all free for panning the camera. If you prefer the old key, you can set it back, and re-key your control groups, in Options.
 
+- Open ground now shows a few faint contour lines, hinting at gently rolling terrain.
+- Lights now go out when a unit or building runs out of energy, and come back on when it is recharged. Radar dishes stop turning and turrets stop scanning too. Lamps also flicker for a moment as they switch on at dusk or fail and recover, with Reduce motion turning the flicker off.
+- Units that break down after running out of energy now leave a pile of debris instead of a block of matter: scorched ground strewn with gears, bent plates, tyres, pipes and bolts, wider for bigger hulls. Harvesters still recycle it for matter, the pile thins out as they work, and once it is used up it is gone for good.
+- Steam vents are new on every standard map: open ones puff a big, breathing cloud of steam. Put a building with a steam turbine over one and the cloud settles to a calm, steady column ringed with pulses of energy; put any other building over one and only thin wisps slip out round the edges.
+- New Steam Turbine module and Steam Plant building: a Steam Plant makes a small, constant amount of power while it stands on a vent (a building with several turbines needs a vent under it for each one). Off a vent it makes nothing.
+- Neutral settlements: small clusters of grey shacks, round storage tanks, halls and ruins now stand on the maps. They cannot be attacked or used, but they block movement and line of sight, so they work as cover. They always leave room to walk round, and never sit in a starting base or on a matter field.
+- The Energy drop-down lists your steam plants alongside solar and wind, and the designer shows the steam output of a design.
 - Glowing fragments thrown from explosions can now bounce up to three times, skipping off in random directions with a little less energy each hop, before they burn out.
 - Units heading for a building, such as builders going to a construction site, now walk to the nearest reachable side instead of always the tile above it, so they no longer take the long way round a run of walls.
 - The World line in the Energy drop-down now says what time of day it is (dawn, morning, midday, afternoon, evening, dusk or night) and how the weather is (calm through to a gale), alongside the solar and wind meters.

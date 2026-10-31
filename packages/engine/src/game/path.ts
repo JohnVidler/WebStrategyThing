@@ -1,5 +1,6 @@
 import { TILE } from './parts';
-import { WHEELS, type Mobility, type Terrain } from './terrain';
+import { WADE_STEP_COST } from './rules';
+import { WHEELS, liquidKind, type Mobility, type Terrain } from './terrain';
 
 const STRAIGHT = 10;
 const DIAGONAL = 14;
@@ -84,8 +85,9 @@ const octile = (dx: number, dy: number) => {
  * unreachable, the path ends at the reachable cell closest to it.
  * The result is string-pulled so units walk straight wherever they can.
  *
- * `m` is the unit's mobility: legs may cross rock up to their climb, and a big hull only uses cells
- * it fits in. A unit that starts somewhere too tight for it may squeeze out through tight cells, but
+ * `m` is the unit's mobility: legs may cross rock up to their climb, wading units cross liquid up to their
+ * wade (each liquid step costs more than a dry one unless the unit hovers, so a ford is used only where it
+ * pays), and a big hull only uses cells it fits in. A unit that starts somewhere too tight for it may squeeze out through tight cells, but
  * never steps from a cell it fits in into one it does not.
  *
  * A goal the unit cannot stand on (the middle of a building, a rock) is replaced by the nearest cell it
@@ -127,9 +129,14 @@ export function findPath(t: Terrain, sx: number, sy: number, goalX: number, goal
   push(start);
   let best = start;
   const big = m.clearance > 0;
-  const loose: Mobility = { climb: m.climb, clearance: 0 };
+  const loose: Mobility = { climb: m.climb, clearance: 0, wade: m.wade };
+  // Liquid slows a unit unless it hovers; on a map without any, or for a hovering unit, steps all cost the same.
+  const wet = t.hasLiquid && !m.hover;
+  const depth = t.depth;
   // From a cell it fits in, a unit only goes where it fits; from a tight one it may also squeeze through cells it can enter.
-  const ok = (x: number, y: number, tight: boolean) => (m.climb === 0 && !big ? t.walkable(x, y) : t.fits(x, y, m) || (tight && t.fits(x, y, loose)));
+  // A plain wheeled unit (the common case) asks the terrain's own `enterable`, which also covers shallow water.
+  const plain = m.climb === 0 && !big;
+  const ok = (x: number, y: number, tight: boolean) => (plain ? t.enterable(x, y, 0, m.wade) : t.fits(x, y, m) || (tight && t.fits(x, y, loose)));
 
   while (heap.length) {
     const n = pop();
@@ -151,7 +158,9 @@ export function findPath(t: Terrain, sx: number, sy: number, goalX: number, goal
       if (dx !== 0 && dy !== 0 && (!ok(x + dx, y, tight) || !ok(x, y + dy, tight))) continue;
       const m = ny * w + nx;
       if (closed[m] === search) continue;
-      const cost = g[n] + (dx !== 0 && dy !== 0 ? DIAGONAL : STRAIGHT);
+      let step = dx !== 0 && dy !== 0 ? DIAGONAL : STRAIGHT;
+      if (wet && depth[m] > 0) step = Math.ceil((step * WADE_STEP_COST[liquidKind(depth[m])]) / 10);
+      const cost = g[n] + step;
       if (stamp[m] === search && cost >= g[m]) continue;
       stamp[m] = search;
       g[m] = cost;
@@ -171,6 +180,14 @@ export function findPath(t: Terrain, sx: number, sy: number, goalX: number, goal
 
 function smooth(t: Terrain, sx: number, sy: number, cells: number[], m: Mobility): number[] {
   const w = t.width;
+  // A shortcut may not wade through more liquid than the cells it replaces: otherwise straightening the path
+  // would turn a planned detour round a lake back into a wade across it.
+  const guard = t.hasLiquid && !m.hover;
+  let wetBefore: Int32Array | null = null;
+  if (guard) {
+    wetBefore = new Int32Array(cells.length + 1);
+    for (let k = 0; k < cells.length; k++) wetBefore[k + 1] = wetBefore[k] + (t.depth[cells[k]] > 0 ? 1 : 0);
+  }
   const centre = (n: number) => [(n % w) * TILE + TILE / 2, Math.floor(n / w) * TILE + TILE / 2];
   const out: number[] = [];
   let ax = sx * TILE + TILE / 2;
@@ -182,7 +199,7 @@ function smooth(t: Terrain, sx: number, sy: number, cells: number[], m: Mobility
     const visible = (k: number) => {
       const [nx, ny] = centre(cells[k]);
       expanded += 1 + Math.ceil(Math.hypot(nx - ax, ny - ay) / TILE);
-      return t.lineWalkable(ax, ay, nx, ny, m);
+      return t.lineWalkable(ax, ay, nx, ny, m, wetBefore ? 4 * (wetBefore[k + 1] - wetBefore[i]) + 2 : Infinity);
     };
     let lo = i;
     let hi = cells.length;

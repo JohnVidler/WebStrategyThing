@@ -156,7 +156,7 @@ export const MANUAL: ManualPage[] = [
       </ul>
       <h2>Energy: make, link, store, spend</h2>
       <ol class="manual-steps">
-        <li><b>Make it.</b> A <b>Solar Array</b> produces by daylight and nothing at night; a <b>Wind Turbine</b> follows the wind. The Daylight and Wind tiles in the side panel show what you can expect.</li>
+        <li><b>Make it.</b> A <b>Solar Array</b> produces by daylight and nothing at night; a <b>Wind Turbine</b> follows the wind. A <b>Steam Plant</b> makes a low but steady trickle, day and night, but only when it is built right on top of one of the map's <b>steam vents</b> (the hissing holes in the ground). The Daylight and Wind tiles in the side panel show what you can expect from the first two.</li>
         <li><b>Link it.</b> Buildings that are within a tile of each other, or within an <b>energy antenna</b>'s reach (the <b>Power Pylon</b> is a small building that is all antenna), join a power network automatically. The game draws the links.</li>
         <li><b>Store it.</b> <b>Energy Storage</b> buildings fill up when there is a surplus and give it back when there is a shortage, so the night is covered by the day.</li>
         <li><b>Spend it.</b> Factories, builders, CPUs, weapons... everything on the network draws from it. The power balance strip tells you whether you are making more than you use.</li>
@@ -207,9 +207,16 @@ export const MANUAL: ManualPage[] = [
         <tr><td>Laser</td><td>Hits at once; costs a lot of energy per shot, and more energy means more damage.</td></tr>
         <tr><td>Tesla coil</td><td>Stuns the CPUs of everything near it, friend or foe. Switches things off rather than hurting them.</td></tr>
         <tr><td>Missile launchers</td><td>Slow, homing missiles that fly in arcs and burst on impact; bigger launchers hit harder and further. The <i>huge</i> launcher on a Rocket Artillery out-ranges every sensor and needs a spotter or radar.</td></tr>
+        <tr><td>Flamethrower</td><td>Lobs a slow fireball that lands and burns in place, hurting everything in the fire a little at a time, your own units and buildings too. Uses matter as fuel. Enemy shields turn it back. A carrier takes double damage and throws fire in every direction when it dies.</td></tr>
         <tr><td>Flak</td><td>Only shoots incoming missiles, but never misses. Right-click a missile with an armed unit selected to shoot it down.</td></tr>
       </table>
       <p>Armour plates add hit points. Which weapon beats which is part of the game: flak makes missiles useless, tesla coils stop whole groups, long range beats short.</p>
+      <h2>Shields</h2>
+      <p>A <b>shield emitter</b> projects an arc of energy a few tiles out from a unit or building. Enemy units cannot walk through it, and enemy shells, missiles, gun fire and lasers are stopped by it; your own units and your allies' shots pass straight through.
+      Whatever it stops is paid for from the owner's battery, and the shield itself costs energy every tick it is up, more for a wider or longer arc, so a shielded unit wants a charging pad and a shielded building wants a power grid.
+      If the battery runs flat under a hit, the emitter blows up in a blast as big as the energy it was holding, and hurts the unit or building it was protecting.</p>
+      <p>A shield never aims itself: a program points it. The <code>ShieldGuard</code> block (<code>use(ShieldGuard)</code>) turns it to the nearest incoming shell or missile, or else the nearest enemy its sensor sees, and the <b>Shield Tower</b> building and <b>Aegis</b> escort unit both run it. To do it your own way use <code>config.shieldAngle(degrees)</code> (0 is east, 90 south), <code>config.shieldArc(degrees)</code> and <code>config.shieldRange(tiles)</code>, with <code>incomingBearing()</code>, <code>bearing(h)</code> and <code>shieldUp()</code> to help decide.
+      Switching the module off in the Modules list drops the shield. Tesla pulses and flak ignore it.</p>
       <h2>Seeing: fog, sensors and radar</h2>
       <ul>
         <li>Every unit and building sees a short distance. A <b>sensor</b> module sees further, and also lets the unit's program <i>react</i> to what it sees (a <code>Detected</code> block, see <a href="#/events">Events</a>).</li>
@@ -247,8 +254,8 @@ export const MANUAL: ManualPage[] = [
       <table>
         <tr><th>Group</th><th>Modules</th></tr>
         <tr><td>Compute</td><td><b>CPU</b> (cycles per tick: the speed of thinking) and <b>memory</b> (how many variables a program can keep).</td></tr>
-        <tr><td>Movement</td><td>Small, large and turbo <b>motors</b>, and the flying <b>rotor</b>. Heavier units need stronger motors to keep up.</td></tr>
-        <tr><td>Weapons &amp; armour</td><td>Gun, cannon, laser, tesla, missiles, flak, armour plate.</td></tr>
+        <tr><td>Movement</td><td>Small, large and turbo <b>motors</b>, and the flying <b>rotor</b>. Heavier units need stronger motors to keep up. Every ground unit can wade shallow water, slowly; the <b>amphibious drive</b> wades deep water as well, and the <b>hover skirt</b> skims over water at full speed and can cross lava (which scorches it). Only fliers cross a chasm.</td></tr>
+        <tr><td>Weapons &amp; armour</td><td>Gun, cannon, laser, tesla, missiles, flak, flamethrower, armour plate, shield emitter.</td></tr>
         <tr><td>Sensors &amp; radar</td><td>Short and long <b>sensors</b>, and <b>radar</b>.</td></tr>
         <tr><td>Radio &amp; laser links</td><td>Short-range <b>radio</b> and long-range <b>laser link</b>.</td></tr>
         <tr><td>Industry</td><td>Cargo bay, build arm / crane, repair beam, factory, silo.</td></tr>

@@ -130,7 +130,7 @@ describe('module damage', () => {
 describe('repairing modules', () => {
   const setup = () => {
     const sim = newSim();
-    sim.tick = 300; // midday
+    sim.tick = 420; // midday
     const tower = sim.blueprints.define(1, 'Tower', ['frame.small', 'cpu.basic', 'repair.beam', 'battery.bank', 'silo']);
     const walker = sim.blueprints.define(1, 'Walker', WALKER);
     const t = sim.spawnStructure(tower, 5, 5);

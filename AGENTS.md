@@ -12,6 +12,7 @@ Several LLM instances may work in this repo at the same time. To avoid collision
 6. **Verify**: `npm test` and `npm run typecheck` must pass before you finish. Say plainly what was not run or not looked at in a browser.
 7. Do not commit or push unless the user asks.
 8. **UI work follows `STYLE.md`**: the visual and interaction intent (panels, colours, motion, sound, reduce motion, dev-only features). Read it before adding or changing any screen, and update it when you set a new convention.
+9. **Dev tools for new features**: any new environmental or gameplay feature that can be driven from the dev tools should be (weather, spawnable things, resources, match endings and the like). Add a `DevCommand` (`engine/src/net/dev.ts`, handled in `Match.dev`) and a control on the matching vertical tab of the Dev Options panel (`client/src/devTools.ts`; add a new tab for a new class of tool), so the feature can be seen without waiting for it to turn up naturally. Cover it in `server/test/dev.test.ts`, and never mention the dev tools in the changelog.
 
 ## Player-facing changelog (`packages/client/src/changelog.md`)
 
@@ -62,10 +63,3 @@ One or two sentence summary of the day. Long days: two to four short paragraphs 
 ## Active work
 
 
-
-
-
-
-
-
-Note from A1 (2026-10-24, released): S2-S4 and M6 are done. `path.ts`, `planPath` and `Terrain` (now with `Mobility`, `fits`, `nearestFit`) are free, so review items 4-5 in `PLAN.md` can be claimed; keep `findPath(..., m)` respecting mobility and the squeeze-out rule (tests in `engine/test/tiers.test.ts`).

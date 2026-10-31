@@ -29,5 +29,16 @@ export const VARIABLE_READ_COST = COST.NODE + COST.ARC;
 /** Cost of reading an event parameter or call result (just the wire). */
 export const LOCAL_READ_COST = COST.ARC;
 
+/**
+ * Lists exist only inside a chain (`findResources(10).filter(r => ...).first()`). They hold at most this many
+ * entries (a source keeps the nearest ones), so a chain's cost is bounded: each step visits each entry at
+ * most once, at `LIST_ELEMENT_COST` plus whatever its function costs.
+ */
+export const LIST_MAX = 32;
+/** Cost of visiting one list entry in a step (the node and the wire into its function). */
+export const LIST_ELEMENT_COST = WIRED_NODE_COST;
+/** Most steps one chain may have after its source. */
+export const MAX_CHAIN_STEPS = 8;
+
 /** Literals that take no memory slot, so trivial programs fit a bare chassis (decision P1). */
 export const FREE_LITERALS: ReadonlySet<number> = new Set([-1, 0, 1]);

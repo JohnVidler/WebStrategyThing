@@ -2,10 +2,11 @@ import { Rng } from '../util/rng';
 import type { Blueprint } from './blueprint';
 import type { Scenario } from './scenario';
 import { BASE_FIELD, BASE_LAYOUT, BASE_UNITS, NEUTRAL_CLASS, STARTER_CLASSES, type ClassTemplate } from './content';
+import { placeFeatures } from './features';
 import { TILE } from './parts';
 import { BASE_FIELD_PATCHES, CENTRE_FIELD_PATCHES, NEUTRAL_UNITS, RESOURCE_PATCH_AMOUNT } from './rules';
 import { Simulation } from './simulation';
-import { generateTerrain, Terrain, type ClearArea, type TerrainLayout } from './terrain';
+import { generateTerrain, Terrain, type ClearArea, type LiquidSpec, type TerrainLayout } from './terrain';
 
 export const MAP_SIZE = 64;
 export const NEUTRAL = 0;
@@ -21,6 +22,8 @@ export interface MapDefinition {
   readonly density?: number;
   /** Extra resource fields strung along each corner's route to the centre. Default 0. */
   readonly outposts?: number;
+  /** Water, lava, voids and rivers added after the rock (see `LiquidSpec`). Absent: dry land, as every older map. */
+  readonly liquids?: LiquidSpec;
   /** Hand-made terrain (a campaign level drawn in Tiled): `Terrain.encode()` form, width x height digits. Replaces generation. */
   readonly terrain?: string;
   /**
@@ -68,6 +71,10 @@ export const MAPS: readonly MapDefinition[] = [
   { id: 'clearing', name: 'Clearing', width: 120, height: 120, layout: 'open', density: 2, scenario: 'surrounded', starts: cluster(38, 38), description: 'Surrounded: wide open ground with little cover, and bots that can see you coming' },
   { id: 'rubble', name: 'Rubble', width: 104, height: 104, layout: 'dense', scenario: 'surrounded', starts: cluster(30, 30), description: 'Surrounded: heavy rock all around the middle; a tight, defensible position with few ways in' },
   { id: 'badlands', name: 'Badlands', width: 144, height: 112, layout: 'dense', density: 2.5, outposts: 3, description: 'Huge rocky maze with distant fields' },
+  { id: 'lakeland', name: 'Lakeland', width: 96, height: 96, layout: 'open', density: 1.5, liquids: { lakes: 13, free: true }, description: 'Open country dotted with lakes of every size: shallows slow wheels and tracks, deep water stops them' },
+  { id: 'twin-rivers', name: 'Twin Rivers', width: 112, height: 80, layout: 'standard', liquids: { rivers: 2, bridges: 2, lakes: 2, free: true }, description: 'Two winding rivers, each bridged in two places: hold the crossings, or ford and swim them with amphibious and hover drives' },
+  { id: 'cinder-fields', name: 'Cinder Fields', width: 104, height: 104, layout: 'scattered', outposts: 1, liquids: { lava: 9, lakes: 2, free: true }, description: 'Scattered pools of lava and a few lakes: only hover units cross the lava, and it burns them' },
+  { id: 'the-rift', name: 'The Rift', width: 112, height: 96, layout: 'ridges', liquids: { chasms: 2, lava: 2, centralVoid: 0.15 }, description: 'A vast void at the heart of the map and chasms with no floor split the lanes: only fliers cross' },
 ];
 
 /**
@@ -147,7 +154,7 @@ function clearAreas(map: MapDefinition, scenario: Scenario = 'standard'): ClearA
 export function createMapTerrain(map: MapDefinition | string, seed = 0x5eed, scenario: Scenario = 'standard'): ReturnType<typeof generateTerrain> {
   const selected = typeof map === 'string' ? mapById(map) : map;
   if (selected.terrain) return handMadeTerrain(selected, scenario);
-  return generateTerrain(selected.width, selected.height, new Rng(seed ^ 0x51ed), clearAreas(selected, scenario), selected.layout, selected.density ?? 1, selected.starts !== undefined);
+  return generateTerrain(selected.width, selected.height, new Rng(seed ^ 0x51ed), clearAreas(selected, scenario), selected.layout, selected.density ?? 1, selected.starts !== undefined, selected.liquids);
 }
 
 /** Decodes a drawn map, then forces the four base areas open so no start can be walled in. */
@@ -159,6 +166,7 @@ function handMadeTerrain(map: MapDefinition, scenario: Scenario): Terrain {
         if (!t.inBounds(x, y) || (x - a.x) ** 2 + (y - a.y) ** 2 > a.r * a.r) continue;
         t.passable[y * map.width + x] = 1;
         t.heights[y * map.width + x] = 0;
+        t.depth[y * map.width + x] = 0;
       }
     }
   }
@@ -197,6 +205,8 @@ export function createMatch(seed: number, selection: MapDefinition | string | nu
     }
   }
   for (const c of selected.starts ? all : CORNERS) placeOutposts(sim, c, selected.outposts ?? 0);
+  // Steam vents and scenery (drawn from their own random stream), on drawn terrain too: they only go where there is open ground.
+  placeFeatures(sim, seed, clearAreas(selected, scenario));
   return sim;
 }
 

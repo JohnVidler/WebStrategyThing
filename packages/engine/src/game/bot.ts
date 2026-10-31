@@ -1,6 +1,6 @@
 import type { Blueprint } from './blueprint';
 import { CommandError, type Simulation } from './simulation';
-import { FIGHTER_PROGRAM, LASER_TURRET_CLASS, type ClassTemplate } from './content';
+import { FIGHTER_PROGRAM, LASER_TURRET_CLASS, SKIMMER_PROGRAM, type ClassTemplate } from './content';
 import { flip, defineClass, type Corner } from './map';
 import {
   BOT_FIRST_WAVE_TICKS,
@@ -48,6 +48,12 @@ export const BOT_UNIT_CLASSES: readonly BotUnitClass[] = [
   { name: 'Lancer', fromWave: 2, parts: ['chassis.medium', 'cpu.basic', 'motor.small', 'sensor.short', 'laser.beam', 'armor.plate'], program: FIGHTER_PROGRAM },
   { name: 'Bulwark', fromWave: 3, parts: ['chassis.heavy', 'cpu.basic', 'motor.large', 'sensor.short', 'gun.light', 'armor.plate', 'armor.plate'], program: FIGHTER_PROGRAM },
 ];
+
+/** Bots on a map with liquid also field hover units, which cross water and lava the others have to go round. */
+const BOT_SKIMMER: BotUnitClass = { name: 'Skimmer', fromWave: 2, parts: ['chassis.light', 'cpu.basic', 'motor.hover', 'sensor.short', 'gun.light'], program: SKIMMER_PROGRAM };
+
+/** The units a bot (or the horde) draws on for this map: the same roster as ever, plus hover units where there is liquid. */
+export const botUnitClasses = (sim: Simulation): readonly BotUnitClass[] => (sim.terrain.hasLiquid ? [...BOT_UNIT_CLASSES, BOT_SKIMMER] : BOT_UNIT_CLASSES);
 
 /** Base layout for the top-left corner; setUpBot mirrors it for other corners. Tiles, top-left of each building. */
 const BOT_LAYOUT: readonly { cls: ClassTemplate; x: number; y: number }[] = [
@@ -209,7 +215,8 @@ export class BotPlayer {
 export function setUpBot(sim: Simulation, owner: number, corner: Corner, enemy: number, pace = 1): { bot: BotPlayer; classes: Blueprint[] } {
   const { width, height } = sim.config;
   const classes = new Map<ClassTemplate, Blueprint>();
-  for (const c of [BOT_CORE_CLASS, BOT_ASSEMBLER_CLASS, LASER_TURRET_CLASS, ...BOT_UNIT_CLASSES]) classes.set(c, defineClass(sim, owner, c));
+  const roster = botUnitClasses(sim);
+  for (const c of [BOT_CORE_CLASS, BOT_ASSEMBLER_CLASS, LASER_TURRET_CLASS, ...roster]) classes.set(c, defineClass(sim, owner, c));
   for (const entry of BOT_LAYOUT) {
     const bp = classes.get(entry.cls)!;
     const size = bp.stats.footprint;
@@ -217,6 +224,6 @@ export function setUpBot(sim: Simulation, owner: number, corner: Corner, enemy: 
   }
   sim.cheaters.add(owner);
   for (const b of sim.stockpile.dense) if (sim.unit.f.owner[b] === owner) sim.addStock(b, sim.stats(b).resourceCapacity);
-  const units = BOT_UNIT_CLASSES.map((cls) => ({ cls, bp: classes.get(cls)! }));
+  const units = roster.map((cls) => ({ cls, bp: classes.get(cls)! }));
   return { bot: new BotPlayer(sim, owner, enemy, units, pace), classes: [...classes.values()] };
 }

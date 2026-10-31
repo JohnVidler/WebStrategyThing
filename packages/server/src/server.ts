@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { mapById, parseClientMessage, parseGameMode, parseScenario } from '@wst/engine';
+import { mapById, parseClientMessage, parseBotLevel, parseGameMode, parseScenario } from '@wst/engine';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { Match } from './match';
 import { campaignLevel, campaignMap, refreshCampaigns } from './campaign';
@@ -151,7 +151,14 @@ const http = createServer((req, res) => {
   }
   if (req.method === 'GET' && path === MENU_PATH) {
     res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*', 'cache-control': 'no-store' });
-    res.end(JSON.stringify({ players: menuSockets.size }));
+    // `players` is who sits on a menu; `playing` humans in a started match (solo included); `online` everyone connected.
+    let playing = 0;
+    let inRooms = 0;
+    for (const { match } of rooms.values()) {
+      inRooms += match.playerCount;
+      if (!match.inLobby && !match.isOver) playing += match.playerCount;
+    }
+    res.end(JSON.stringify({ players: menuSockets.size, playing, online: menuSockets.size + inRooms }));
     return;
   }
   if (req.method === 'GET' && path === ROOMS_PATH) {
@@ -199,7 +206,21 @@ const rooms = new Map<string, Room>();
 /** Open sockets per client address. */
 const socketsByAddress = new Map<string, number>();
 
-function roomFor(address: string, name: string, title: string, mapId?: string, mode?: string, campaign?: string, levelId?: string, scenario?: string): Room | undefined {
+/** The opponents a client asked for when it opened a room: a JSON list of { n: name, l: level }, at most three (a base each), anything else dropped. */
+function parseBotList(raw: string | undefined): { name: string; level: number }[] | undefined {
+  if (!raw || raw.length > 400) return undefined;
+  try {
+    const list: unknown = JSON.parse(raw);
+    if (!Array.isArray(list)) return undefined;
+    return list.slice(0, 3).flatMap((item: { n?: unknown; l?: unknown }) =>
+      item && typeof item === 'object' ? [{ name: typeof item.n === 'string' ? item.n : '', level: parseBotLevel(item.l) }] : [],
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+function roomFor(address: string, name: string, title: string, mapId?: string, mode?: string, campaign?: string, levelId?: string, scenario?: string, bots?: string, difficulty?: string): Room | undefined {
   let room = rooms.get(name);
   if (!room) {
     if (rooms.size >= MAX_ROOMS) return undefined;
@@ -210,7 +231,7 @@ function roomFor(address: string, name: string, title: string, mapId?: string, m
     // A campaign room needs a level that exists; the client's saved progress is trusted (it is a single-player game).
     const level = parsed === 'campaign' ? campaignLevel(campaign ?? '', levelId ?? '') : campaignMap(mapId ?? '');
     if (parsed === 'campaign' && !level) return undefined;
-    room = { match: new Match({ fog: process.env.FOG !== 'off', mapId: mapById(mapId).id, mode: parsed, scenario: parseScenario(scenario), level, devTools: devToolsEnabled() }), emptySince: undefined, creator: address, title };
+    room = { match: new Match({ fog: process.env.FOG !== 'off', mapId: mapById(mapId).id, mode: parsed, scenario: parseScenario(scenario), bots: parseBotList(bots), difficulty: parseBotLevel(Number(difficulty)), level, devTools: devToolsEnabled() }), emptySince: undefined, creator: address, title };
     room.match.start();
     rooms.set(name, room);
     console.log(`room "${name}" opened`);
@@ -287,7 +308,7 @@ function accept(socket: WebSocket, request: IncomingMessage): void {
   const mapId = url.searchParams.get('map') ?? undefined;
   const mode = url.searchParams.get('mode') ?? undefined;
   const token = url.searchParams.get('token') ?? undefined;
-  const room = roomName && NAME.test(roomName) ? roomFor(address, roomName, cleanTitle(url.searchParams.get('title')), mapId, mode, url.searchParams.get('campaign') ?? undefined, url.searchParams.get('level') ?? undefined, url.searchParams.get('scenario') ?? undefined) : undefined;
+  const room = roomName && NAME.test(roomName) ? roomFor(address, roomName, cleanTitle(url.searchParams.get('title')), mapId, mode, url.searchParams.get('campaign') ?? undefined, url.searchParams.get('level') ?? undefined, url.searchParams.get('scenario') ?? undefined, url.searchParams.get('bots') ?? undefined, url.searchParams.get('difficulty') ?? undefined) : undefined;
   if (!room) {
     socket.close(1013, 'No such room');
     return;

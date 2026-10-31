@@ -92,8 +92,8 @@ describe('terrain and movement', () => {
     expect(new Set(MAPS.map((map) => `${map.width}x${map.height}`)).size).toBeGreaterThan(1);
   });
 
-  it('lays out every map symmetrically, so no corner has a shortcut the others lack', () => {
-    for (const map of MAPS.filter((m) => !m.starts)) {
+  it('lays out every map symmetrically, so no corner has a shortcut the others lack (free-form liquid maps excepted: they only keep every base joined, see liquids.test.ts)', () => {
+    for (const map of MAPS.filter((m) => !m.starts && !m.liquids?.free)) {
       const t = createMapTerrain(map.id);
       for (let y = 0; y < t.height; y++) {
         for (let x = 0; x < t.width; x++) {
@@ -180,7 +180,7 @@ describe('energy and power', () => {
 
   it('links nearby buildings into networks (antennas extend reach) and shares generation', () => {
     const sim = new Simulation({ width: 40, height: 40, seed: 1 });
-    sim.tick = 300; // midday
+    sim.tick = 420; // midday
     const solar = sim.blueprints.define(1, 'Solar', ['frame.medium', ...Array(8).fill('solar.panel')]);
     const sink = sim.blueprints.define(1, 'Sink', ['frame.small', 'battery.cell']);
     const pylon = sim.blueprints.define(1, 'Pylon', ['frame.small', 'antenna.large']);
@@ -200,7 +200,7 @@ describe('energy and power', () => {
   it('caps long antenna links by antenna count and building size, but not short links', () => {
     const throughput = (pylonParts: string[], pylonFrame = 'frame.small') => {
       const sim = new Simulation({ width: 40, height: 40, seed: 1 });
-      sim.tick = 300; // midday
+      sim.tick = 420; // midday
       const solar = sim.blueprints.define(1, 'Solar', ['frame.large', ...Array(20).fill('solar.panel')]);
       const sink = sim.blueprints.define(1, 'Sink', ['frame.small', 'battery.cell']);
       const pylon = sim.blueprints.define(1, 'Pylon', [pylonFrame, ...pylonParts]);
@@ -225,7 +225,7 @@ describe('energy and power', () => {
 
   it('counts only what consumers actually received as delivered', () => {
     const sim = new Simulation({ width: 20, height: 20, seed: 1 });
-    sim.tick = 300;
+    sim.tick = 420;
     const solar = sim.blueprints.define(1, 'Solar', ['frame.medium', ...Array(8).fill('solar.panel')]);
     const sink = sim.blueprints.define(1, 'Sink', ['frame.small', 'battery.cell']);
     const gen = sim.spawnStructure(solar, 2, 2);
@@ -239,7 +239,7 @@ describe('energy and power', () => {
 
   it('records the energy each member took from or gave to its network', () => {
     const sim = new Simulation({ width: 20, height: 20, seed: 1 });
-    sim.tick = 300; // midday
+    sim.tick = 420; // midday
     const solar = sim.blueprints.define(1, 'Solar', ['frame.medium', ...Array(8).fill('solar.panel')]);
     const sink = sim.blueprints.define(1, 'Sink', ['frame.small', 'battery.cell']);
     const gen = sim.spawnStructure(solar, 2, 2);
@@ -666,11 +666,12 @@ describe('construction and resources', () => {
     expect(sim.edgeDistance(scout, silo)).toBeLessThanOrEqual(TILE);
   });
 
-  it('the Resource Silo sends docked harvesters to one of the nearest fields, chosen at random', () => {
+  it('the Resource Silo sends docked harvesters to a field close to it', () => {
     const { sim, own, cls } = makeMatch();
     const [scout] = own(1, 'Scout');
     const [tx, ty] = tileOf(sim, scout);
     const silo = sim.spawnStructure(cls(1, 'Resource Silo'), tx + 5, ty);
+    for (const h of own(1, 'Harvester')) sim.destroyEntity(h); // the starting harvesters would crowd the depots
     const passiveHarvester = sim.blueprints.define(1, 'Passive Harvester', ['chassis.light', 'cpu.basic', 'motor.small', 'cargo.bay']);
     // It only follows orders: the silo's visit sends it to a field.
     sim.setProgram(passiveHarvester.id, prog('on(Order, { types: [HARVEST] }, (type, tx, ty, field) => {\n  harvest(field);\n});'));
@@ -678,21 +679,17 @@ describe('construction and resources', () => {
       .filter((e) => sim.resource.f.amount[e] >= 10)
       .sort((p, q) => Math.hypot(sim.pos.f.x[p] - sim.pos.f.x[silo], sim.pos.f.y[p] - sim.pos.f.y[silo]) - Math.hypot(sim.pos.f.x[q] - sim.pos.f.x[silo], sim.pos.f.y[q] - sim.pos.f.y[silo]))
       .slice(0, 4);
-    const picked = new Set<number>();
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < 3; i++) {
       for (const f of nearest) sim.resource.f.amount[f] = 500; // earlier harvesters must not run a field dry
       const harvester = sim.spawnUnit(passiveHarvester, sim.pos.f.x[silo], sim.pos.f.y[silo]);
       run(sim, 3);
       expect(sim.dock(harvester, silo)).toBe(true);
-      // Long enough for the silo to react (it sees one visitor a tick, and earlier harvesters may dock too), too short for the harvester to finish (and drop) the order.
-      for (let t = 0; t < 6 && (sim.tasks[harvester]?.count ?? 0) === 0; t++) run(sim, 1);
+      // Long enough for the silo to choose (it weighs depots and fields, which takes its small CPU a few ticks), too short for the harvester to finish (and drop) the order.
+      for (let t = 0; t < 20 && (sim.tasks[harvester]?.count ?? 0) === 0; t++) run(sim, 1);
       const queue = sim.tasks[harvester]!;
       expect(queue.type(queue.count - 1)).toBe(TaskType.Harvest);
-      const target = sim.world.resolve(queue.target(queue.count - 1));
-      expect(nearest).toContain(target);
-      picked.add(target);
+      expect(nearest).toContain(sim.world.resolve(queue.target(queue.count - 1)));
     }
-    expect(picked.size).toBeGreaterThan(1); // not always the same field
   });
 
   it('a harvester with nothing to do goes back to a storage building, and swaps a spent field for another', () => {
@@ -807,9 +804,9 @@ describe('lightLevel()', () => {
     const bot = sim.blueprints.define(1, 'Bot', ['chassis.light', 'motor.small']);
     const u = sim.spawnUnit(bot, at(5), at(5));
     const read = () => UNIT_API.find((b) => b.name === 'lightLevel')!.fn({ sim, e: u } as never, new Int32Array(0));
-    sim.tick = 300; // midday
+    sim.tick = 420; // midday
     expect(read()).toBe(100);
-    sim.tick = 150;
+    sim.tick = 210;
     expect(read()).toBeGreaterThan(50);
     expect(read()).toBeLessThan(100);
     sim.tick = 900; // night

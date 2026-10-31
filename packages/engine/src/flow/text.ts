@@ -11,6 +11,7 @@ import {
   idGenerator,
   type BinOp,
   type BlockUse,
+  type ChainStep,
   type ConfigValue,
   type Expr,
   type FlowDoc,
@@ -182,6 +183,7 @@ export function parseText(text: string, host: FlowHost, prev?: FlowDoc, reserved
       }
       case 'CallExpression': {
         const [callee, args] = kids(n);
+        if (callee.name === 'MemberExpression') return chainExpr(n);
         if (callee.name !== 'VariableName') {
           err('Only built-in functions can be called inside expressions', callee);
           return { k: 'num', v: 0 };
@@ -192,6 +194,44 @@ export function parseText(text: string, host: FlowHost, prev?: FlowDoc, reserved
         err(`This kind of expression is not supported: ${n.name}`, n);
         return { k: 'num', v: 0 };
     }
+  };
+
+  /** `findResources(10).filter(r => resource(r) > 50).first()`: a list source, then steps (see lists.ts). */
+  const chainExpr = (n: SyntaxNode): Expr => {
+    const steps: ChainStep[] = [];
+    let cur = n;
+    while (cur.name === 'CallExpression') {
+      const [callee, args] = kids(cur);
+      if (callee.name === 'MemberExpression') {
+        const parts = kids(callee);
+        steps.unshift(chainStep(src(parts[parts.length - 1]), args));
+        cur = parts[0];
+      } else if (callee.name === 'VariableName') {
+        return { k: 'chain', fn: src(callee), args: argList(args), steps };
+      } else {
+        break;
+      }
+    }
+    err('A list chain starts with a find function, such as findResources(10).filter(r => resource(r) > 50).first()', n);
+    return { k: 'num', v: 0 };
+  };
+
+  const chainStep = (op: string, args: SyntaxNode): ChainStep => {
+    const argNodes = kids(args).filter((c) => !['(', ')', ','].includes(c.name));
+    const fnNode = argNodes.at(-1)?.name === 'ArrowFunction' ? argNodes.pop()! : undefined;
+    const stray = argNodes.find((a) => a.name === 'ArrowFunction');
+    if (stray) err(`The function must come last: .${op}(..., r => ...)`, stray);
+    const plain = argNodes.filter((a) => a !== stray).map(expr);
+    if (!fnNode) return { op, params: [], args: plain };
+    const parts = kids(fnNode);
+    const head = parts[0];
+    const params = head.name === 'ParamList' ? kids(head).filter((c) => c.name === 'VariableDefinition').map(src) : head.name === 'VariableDefinition' ? [src(head)] : [];
+    const bodyNode = parts[parts.length - 1];
+    if (bodyNode.name === 'Block' || bodyNode.name === '=>') {
+      err(`Write the function as a single expression, such as ${params[0] ?? 'r'} => dist(${params[0] ?? 'r'}) < 5`, fnNode);
+      return { op, params, args: [...plain, { k: 'num', v: 0 }] };
+    }
+    return { op, params, args: [...plain, expr(bodyNode)] };
   };
 
   const argList = (args: SyntaxNode): Expr[] => kids(args).filter((c) => !['(', ')', ','].includes(c.name)).map(expr);
@@ -276,9 +316,13 @@ export function parseText(text: string, host: FlowHost, prev?: FlowDoc, reserved
           err('Declare variables at the top of the program with let; inside a block only const results are allowed', kw);
           return [];
         }
-        if (!value || value.name !== 'CallExpression') {
-          err('A const must be bound to a call, such as: const foe = scan();', n);
+        if (!value) {
+          err('A const needs a value, such as: const foe = scan();', n);
           return [];
+        }
+        if (value.name !== 'CallExpression' || kids(value)[0].name === 'MemberExpression') {
+          // Any other expression (a list chain, a sum, a condition) is bound through calc(), which returns what it is given.
+          return [{ id: mk(n), k: 'call', fn: 'calc', args: [expr(value)], result: src(name) }];
         }
         const s = callStmt(value, src(name));
         return s ? [s] : [];
@@ -553,13 +597,8 @@ export function expandOne(doc: FlowDoc, id: string, host: FlowHost): FlowDoc {
 // Printing
 // ============================================================================================
 
-export function printText(doc: FlowDoc, host: FlowHost): string {
-  const apiByName = new Map(host.api.map((b) => [b.name, b]));
-  const lines: string[] = [];
-  const comment = (note: string | undefined, indent: string) => {
-    if (note !== undefined) for (const l of note.split('\n')) lines.push(`${indent}//${l ? ' ' + l : ''}`);
-  };
-
+/** An expression as program text, with the fewest parentheses that keep its meaning. */
+export function exprText(e: Expr): string {
   const prec = (e: Expr): number => {
     switch (e.k) {
       case 'bin': return PREC[e.op];
@@ -587,8 +626,28 @@ export function printText(doc: FlowDoc, host: FlowHost): string {
       }
       case 'cond': return `${wrap(e.c, 1)} ? ${wrap(e.a, 1)} : ${wrap(e.b, 1)}`;
       case 'call': return `${e.fn}(${e.args.map(expr).join(', ')})`;
+      case 'chain': {
+        const steps = e.steps.map((st) => {
+          const plain = st.params.length ? st.args.slice(0, -1) : st.args;
+          const parts = plain.map(expr);
+          if (st.params.length) parts.push(`${st.params.length === 1 ? st.params[0] : `(${st.params.join(', ')})`} => ${expr(st.args[st.args.length - 1])}`);
+          return `.${st.op}(${parts.join(', ')})`;
+        });
+        return `${e.fn}(${e.args.map(expr).join(', ')})${steps.join('')}`;
+      }
     }
   };
+  return expr(e);
+}
+
+export function printText(doc: FlowDoc, host: FlowHost): string {
+  const apiByName = new Map(host.api.map((b) => [b.name, b]));
+  const lines: string[] = [];
+  const comment = (note: string | undefined, indent: string) => {
+    if (note !== undefined) for (const l of note.split('\n')) lines.push(`${indent}//${l ? ' ' + l : ''}`);
+  };
+
+  const expr = exprText;
 
   const block = (list: readonly Stmt[], indent: string): void => {
     for (const s of list) {
@@ -598,6 +657,10 @@ export function printText(doc: FlowDoc, host: FlowHost): string {
           break;
         case 'call': {
           const b = apiByName.get(s.fn);
+          if (s.fn === 'calc' && s.result !== undefined && s.args.length === 1 && !s.outcomes) {
+            lines.push(`${indent}const ${s.result} = ${expr(s.args[0])};`);
+            break;
+          }
           const callee = `${b?.kind === 'config' ? 'config.' : ''}${s.fn}`;
           const lead = `${indent}${s.result !== undefined ? `const ${s.result} = ` : ''}${callee}(${s.args.map(expr).join(', ')}`;
           const present = s.outcomes ? [...(b?.outcomes ?? []).filter((n) => s.outcomes![n]), ...Object.keys(s.outcomes).filter((n) => !(b?.outcomes ?? []).includes(n))] : [];

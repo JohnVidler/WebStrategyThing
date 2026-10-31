@@ -133,3 +133,64 @@ describe('night vision', () => {
     expect(visionAt(unit, 50)).toBeLessThan(visionAt(unit, 100));
   });
 });
+
+describe('weapon cones', () => {
+  const wedge = (heading: number): Viewer => ({ x: at(10), y: at(10), r: 25 * TILE, heading, half: 0.17 });
+
+  it('sees a thin wedge out to its range and nothing beside or behind it', () => {
+    const { see } = setup();
+    const s = see(wedge(0)); // east
+    expect(s(30, 10)).toBe(true);
+    expect(s(34, 10)).toBe(true);
+    expect(s(36, 10)).toBe(false); // beyond its range
+    expect(s(30, 16)).toBe(false); // well off the line
+    expect(s(10, 30)).toBe(false);
+    expect(s(0, 10)).toBe(false); // behind
+    let tiles = 0;
+    for (let y = 0; y < 40; y++) for (let x = 0; x < 40; x++) if (s(x, y)) tiles++;
+    expect(tiles).toBeLessThan(200); // a wedge, not a disc (~1900)
+  });
+
+  it('points any way, including diagonally and up', () => {
+    const { see } = setup();
+    expect(see(wedge(Math.PI / 2))(10, 30)).toBe(true); // south
+    expect(see(wedge(-Math.PI / 2))(10, 1)).toBe(true); // north
+    expect(see(wedge(Math.PI / 4))(25, 25)).toBe(true); // south-east
+    expect(see(wedge(Math.PI))(0, 10)).toBe(true); // west
+    expect(see(wedge(Math.PI / 4))(25, 10)).toBe(false);
+  });
+
+  it('is blocked by rock like any other sight', () => {
+    const { sim, see } = setup();
+    rock(sim, 18, 10);
+    const s = see(wedge(0));
+    expect(s(18, 10)).toBe(true); // the face
+    expect(s(30, 10)).toBe(false);
+  });
+
+  it('gives a cannon an aim that follows its target, and shows an enemy far down the barrel only', () => {
+    const sim = new Simulation({ width: 60, height: 60, seed: 1 });
+    sim.terrain.passable.fill(1);
+    sim.terrain.computeHeights();
+    const tank = sim.blueprints.define(1, 'Tank', ['chassis.medium', 'cpu.basic', 'gun.cannon', 'cargo.bay', 'battery.cell']);
+    const scout = sim.blueprints.define(1, 'Scout', ['chassis.light', 'cpu.basic', 'motor.small', 'gun.light']);
+    const dummy = sim.blueprints.define(2, 'Dummy', ['chassis.light', 'cpu.basic']);
+    const t = sim.spawnUnit(tank, at(10), at(30));
+    expect(sim.aim.has(t)).toBe(true);
+    expect(sim.aim.has(sim.spawnUnit(scout, at(5), at(5)))).toBe(false); // a short gun sees all it can hit
+    const south = sim.spawnUnit(dummy, at(10), at(45));
+    const east = sim.spawnUnit(dummy, at(25), at(30));
+    sim.aim.f.heading[t] = 64; // south
+    const stats = (e: number) => sim.stats(e);
+    let seen = visibleTo(sim.world, 1, stats, sim.terrain);
+    expect(seen.has(south)).toBe(true);
+    expect(seen.has(east)).toBe(false);
+    // Locking on to the other one swings the wedge round to it.
+    sim.weapon.f.target[t] = sim.world.handle(east);
+    sim.step();
+    seen = visibleTo(sim.world, 1, stats, sim.terrain);
+    expect(sim.aim.f.heading[t]).toBe(0);
+    expect(seen.has(east)).toBe(true);
+    expect(seen.has(south)).toBe(false);
+  });
+});

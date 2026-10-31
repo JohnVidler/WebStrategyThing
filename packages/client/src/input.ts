@@ -1,8 +1,10 @@
-import { Caps, Missile, Position, Resource, TaskType, TILE, Unit, type Blueprint, type ClientMessage } from '@wst/engine';
+import { Caps, MAX_SITES_PER_PLAYER, Missile, Position, Resource, TaskType, TILE, Unit, type Blueprint, type ClientMessage } from '@wst/engine';
 import { actionsFor, type ActionButton } from './actions';
 import type { Placement, Renderer, ViewState } from './renderer';
 import { controls, WheelClassifier, type ActionId, type ModState } from './controls';
+import { footprintProblem, PLACEMENT_PROBLEMS, type PlacementProblem } from './placement';
 import { playSound } from './sound';
+import { showToast } from './toast';
 import type { ClientState } from './state';
 
 /** The order sound for each common action button. */
@@ -518,6 +520,23 @@ export class Input implements ViewState {
     playSound('select.group_recall');
   }
 
+  /** Why the current blueprint cannot go on (x, y), or null if it can. */
+  private spotProblem(x: number, y: number): PlacementProblem | null {
+    const bp = this.placement!.bp;
+    const ground = footprintProblem(this.state.terrain, x, y, bp.stats.footprint, bp.stats.shape);
+    if (ground) return ground;
+    if (!this.state.canPlaceInVision(x, y, bp.stats.footprint)) return 'vision';
+    return this.state.ownSiteCount() >= MAX_SITES_PER_PLAYER ? 'sites' : null;
+  }
+
+  /** Tells the player why a placement was refused (an alert) and raises the matching sound event. */
+  private refusePlacement(problem: PlacementProblem | null): void {
+    if (!problem) return void playSound('build.place_invalid');
+    const { text, sound } = PLACEMENT_PROBLEMS[problem];
+    showToast(text, 'warn');
+    playSound(sound);
+  }
+
   private spotValid(x: number, y: number): boolean {
     const bp = this.placement!.bp;
     return this.state.terrain.footprintFree(x, y, bp.stats.footprint, bp.stats.shape) && this.state.canPlaceInVision(x, y, bp.stats.footprint);
@@ -557,7 +576,8 @@ export class Input implements ViewState {
       this.state.terrain.occupy(spot.x, spot.y, p.bp.stats.footprint, 1, p.bp.stats.shape);
       sent++;
     }
-    playSound(sent ? 'build.place' : 'build.place_invalid');
+    if (sent) playSound('build.place');
+    else this.refusePlacement(p.line.length ? this.spotProblem(p.line[0].x, p.line[0].y) : this.spotProblem(p.x, p.y));
     p.line = [];
     p.valid = false;
     if (!keepPlacing && sent) this.cancelPlacement();
@@ -613,7 +633,7 @@ export class Input implements ViewState {
     const p = this.placement;
     if (!p) return;
     if (!p.valid) {
-      playSound('build.place_invalid');
+      this.refusePlacement(this.spotProblem(p.x, p.y));
       return;
     }
     const builders = this.ownedSelection().filter((e) => ((this.state.stats(e)?.caps ?? 0) & Caps.Build) !== 0);

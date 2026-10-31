@@ -10,9 +10,9 @@ import { musicPlayer, placeMusic } from './music';
 import { fadeIn, growRow, isShown, setShown, shrinkRow, swapContent } from './transition';
 import { startMenuBackground } from './menuBackground';
 import { mountControlsEditor } from './controlsMenu';
-import { reduceMotion, setReduceMotion, setShowAlphaMaps, showAlphaMaps } from './settings';
+import { fullScreenFlashes, lightFlicker, reduceMotion, setFullScreenFlashes, setLightFlicker, setReduceMotion, setShowAlphaMaps, setWeatherDetail, showAlphaMaps, weatherDetail } from './settings';
 import { campaignUrl, devMode, fetchCampaigns, showCampaigns } from './campaignMenu';
-import { createMapTerrain, DEFAULT_MAP_ID, GAME_MODES, MAPS, parseGameMode, parseScenario, SCENARIOS, type GameMode, type MapDefinition, type Scenario } from '@wst/engine';
+import { BOT_SKILLS, createMapTerrain, DEFAULT_BOT_LEVEL, DEFAULT_MAP_ID, GAME_MODES, MAPS, parseGameMode, parseScenario, SCENARIOS, type GameMode, type MapDefinition, type Scenario } from '@wst/engine';
 import type { LobbyDevTools } from './lobbyDevTools';
 
 export interface RoomInfo {
@@ -50,6 +50,7 @@ const clock = (seconds: number): string => {
 /** The longest room title the create form accepts (the server cuts at the same length). */
 const TITLE_MAX = 40;
 const REFRESH_MS = 3000;
+const ONLINE_REFRESH_MS = 5000;
 const randomRoomName = () => `room-${randomHex(6)}`;
 
 interface CreditTrack {
@@ -115,9 +116,12 @@ const preview = (id: string): string => {
   for (let y = 0; y < map.height; y++) {
     for (let x = 0; x < map.width; x++) {
       const index = y * map.width + x;
-      context.fillStyle = terrain.passable[index]
-        ? (x * 13 + y * 7) % 3 === 0 ? '#426b55' : '#365c4a'
-        : (x + y) % 2 ? '#667166' : '#56635d';
+      const depth = terrain.depth[index];
+      context.fillStyle = depth
+        ? depth <= 2 ? '#3f8a96' : depth <= 5 ? '#245a85' : depth <= 8 ? '#c0501a' : '#0a0c10' // shallow water, deep water, lava, void
+        : terrain.passable[index]
+          ? (x * 13 + y * 7) % 3 === 0 ? '#426b55' : '#365c4a'
+          : (x + y) % 2 ? '#667166' : '#56635d';
       context.fillRect(ox + x * tile, oy + y * tile, Math.ceil(tile), Math.ceil(tile));
     }
   }
@@ -151,9 +155,40 @@ const announceMenuPresence = (apiBase: string) => {
   }
 };
 
-const join = (room: string, name: string, mapId = DEFAULT_MAP_ID, mode: GameMode = 'versus', title = '', scenario: Scenario = 'standard') => {
+/** Keeps the main menu's "playing now" indicator up to date while it is on screen and the tab is visible; hidden until the server answers. */
+const watchOnline = (apiBase: string, box: HTMLElement) => {
+  const playing = box.querySelector<HTMLElement>('.menu-online-playing')!;
+  const total = box.querySelector<HTMLElement>('.menu-online-total')!;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const poll = async () => {
+    timer = undefined;
+    if (!box.isConnected) return;
+    if (!document.hidden) {
+      try {
+        const res = await fetch(`${apiBase}/menu`, { cache: 'no-store' });
+        const stats = (await res.json()) as { playing?: number; online?: number };
+        if (res.ok && Number.isFinite(stats.playing) && Number.isFinite(stats.online)) {
+          playing.textContent = `${stats.playing} playing now`;
+          total.textContent = `${stats.online} online`;
+          box.hidden = false;
+        }
+      } catch {
+        box.hidden = true;
+      }
+    }
+    if (box.isConnected) timer = setTimeout(() => void poll(), ONLINE_REFRESH_MS);
+  };
+  void poll();
+  const wake = () => {
+    if (!box.isConnected) document.removeEventListener('visibilitychange', wake);
+    else if (!document.hidden && timer === undefined) void poll();
+  };
+  document.addEventListener('visibilitychange', wake);
+};
+
+const join = (room: string, name: string, mapId = DEFAULT_MAP_ID, mode: GameMode = 'versus', title = '', scenario: Scenario = 'standard', extra = '') => {
   setPlayerName(name);
-  location.href = `${location.pathname}?room=${encodeURIComponent(room)}&map=${encodeURIComponent(mapId)}&mode=${mode}${scenario !== 'standard' ? `&scenario=${scenario}` : ''}${title ? `&title=${encodeURIComponent(title)}` : ''}`;
+  location.href = `${location.pathname}?room=${encodeURIComponent(room)}&map=${encodeURIComponent(mapId)}&mode=${mode}${scenario !== 'standard' ? `&scenario=${scenario}` : ''}${extra}${title ? `&title=${encodeURIComponent(title)}` : ''}`;
 };
 
 /** Starts a campaign level: a private room whose map comes from the campaign folder. */
@@ -242,6 +277,12 @@ let rememberedType: GameType = 'versus';
 let optionsTab = 'general';
 const OPTION_TABS: readonly (readonly [string, string])[] = [['general', 'General'], ['sound', 'Sound'], ['controls', 'Controls']];
 let rememberedScenario: Scenario = 'standard';
+/** Single Player: the computer opponents (a name, blank for the default, and a level). */
+let rememberedBots: { name: string; level: number }[] = [{ name: '', level: DEFAULT_BOT_LEVEL }];
+/** Surrounded: the level of all four corner bots. */
+let rememberedDifficulty = DEFAULT_BOT_LEVEL;
+/** Most opponents on the Single Player form: a base each, besides the player's own. */
+const MAX_SOLO_BOTS = 3;
 let designs: import('./localdesigns').LocalDesigns | undefined;
 let savedDesignsChecked = false;
 /** Set once the player dismisses the touch-device warning, so it stays away until the page reloads. */
@@ -430,7 +471,8 @@ export function showLobby(apiBase: string, joinRoom?: string, preferredMapId = D
         <section class="menu-panel"><nav class="menu-buttons" aria-label="Play">
           ${devMode() ? '<button data-go="campaigns" data-sound="menu.click"><b>Campaigns</b><small>Story missions and the tutorial</small></button>' : ''}
           <button data-go="solo" data-sound="menu.click"><b>Single Player</b><small>You against a bot that sends waves of units</small></button>
-          <button data-go="multi" data-sound="menu.click"><b>Multiplayer</b><small>Free-for-all, or co-op against bots</small></button>
+          <div class="menu-anchor"><button data-go="multi" data-sound="menu.click"><b>Multiplayer</b><small>Free-for-all, or co-op against bots</small></button>
+          <aside class="menu-online" aria-live="polite" hidden><span class="menu-online-dot" aria-hidden="true"></span><span><b class="menu-online-playing"></b><small class="menu-online-total"></small></span></aside></div>
           <button id="menu-designer" data-sound="menu.click"><b>Designer</b><small>Design units and buildings and write their programs</small></button>
         </nav></section>
         <section class="menu-panel"><nav class="menu-buttons menu-links" aria-label="Options, manual and credits">
@@ -456,6 +498,7 @@ export function showLobby(apiBase: string, joinRoom?: string, preferredMapId = D
     window.addEventListener('keydown', closeOnEsc);
     view.querySelectorAll<HTMLButtonElement>('button[data-go]').forEach((b) => (b.onclick = () => go(b.dataset.go as View)));
     view.querySelector<HTMLButtonElement>('#menu-docs')!.onclick = () => openDocs();
+    watchOnline(apiBase, view.querySelector<HTMLElement>('.menu-online')!);
     if (touchDevice()) {
       if (!touchWarningDismissed) showTouchWarning();
     } else if (smallScreen() && !smallScreenWarningDismissed) showSmallScreenWarning();
@@ -489,6 +532,10 @@ export function showLobby(apiBase: string, joinRoom?: string, preferredMapId = D
       <div id="opt-panel-general" class="glass-tab-panel options-panel" role="tabpanel" aria-labelledby="opt-tab-general"${optionsTab === 'general' ? '' : ' hidden'}>
         <div class="options">
           <label class="option-row">Reduce motion (stops the menu background moving)<input id="opt-motion" type="checkbox"${reduceMotion() ? ' checked' : ''} /></label>
+          <label class="option-row">Full-screen flashes (lightning flashes across the whole view)<input id="opt-flashes" type="checkbox"${fullScreenFlashes() ? ' checked' : ''} /></label>
+          <label class="option-row">Light flicker (lamps stutter as units and buildings switch them on and off)<input id="opt-flicker" type="checkbox"${lightFlicker() ? ' checked' : ''} /></label>
+          <label class="option-row">Weather effects (Simple: just the basic effect. Fancy: splashes, grit, mist banks, heat shimmer and lightning bolts)
+            <select id="opt-weather" aria-label="Weather effects"><option value="simple"${weatherDetail() === 'simple' ? ' selected' : ''}>Simple</option><option value="fancy"${weatherDetail() === 'fancy' ? ' selected' : ''}>Fancy</option></select></label>
           <label class="option-row">Show alpha maps (unfinished campaign maps in the Multiplayer map list)<input id="opt-alpha" type="checkbox"${showAlphaMaps() ? ' checked' : ''} /></label>
         </div>
       </div>
@@ -534,6 +581,9 @@ export function showLobby(apiBase: string, joinRoom?: string, preferredMapId = D
     // A sample on release, so the level can be judged.
     effects.onchange = () => playSound('ui.confirm');
     view.querySelector<HTMLInputElement>('#opt-motion')!.onchange = (ev) => setReduceMotion((ev.target as HTMLInputElement).checked);
+    view.querySelector<HTMLInputElement>('#opt-flashes')!.onchange = (ev) => setFullScreenFlashes((ev.target as HTMLInputElement).checked);
+    view.querySelector<HTMLInputElement>('#opt-flicker')!.onchange = (ev) => setLightFlicker((ev.target as HTMLInputElement).checked);
+    view.querySelector<HTMLSelectElement>('#opt-weather')!.onchange = (ev) => setWeatherDetail((ev.target as HTMLSelectElement).value === 'simple' ? 'simple' : 'fancy');
     view.querySelector<HTMLInputElement>('#opt-alpha')!.onchange = (ev) => setShowAlphaMaps((ev.target as HTMLInputElement).checked);
     view.querySelector<HTMLInputElement>('#opt-mute')?.addEventListener('change', (ev) => music?.setMuted((ev.target as HTMLInputElement).checked));
   };
@@ -617,6 +667,7 @@ export function showLobby(apiBase: string, joinRoom?: string, preferredMapId = D
           .map((m) => `<label><input type="radio" name="mode" value="${m.id}"${m.id === rememberedType ? ' checked' : ''}> <b>${esc(m.name)}</b> <small>${esc(m.description)}</small></label>`)
           .join('')}</fieldset>`
         }
+        <div id="bot-options"></div>
         ${mapPicker(rememberedMap, campaignsNow(), offered)}
         <button type="submit" class="primary" data-sound="ui.confirm">${which === 'solo' ? 'Start game' : 'Create room'}</button>
       </form>
@@ -671,8 +722,46 @@ export function showLobby(apiBase: string, joinRoom?: string, preferredMapId = D
       const mode: GameMode = type?.mode ?? 'solo';
       const scenario = type ? type.scenario : parseScenario(view.querySelector<HTMLInputElement>('input[name="scenario"]:checked')?.value);
       error.textContent = '';
-      join(id, myName(), mapId, mode, title, scenario);
+      // The opponents' skill travels with the room request (the server clamps it); Co-op and Free for all set theirs in the waiting room.
+      const extra =
+        scenario === 'surrounded'
+          ? `&difficulty=${rememberedDifficulty}`
+          : which === 'solo' && scenario === 'standard'
+            ? `&bots=${encodeURIComponent(JSON.stringify(rememberedBots.map((b) => ({ n: b.name, l: b.level }))))}`
+            : '';
+      join(id, myName(), mapId, mode, title, scenario, extra);
     };
+    const levelOptions = (level: number) => BOT_SKILLS.map((k, i) => `<option value="${i}"${i === level ? ' selected' : ''}>${k.name}</option>`).join('');
+    const botBox = view.querySelector<HTMLDivElement>('#bot-options')!;
+    /** Who the player faces: Surrounded has one difficulty for all four bots, Single Player a list of opponents; the rest are chosen in the waiting room. */
+    const renderBotOptions = () => {
+      const t = typeNow();
+      if (t.scenario === 'surrounded') {
+        botBox.innerHTML = `<fieldset class="mode-picker bot-options"><legend>Difficulty</legend><label>All four bots play at <select id="bot-difficulty" aria-label="Difficulty of the bots">${levelOptions(rememberedDifficulty)}</select></label></fieldset>`;
+        botBox.querySelector<HTMLSelectElement>('#bot-difficulty')!.onchange = (ev) => (rememberedDifficulty = Number((ev.target as HTMLSelectElement).value));
+      } else if (which === 'solo' && t.scenario === 'standard') {
+        botBox.innerHTML = `<fieldset class="mode-picker bot-options"><legend>Opponents</legend>${rememberedBots
+          .map(
+            (b, i) =>
+              `<div class="bot-row" data-i="${i}"><input class="bot-name" maxlength="16" placeholder="Bot ${i + 1}" aria-label="Opponent name" value="${esc(b.name)}"><select class="bot-level" aria-label="Difficulty of opponent ${i + 1}">${levelOptions(b.level)}</select><button type="button" class="bot-remove" aria-label="Remove opponent ${i + 1}"${rememberedBots.length <= 1 ? ' disabled' : ''}>✕</button></div>`,
+          )
+          .join('')}<button type="button" id="bot-add"${rememberedBots.length >= MAX_SOLO_BOTS ? ' disabled' : ''}>Add opponent</button></fieldset>`;
+        for (const row of botBox.querySelectorAll<HTMLDivElement>('.bot-row')) {
+          const i = Number(row.dataset.i);
+          row.querySelector<HTMLInputElement>('.bot-name')!.oninput = (ev) => (rememberedBots[i].name = (ev.target as HTMLInputElement).value);
+          row.querySelector<HTMLSelectElement>('.bot-level')!.onchange = (ev) => (rememberedBots[i].level = Number((ev.target as HTMLSelectElement).value));
+          row.querySelector<HTMLButtonElement>('.bot-remove')!.onclick = () => {
+            rememberedBots.splice(i, 1);
+            renderBotOptions();
+          };
+        }
+        botBox.querySelector<HTMLButtonElement>('#bot-add')!.onclick = () => {
+          rememberedBots.push({ name: '', level: DEFAULT_BOT_LEVEL });
+          renderBotOptions();
+        };
+      } else botBox.innerHTML = '';
+    };
+    renderBotOptions();
     const select = view.querySelector<HTMLSelectElement>('select[name="map"]')!;
     /** A new game type or scenario changes which maps suit it: refill the list, keeping the chosen map if it still fits. */
     const refillMaps = () => {
@@ -685,12 +774,14 @@ export function showLobby(apiBase: string, joinRoom?: string, preferredMapId = D
     view.querySelectorAll<HTMLInputElement>('input[name="scenario"]').forEach((radio) => {
       radio.onchange = () => {
         rememberedScenario = parseScenario(radio.value);
+        renderBotOptions();
         refillMaps();
       };
     });
     view.querySelectorAll<HTMLInputElement>('input[name="mode"]').forEach((radio) => {
       radio.onchange = () => {
         rememberedType = gameTypeById(radio.value).id;
+        renderBotOptions();
         refillMaps();
       };
     });
@@ -838,5 +929,8 @@ export function showLobby(apiBase: string, joinRoom?: string, preferredMapId = D
   window.addEventListener('popstate', popHandler);
   const startView: View = preferredMode === 'solo' ? 'solo' : 'multi';
   history.replaceState({ lobby: true, view: 'main', depth: 0 } satisfies LobbyState, '');
-  go(joinRoom ? startView : campaignTarget() ? 'campaigns' : 'main', false);
+  // `?options` (from the flashing-lights warning's "Go to Options Menu") opens straight on Options.
+  const wantOptions = new URLSearchParams(location.search).has('options');
+  if (wantOptions) history.replaceState(null, '', location.pathname);
+  go(joinRoom ? startView : wantOptions ? 'options' : campaignTarget() ? 'campaigns' : 'main', false);
 }

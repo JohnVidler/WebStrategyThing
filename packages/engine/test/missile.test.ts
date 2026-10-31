@@ -236,7 +236,7 @@ describe('the Rocket Truck', () => {
     const bp = sim.blueprints.define(1, ROCKET_CLASS.name, [...ROCKET_CLASS.parts]);
     sim.setProgram(bp.id, ROCKET_CLASS.program);
     const truck = sim.spawnUnit(bp, 14 * TILE, 8 * TILE);
-    expect(sim.cargo.f.amount[truck]).toBe(0);
+    sim.cargo.f.amount[truck] = 0; // a new truck starts with its missiles loaded; this one has used them
     step(sim, 150);
     expect(sim.cargo.f.amount[truck]).toBe(bp.stats.cargo);
     expect(sim.stockpile.f.amount[silo]).toBeLessThan(500);

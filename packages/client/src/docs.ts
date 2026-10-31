@@ -13,12 +13,15 @@ import {
   COMMON_ACTIONS,
   COST,
   DAY_LENGTH,
+  DAYLIGHT_TICKS,
   DEMOLISH_REFUND,
   DOCK_RANGE,
   EVENTS,
   FLOW_HOST,
   FREE_LITERALS,
   HARVEST_RANGE,
+  LIST_MAX,
+  LIST_OPS,
   MAX_BUTTON_LABEL,
   MAX_BUTTONS,
   MAX_PARTS,
@@ -29,6 +32,7 @@ import {
   RESOURCE_REGEN_INTERVAL_TICKS,
   SCRIPT_CONSTANT_DOCS,
   SOLAR_GENERATION_MULTIPLIER,
+  STEAM_GENERATION_MULTIPLIER,
   STARTER_CLASSES,
   SWITCHABLE,
   TICK_RATE,
@@ -322,6 +326,55 @@ on(EnergyLow, { below: 25 }, () => {
       current job for your selected units.</p>`,
   },
   {
+    id: 'lists',
+    title: 'Lists & chains',
+    section: 'Guide',
+    render: () => `
+      <h1>Lists &amp; chains</h1>
+      <p>Choosing well often means looking at <i>several</i> things: the depots you own, the fields around one of them, the enemies in sensor range. A <b>find</b> call
+      (${fnLink('findResources')}, ${fnLink('findDepots')}, ${fnLink('findEnemies')}, ...) returns a <b>list</b>: up to ${LIST_MAX} things, nearest first. You work on the list
+      with a <b>chain</b> of steps, written one after the other, and the last step gives one number.</p>
+      ${code(`on(Free, () => {
+  // The field with the most matter among those holding at least 50:
+  const best = findResources(50).maxBy(r => resource(r));
+  if (best >= 0) {
+    order(HARVEST, 0, 0, best);
+  }
+});`)}
+      <p>The small function <code>r =&gt; resource(r)</code> runs for each entry, with <code>r</code> standing for that entry (a unit, building or resource handle).
+      A function is a single expression; it can read variables, constants and event values and call any query. It cannot contain a block, a second chain or an action.</p>
+      <h2>The steps</h2>
+      <table>
+        <tr><th>Step</th><th>What it does</th></tr>
+        ${LIST_OPS.map((o) => `<tr><td><code>.${o.name}(${[...Array<string>(o.args).fill('n'), ...(o.params === 1 ? ['r =&gt; ...'] : o.params === 2 ? ['(total, r) =&gt; ...'] : [])].join(', ')})</code><br><span class="muted">${o.terminal ? 'ends the chain' : 'gives a list'}</span></td><td>${esc(o.doc)}</td></tr>`).join('')}
+      </table>
+      <p>A chain is any number of list steps (at most 8) followed by one step that gives a number. Lists are not stored: a chain starts at a find call and ends in a number, which
+      you keep in a <code>const</code> or a variable. Several chains in a row are how you do several things with the same data.</p>
+      <h2>Example: work close to a depot, and not where it is crowded</h2>
+      ${code(`on(Free, () => {
+  // The depot that is nearest, but 12 tiles worse for each harvester beyond 4 crowding round it:
+  const home = findDepots().minBy(d => dist(d) + 12 * crowdOver(d, 6, 4));
+  // Of the 4 fields nearest that depot, the one with the fewest harvesters on it:
+  const pick = findResourcesNear(home, 10).take(4).minBy(r => distBetween(home, r) + 6 * crowd(r, 3));
+  if (pick >= 0) {
+    order(HARVEST, 0, 0, pick);
+  }
+});`)}
+      <p>This is what the <code>HarvestLoop</code> and <code>DispatchHarvesters</code> blocks do, with their settings filled in (<b>Expand</b> a block to see it).</p>
+      <h2>Cost</h2>
+      <p>A find call costs its listed cycles once. Each function step then costs ${COST.NODE + COST.ARC} cycles per entry plus whatever its function costs, so a chain is paid for by the
+      length of the list it works on, and a list never holds more than ${LIST_MAX} entries. The graph's <code>&le;Nc</code> label counts a full list. Sorting costs one more cycle per entry.
+      A handler that runs more than ${COST.HANDLER_LIMIT} cycles in all stops the unit, as always.</p>
+      <h2>Things to know</h2>
+      <ul>
+        <li>Find calls are cheap to read but they do look at every unit and resource, so run them when you decide something (a job ended, a unit arrived), not on every tick.</li>
+        <li>Empty lists are not an error: <code>.first()</code>, <code>.minBy()</code>, <code>.at()</code> and <code>.random()</code> give <code>-1</code> (check it before using the answer); <code>.count()</code>, <code>.sum()</code>, <code>.min()</code> and <code>.max()</code> give 0.</li>
+        <li>Equal keys keep the list's order, so ties go to the nearer one and every run is the same.</li>
+        <li><code>.random()</code> uses the unit's own ${fnLink('rand')}, so replays agree.</li>
+        <li>In the text view <code>const x = findResources(10).first();</code> works like any const; the graph shows such a const as a ${fnLink('calc')} node and shows a chain as one node whose steps are edited in the Text view.</li>
+      </ul>`,
+  },
+  {
     id: 'blocks',
     title: 'Blocks & your own events',
     section: 'Guide',
@@ -493,7 +546,7 @@ on(Order, { types: [SUPPLY] }, (type, tx, ty, flat) => {
       building times the building's size (1, 2 or 3 tiles), so two antennas on one building double it and a larger
       building carries more (a long link uses the stronger of its two ends). Each tick, per network:</p>
       <ol>
-        <li>Generators produce: <b>solar panels</b> follow daylight (a ${DAY_LENGTH / TICK_RATE}s day/night cycle; dark half the time; ${SOLAR_GENERATION_MULTIPLIER}× multiplier), <b>wind turbines</b> follow the wind (drifting 0–100%; ${WIND_GENERATION_MULTIPLIER}× multiplier).</li>
+        <li>Generators produce: <b>solar panels</b> follow daylight (a ${DAY_LENGTH / TICK_RATE}s day/night cycle; ${DAYLIGHT_TICKS / TICK_RATE}s of sun and then night; ${SOLAR_GENERATION_MULTIPLIER}× multiplier), <b>wind turbines</b> follow the wind (drifting 0–100%; ${WIND_GENERATION_MULTIPLIER}× multiplier), <b>steam turbines</b> run at a steady rate, but only while the building stands over a steam vent on the map (one turbine per vent under it; ${STEAM_GENERATION_MULTIPLIER}× multiplier).</li>
         <li>If generation is short of demand, buildings in <code>DISCHARGE</code> mode supply the gap from their stores.</li>
         <li><code>NORMAL</code> buildings are topped up (shared in proportion to what each needs).</li>
         <li>What is left goes to buildings in <code>CHARGE_STORE</code> mode. <code>HOLD</code> buildings neither take nor give.</li>
@@ -600,7 +653,12 @@ on(EnergyLow, { below: 30 }, () => {
     render: () => `
       <h1>Terrain &amp; movement</h1>
       <ul>
-        <li>Each tile is either passable or not. Buildings also block the tiles they stand on.</li>
+        <li>Each tile is either dry open ground, rock, or <b>liquid</b>. Buildings also block the tiles they stand on, and only go on dry ground.</li>
+        <li>Liquid has a <b>depth</b> (${fnLink('depthAt')}, 1 to 9). Depth 1-2 is shallow water: every ground unit can wade it, but slowly. 3-5 is deep water: only an
+            <b>amphibious drive</b> (slowly) or a <b>hover skirt</b> (at full speed) enters it. 6-8 is lava: only a hover skirt crosses it, and it is scorched; a ground unit caught in lava burns up.
+            9 is a void, a drop with no floor: only flying units cross it, and a ground unit over one is lost. Liquid does not block sight or shots, and
+            ${fnLink('heightAt')} reads 0 over it, so check ${fnLink('depthAt')} before assuming open ground can be stood on. ${fnLink('wade')} says how deep this unit can go.</li>
+        <li>Ground units choose the cheapest way: a ford is waded only when going round costs more. A hover unit that stops on lava can step off with ${fnLink('escapeX')} and ${fnLink('escapeY')} (the <code>LeaveLava</code> block does it).</li>
         <li>Ground units path around obstacles automatically (${fnLink('moveTo')}, ${fnLink('goTo')}, ${fnLink('approach')}).
             If the destination is blocked or unreachable, they go as close as they can.</li>
         <li>Flying units (a working <b>rotor</b>) fly straight over anything, but only land on tiles that are

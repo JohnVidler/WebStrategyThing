@@ -72,7 +72,13 @@ describe('size tiers', () => {
     const sim = createMatch(1);
     setUpPlayer(sim, 1, CORNERS[0], 2000);
     // A colossus is a late-game purchase: stock a few extra silos so the pool can pay for one.
-    for (let i = 0; i < 8; i++) sim.addStock(sim.spawnStructure(sim.blueprints.find(1, 'Resource Silo')!, 12 + i * 3, 40), 1e6);
+    // (Scenery on the map may stand in the way of a spot, so skip those.)
+    const siloBp = sim.blueprints.find(1, 'Resource Silo')!;
+    for (let i = 0, placed = 0; placed < 8; i++) {
+      if (!sim.terrain.footprintFree(12 + i * 3, 40, siloBp.stats.footprint)) continue;
+      sim.addStock(sim.spawnStructure(siloBp, 12 + i * 3, 40), 1e6);
+      placed++;
+    }
     expect(sim.blueprints.find(1, 'Titan Works')?.stats.factoryTiers).toBe(0b110000);
     expect(STARTER_CLASSES.length).toBeLessThanOrEqual(48);
     const colossus = sim.blueprints.find(1, 'Colossus')!;

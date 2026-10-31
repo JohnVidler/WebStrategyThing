@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { landShrapnel, MAX_SHRAPNEL, maxShrapnel, throwShrapnel, type Shrapnel } from '../src/shrapnel';
+import { EMBER_CHANCE, EMBER_MS, emberChance, emberLife, landShrapnel, MAX_SHRAPNEL, maxShrapnel, throwShrapnel, type Shrapnel } from '../src/shrapnel';
 
 const seq = (...v: number[]) => {
   let i = 0;
@@ -69,5 +69,30 @@ describe('shrapnel', () => {
     landShrapnel(list, 10000, () => landed++);
     expect(landed).toBe(total);
     expect(list.length).toBe(0);
+  });
+});
+
+describe('fires left by fragments', () => {
+  const frag = (bounced: boolean, bounces: number): Shrapnel => ({ x: 0, y: 0, tx: 1, ty: 1, born: 0, ms: 100, size: 2, bounces, hop: 1, bounced });
+
+  it('only a fragment that bounced, and has come to rest, can start one', () => {
+    expect(emberChance(frag(false, 0), 0)).toBe(0);
+    expect(emberChance(frag(true, 1), 0)).toBe(0);
+    expect(emberChance(frag(true, 0), 0)).toBe(EMBER_CHANCE);
+  });
+
+  it('marks a fragment as bounced when it rebounds', () => {
+    const list = [{ ...frag(false, 1), born: -200 }];
+    landShrapnel(list, 0, () => {}, () => 0.5);
+    expect(list[0].bounced).toBe(true);
+    expect(list[0].bounces).toBe(0);
+  });
+
+  it('is less likely and shorter-lived the wetter it is', () => {
+    expect(emberChance(frag(true, 0), 1)).toBe(0);
+    expect(emberChance(frag(true, 0), 0.5)).toBeCloseTo(EMBER_CHANCE / 2);
+    expect(emberLife(0)).toBe(EMBER_MS);
+    expect(emberLife(1)).toBeLessThan(emberLife(0.5));
+    expect(emberLife(0.5)).toBeLessThan(EMBER_MS);
   });
 });

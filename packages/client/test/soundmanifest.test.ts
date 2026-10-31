@@ -17,7 +17,7 @@ const sources = import.meta.glob('../src/*.ts', { query: '?raw', import: 'defaul
 function usedTags(): Set<string> {
   const used = new Set<string>();
   for (const source of [...Object.values(sources), indexHtml]) {
-    for (const m of source.matchAll(/(?:playSound|setAmbient)\((?:'bed', |'combat', )?(?:[^'`)?:]*\? )?'([a-z0-9_.]+)'/g)) used.add(m[1]);
+    for (const m of source.matchAll(/(?:playSound|setAmbient)\((?:'bed', |'combat', |'weather', )?(?:[^'`)?:]*\? )?'([a-z0-9_]+\.[a-z0-9_.]+)'/g)) used.add(m[1]);
     for (const m of source.matchAll(/'([a-z]+\.[a-z0-9_.]+)'/g)) if (/^(ui|menu|lobby|match|select|order|build|produce|module|action|camera|combat|death|unit|building|alert|ambient|sting|music)\./.test(m[1])) used.add(m[1]);
     for (const m of source.matchAll(/data-sound="([a-z0-9_.]+)"/g)) used.add(m[1]);
     for (const m of source.matchAll(/dataset\.sound = '([a-z0-9_.]+)'/g)) used.add(m[1]);

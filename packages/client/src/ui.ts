@@ -1,10 +1,13 @@
-import { timeOfDay, weatherOf } from './weather';
+import { skyLook, skyWord, timeOfDay, weatherOf } from './weather';
 import { placeMusic } from './music';
 import {
+  BOT_SKILLS,
   buildEnergyCost,
+  DEFAULT_BOT_LEVEL,
   MAX_UNITS_PER_PLAYER,
   Caps,
   Construction,
+  Sky,
   type Blueprint,
   EnergyView,
   factoryCanBuild,
@@ -12,6 +15,7 @@ import {
   MAX_PRODUCTION_QUEUE,
   Modules,
   PARTS,
+  Debris,
   Production,
   Resource,
   RESOURCE_PATCH_AMOUNT,
@@ -25,7 +29,7 @@ import {
 } from '@wst/engine';
 import { playSound } from './sound';
 import { controls } from './controls';
-import { collapseByClass, generationPerTick } from './energy';
+import { collapseByClass, generationPerTick, steamPerTick } from './energy';
 import { isShown, revealScreen, setShown } from './transition';
 import type { ActionButton } from './actions';
 import { ownerColour } from './renderer';
@@ -62,6 +66,11 @@ export interface UiActions {
   selectClass(blueprint: number, add: boolean): void;
   /** The waiting room's host starts the match. */
   startGame(): void;
+  /** The waiting room's host adds a computer player (`level` indexes `BOT_SKILLS`). */
+  addBot(name: string, level: number): void;
+  /** The host renames a computer player or changes its level. */
+  editBot(id: number, name: string, level: number): void;
+  removeBot(id: number): void;
   /** Switch to watching the whole map (after defeat, or once the match is decided). */
   spectate(): void;
   /** Leave the room and return to the menu. */
@@ -228,6 +237,19 @@ export class Ui {
   showWaitingRoom(lobby: Extract<ServerMessage, { t: 'lobby' }>, inviteUrl: string): void {
     const host = lobby.hostId === this.state.myId;
     const enough = lobby.players.length >= lobby.minPlayers;
+    const seated = lobby.players.length + lobby.bots.length;
+    const dot = (id: number) => `<span class="dot" style="background:#${ownerColour(id).toString(16).padStart(6, '0')}"></span>`;
+    const botRows = lobby.bots
+      .map((b) =>
+        host
+          ? `<li class="bot" data-bot="${b.id}">${dot(b.id)}<input class="bot-name" aria-label="Computer player name" maxlength="16" value="${esc(b.name)}"><select class="bot-level" aria-label="Difficulty of ${esc(b.name)}">${BOT_SKILLS.map((s, i) => `<option value="${i}"${i === b.level ? ' selected' : ''}>${s.name}</option>`).join('')}</select><button class="bot-remove" type="button"${lobby.bots.length <= lobby.minBots ? ' disabled' : ''} aria-label="Remove ${esc(b.name)}" title="Remove this computer player" data-sound="match.leave">✕</button></li>`
+          : `<li>${dot(b.id)}${esc(b.name)}<span class="tag">computer · ${BOT_SKILLS[b.level]?.name ?? ''}</span></li>`,
+      )
+      .join('');
+    const addBot =
+      host && lobby.botsAllowed
+        ? `<div class="row"><button id="waiting-add-bot" type="button" data-sound="ui.confirm"${lobby.canAddBot ? '' : ' disabled'}>Add computer player</button></div>`
+        : '';
     const rows = lobby.players
       .map((p) => {
         const colour = `#${ownerColour(p.id).toString(16).padStart(6, '0')}`;
@@ -241,14 +263,25 @@ export class Ui {
         ? 'Start whenever everyone is here.'
         : 'Waiting for the host to start the game…';
     this.waitingView.innerHTML = `<h2>Waiting room</h2>
-      <p class="muted">${esc(lobby.mapName)} · ${lobby.players.length}/${lobby.capacity} players${lobby.mode === 'coop' ? ' · co-op against bots' : ''}</p>
-      <ul>${rows}</ul>
+      <p class="muted">${esc(lobby.mapName)} · ${seated}/${lobby.capacity} players${lobby.mode === 'coop' ? ' · co-op against bots' : ''}</p>
+      <ul>${rows}${botRows}</ul>
+      ${addBot}
       <p class="muted">${hint}</p>
       ${inviteHtml(inviteUrl)}
       <div class="row">${host ? `<button id="waiting-start" class="primary" type="button" data-sound="ui.confirm"${enough ? '' : ' disabled'}>Start game</button>` : ''}<button id="waiting-leave" type="button" data-sound="match.leave">Leave</button></div>`;
     this.waitingView.hidden = false;
     bindInvite(this.waitingView, inviteUrl);
     this.waitingView.querySelector<HTMLButtonElement>('#waiting-start')?.addEventListener('click', () => this.actions.startGame());
+    this.waitingView.querySelector<HTMLButtonElement>('#waiting-add-bot')?.addEventListener('click', () => this.actions.addBot('', DEFAULT_BOT_LEVEL));
+    for (const row of this.waitingView.querySelectorAll<HTMLLIElement>('li.bot')) {
+      const id = Number(row.dataset.bot);
+      const name = row.querySelector<HTMLInputElement>('.bot-name')!;
+      const level = row.querySelector<HTMLSelectElement>('.bot-level')!;
+      const send = () => this.actions.editBot(id, name.value, Number(level.value));
+      name.addEventListener('change', send);
+      level.addEventListener('change', send);
+      row.querySelector<HTMLButtonElement>('.bot-remove')!.addEventListener('click', () => this.actions.removeBot(id));
+    }
     el<HTMLButtonElement>('waiting-leave').onclick = () => this.actions.leave();
   }
 
@@ -345,8 +378,10 @@ export class Ui {
     const unit = world.store(Unit);
     const stock = world.store(Stockpile).f.amount;
     const energyPct = world.store(EnergyView).f.pct;
-    const sun = this.state.daylight;
+    const sun = this.state.solar; // what panels get: daylight under any cloud
+    const daySun = this.state.daylight;
     const air = this.state.wind;
+    const sky = this.state.sky;
     const fmt = (n: number): string => (n >= 10 || n === 0 ? String(Math.round(n)) : n.toFixed(1));
     const signed = (n: number): string => `${n >= 0 ? '+' : '-'}${fmt(Math.abs(n))}/t`;
 
@@ -362,7 +397,7 @@ export class Ui {
     silos.sort((a, b) => a.e - b.e);
 
     // Grids: a power network that has a generator or a battery. A split network is a separate grid.
-    interface Gen { kind: 'sun' | 'wind'; bp: number; name: string; count: number; rate: number; peak: number }
+    interface Gen { kind: 'sun' | 'wind' | 'steam'; bp: number; name: string; count: number; rate: number; peak: number }
     interface Grid {
       first: number;
       stored: number;
@@ -403,14 +438,19 @@ export class Ui {
           relevant = true;
           g.stores.push({ e, name, pct: energyPct[e], cap: st.energyCapacity, flow: net.flow[mi] ?? 0 });
         }
-        for (const [kind, output] of [['sun', st.solar], ['wind', st.wind]] as const) {
+        for (const [kind, output] of [['sun', st.solar], ['wind', st.wind], ['steam', st.steam]] as const) {
           if (output <= 0) continue;
           relevant = true;
           const key = `${kind}:${bpId}`;
           const gen = g.gens.get(key) ?? { kind, bp: bpId, name, count: 0, rate: 0, peak: 0 };
           gen.count++;
-          gen.rate += kind === 'sun' ? generationPerTick(output, 0, sun, 0) : generationPerTick(0, output, 0, air);
-          gen.peak += kind === 'sun' ? generationPerTick(output, 0, 100, 0) : generationPerTick(0, output, 0, 100);
+          if (kind === 'steam') {
+            gen.rate += steamPerTick(output, st.steamTurbines, this.state.ventsUnder(e));
+            gen.peak += steamPerTick(output, st.steamTurbines, st.steamTurbines);
+          } else {
+            gen.rate += kind === 'sun' ? generationPerTick(output, 0, sun, 0) : generationPerTick(0, output, 0, air);
+            gen.peak += kind === 'sun' ? generationPerTick(output, 0, 100, 0) : generationPerTick(0, output, 0, 100);
+          }
           g.gens.set(key, gen);
         }
       }
@@ -579,21 +619,26 @@ export class Ui {
         env.push(
           this.tileIn(drop, `${k}:${x.kind}:${x.bp}`, {
             cls: 'env-sub',
-            icon: solar ? '☀' : '≋',
+            icon: solar ? '☀' : x.kind === 'steam' ? '♨' : '≋',
             value: `${fmt(x.rate)}/t`,
             label: `${x.name} (x${x.count})`,
-            pct: x.peak > 0 ? (x.rate / x.peak) * 100 : 0,
-            colour: solar ? '#ffd54a' : '#6fd3ff',
+            pct: x.peak > 0 ? Math.min(100, (x.rate / x.peak) * 100) : 0,
+            colour: solar ? '#ffd54a' : x.kind === 'steam' ? '#e8eef3' : '#6fd3ff',
             title: `${x.count} × ${x.name}: about ${fmt(x.rate)} of at most ${fmt(x.peak)} energy per tick right now, before transmission losses`,
           }),
         );
       }
     });
-    if (grids.length === 0) env.push(this.tileIn(drop, 'none', { cls: 'env-plain env-sub', icon: '', value: '', label: 'No generators or batteries yet', pct: 0, title: 'Build solar panels, wind turbines or batteries' }));
+    if (grids.length === 0) env.push(this.tileIn(drop, 'none', { cls: 'env-plain env-sub', icon: '', value: '', label: 'No generators or batteries yet', pct: 0, title: 'Build solar panels, wind turbines, steam turbines on a vent, or batteries' }));
     if (unlinked > 0) env.push(this.tileIn(drop, 'unlinked', { cls: 'env-plain env-sub', icon: '', value: '', label: `${unlinked} building${unlinked === 1 ? '' : 's'} on a grid with no generator or battery`, pct: 0, title: 'Link them to a grid with a generator by building closer or adding a power pylon' }));
-    env.push(this.tileIn(drop, 'world', { cls: 'env-plain env-grid-head', icon: '◍', value: '', label: 'World', extra: `${timeOfDay(this.state.tick, sun, this.state.devSun >= 0)} · ${weatherOf(air)}`, pct: 0, title: `The conditions your generators follow: ${timeOfDay(this.state.tick, sun, this.state.devSun >= 0).toLowerCase()}, ${weatherOf(air).toLowerCase()}` }));
-    env.push(this.tileIn(drop, 'sun', { cls: 'env-sub', icon: '☀', value: `${sun}%`, label: 'Solar', pct: sun, colour: '#ffd54a', title: 'Daylight: solar panels follow it' }));
-    env.push(this.tileIn(drop, 'wind', { cls: 'env-sub', icon: '≋', value: `${air}%`, label: 'Wind', pct: air, colour: '#6fd3ff', title: 'Wind: turbines follow it' }));
+    env.push(this.tileIn(drop, 'world', { cls: 'env-plain env-grid-head', icon: '◍', value: '', label: 'World', extra: `${timeOfDay(this.state.tick, daySun, this.state.devSun >= 0)} · ${weatherOf(air, sky)}`, pct: 0, title: `The conditions your generators follow: ${timeOfDay(this.state.tick, daySun, this.state.devSun >= 0).toLowerCase()}, ${weatherOf(air, sky).toLowerCase()}` }));
+    if (sky !== Sky.Dry) {
+      const strength = this.state.skyStrength;
+      const look = skyLook(sky);
+      env.push(this.tileIn(drop, 'sky', { cls: 'env-sub', icon: look.icon, value: `${strength}%`, label: skyWord(sky, air), pct: strength, colour: look.colour, title: look.title }));
+    }
+    env.push(this.tileIn(drop, 'sun', { cls: 'env-sub', icon: '☀', value: `${sun}%`, label: 'Solar', pct: Math.min(100, sun), colour: '#ffd54a', title: sky === Sky.Dry ? 'Daylight: solar panels follow it' : 'Daylight as the weather leaves it: solar panels follow it' }));
+    env.push(this.tileIn(drop, 'wind', { cls: 'env-sub', icon: '≋', value: `${air}%`, label: 'Wind', pct: air, colour: '#6fd3ff', title: sky === Sky.Dry ? 'Wind: turbines follow it' : 'Wind as the weather leaves it: turbines follow it' }));
     this.keepOnly(drop, env);
   }
 
@@ -692,9 +737,11 @@ export class Ui {
     const ids = alive(hovered) ? [hovered] : [...selection].filter(alive);
     let text = '';
     const resource = world.store(Resource);
-    const nodes = alive(hovered) ? 0 : [...selection].filter((e) => world.isAlive(e) && resource.has(e)).length;
+    const picked = alive(hovered) ? [] : [...selection].filter((e) => world.isAlive(e) && resource.has(e));
+    const nodes = picked.length;
     if (ids.length === 0 && nodes > 0) {
-      text = nodes === 1 ? 'Matter deposit' : `${nodes} × Matter deposit`;
+      const name = picked.every((e) => world.store(Debris).has(e)) ? 'Debris' : 'Matter deposit';
+      text = nodes === 1 ? name : `${nodes} × ${name}`;
     } else if (ids.length === 1) {
       const name = blueprints.get(unit.f.blueprint[ids[0]])?.name;
       if (name) text = this.state.isMine(ids[0]) ? name : `${name} (${unit.f.owner[ids[0]] === 0 ? 'neutral' : 'enemy'})`;
@@ -776,7 +823,7 @@ export class Ui {
     const has = (...s: string[]) => s.some((x) => slots.has(x as never));
     if (has('factory')) return 'Production';
     if (has('builder', 'repair')) return 'Construction';
-    if (has('weapon', 'radar')) return 'Defence';
+    if (has('weapon', 'radar', 'shield')) return 'Defence';
     if (has('generator')) return 'Power';
     if (has('depot', 'charger')) return 'Logistics';
     if (has('battery', 'antenna')) return 'Power';
@@ -1132,16 +1179,18 @@ export class Ui {
     if (nodes.length) {
       const res = this.state.world.store(Resource);
       const patches = this.state.world.store(ResourcePatch);
+      const debris = this.state.world.store(Debris);
+      const wreck = nodes.every((e) => debris.has(e));
       let left = 0;
       let full = 0;
       for (const e of nodes) {
         const amount = res.f.amount[e];
         left += amount;
-        full += Math.max(amount, patches.has(e) ? patches.f.maximum[e] : RESOURCE_PATCH_AMOUNT);
+        full += Math.max(amount, patches.has(e) ? patches.f.maximum[e] : debris.has(e) ? debris.f.maximum[e] : RESOURCE_PATCH_AMOUNT);
       }
       const pct = full > 0 ? Math.round((left / full) * 100) : 0;
       rows.push(
-        `<div class="res-row node" title="Matter left in ${nodes.length > 1 ? `these ${nodes.length} deposits` : 'this deposit'}. Harvesters take it; it slowly grows back.">` +
+        `<div class="res-row node" title="Matter left in ${nodes.length > 1 ? `these ${nodes.length} ${wreck ? 'piles of debris' : 'deposits'}` : wreck ? 'this debris' : 'this deposit'}. Harvesters take it; ${wreck ? 'when it is used up the debris is gone for good.' : 'it slowly grows back.'}">` +
           `<span class="label">Matter</span><span class="node-bar"><i style="width:${pct}%"></i></span><span class="value">${left}<small>/${full}</small></span></div>`,
       );
     }
@@ -1199,6 +1248,7 @@ export class Ui {
       box.onchange = () => this.actions.setModule(e, i, box.checked);
       label.append(box, ` ${i}: ${def.name}${isBroken ? ' (broken: needs repair)' : ''}`);
       if (isBroken) label.title = 'Broken by damage: it does nothing until a repair module mends it';
+      else if (def.slot === 'shield') label.title = `Uses ${def.use} energy every tick while on (more for a wider or longer arc); switching it off drops the shield`;
       else if (def.use) label.title = `Uses ${def.use} energy per ${def.slot === 'sensor' ? 'scan' : def.slot === 'weapon' ? 'shot' : 'tick in use'}`;
       this.modulesPanel.appendChild(label);
     });

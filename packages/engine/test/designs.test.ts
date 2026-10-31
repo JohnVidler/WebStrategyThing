@@ -9,6 +9,7 @@ import {
   DESIGNS_BUILD,
   designHash,
   makeDesignFile,
+  MAX_CLASSES_PER_PLAYER,
   NEW_CLASS_PROGRAM,
   parseDesignFile,
   resolveDesigns,
@@ -91,7 +92,7 @@ describe('loading designs into a match', () => {
       d.name === 'Scout' ? { ...d, program: REST9 } : d.name === 'Hawk' ? { ...d, parts: d.parts.map((p) => (p === 'gun.light' ? 'armor.plate' : p)) } : d,
     );
     entries.push({ name: 'New custom', parts: ['chassis.light', 'cpu.basic'], program: REST4 });
-    const report = sim.loadDesigns(1, entries, 40);
+    const report = sim.loadDesigns(1, entries, MAX_CLASSES_PER_PLAYER);
     expect(report.errors).toEqual([]);
     expect(original.program?.source).toBe(REST9); // same parts: updated in place
     expect(report.updated).toBe(1);
@@ -102,7 +103,7 @@ describe('loading designs into a match', () => {
     expect(report.defined).toBe(2);
 
     // Reset: back to the defaults (the replacement Hawk steps aside for the default one).
-    const reset = sim.loadDesigns(1, defaultDesigns(), 40);
+    const reset = sim.loadDesigns(1, defaultDesigns(), MAX_CLASSES_PER_PLAYER);
     expect(reset.errors).toEqual([]);
     expect(original.program?.source).toBe(SCOUT_CLASS.program);
     const active = sim.blueprints.ownedBy(1).filter((b) => !b.retired);
@@ -116,7 +117,7 @@ describe('loading designs into a match', () => {
     const report = sim.loadDesigns(
       1,
       [...defaultDesigns(), { name: 'Bad', parts: ['nope'], program: '' }, { name: 'Bad code', parts: ['chassis.light', 'cpu.basic'], program: 'x(' }],
-      40,
+      MAX_CLASSES_PER_PLAYER,
     );
     expect(report.errors.length).toBe(2);
     expect(sim.blueprints.find(1, 'Bad code')).toBeDefined(); // defined; only its program was rejected

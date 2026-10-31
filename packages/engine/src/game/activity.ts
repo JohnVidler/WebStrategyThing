@@ -1,6 +1,8 @@
 import { enqueueContinuation, type FlowState } from '../flow/run';
 import { Caps } from './blueprint';
 import { BUILDING_BUILD_RANGE, TILE } from './rules';
+import { reachDistance } from './shield';
+import { rangeBonus } from './shell';
 import type { Simulation } from './simulation';
 
 /*
@@ -68,6 +70,8 @@ export interface ActivityState {
   readonly forOrder: boolean;
   /** Ticks since it started (for supply pacing). */
   age: number;
+  /** While put aside: the route the unit was following (sub-tile waypoints, ending at its destination), kept so resuming need not re-plan it. */
+  route?: number[];
 }
 
 /** Outcome indexes that every activity shares. */
@@ -110,6 +114,8 @@ export function cancelActivity(sim: Simulation, e: number, halt = false, forget 
 export function suspendActivity(sim: Simulation, e: number): boolean {
   const a = sim.activities[e];
   if (!a) return false;
+  const route = sim.motion.has(e) && sim.motion.f.moving[e] ? sim.paths[e] : undefined;
+  a.route = route && route.length > 0 ? route : undefined;
   (sim.suspended[e] ??= []).push(a);
   cancelActivity(sim, e, true);
   return true;
@@ -120,9 +126,35 @@ export function resumeActivity(sim: Simulation, e: number): boolean {
   const a = sim.suspended[e]?.pop();
   if (!a) return false;
   cancelActivity(sim, e);
+  const route = a.route;
+  a.route = undefined;
+  if (route) restoreRoute(sim, e, route);
   sim.activities[e] = a;
   sim.activeUnits.add(e);
   return true;
+}
+
+/**
+ * Sets a unit back on a route it was following before an activity was put aside (a fighter that stopped to engage on
+ * an attack-move), if it can still walk straight to the route's next waypoint. Saves re-planning the whole route,
+ * which a squad in a running fight would otherwise do every time it finishes off a target.
+ */
+function restoreRoute(sim: Simulation, e: number, route: number[]): void {
+  if (!sim.motion.has(e)) return;
+  const s = sim.stats(e);
+  if (s.speed <= 0) return;
+  const x = sim.pos.f.x[e];
+  const y = sim.pos.f.y[e];
+  if (!s.flying && !sim.terrain.lineWalkable(x, y, route[0], route[1], s)) return; // drifted off it: the activity re-plans
+  const m = sim.motion.f;
+  m.tx[e] = route[route.length - 2];
+  m.ty[e] = route[route.length - 1];
+  m.moving[e] = 1;
+  m.arrived[e] = 0;
+  sim.stuckTicks[e] = 0;
+  sim.lastDistance[e] = Infinity;
+  sim.avoidTicks[e] = 0;
+  sim.paths[e] = route;
 }
 
 /**
@@ -183,6 +215,10 @@ function approach(sim: Simulation, e: number, t: number, tiles: number): Approac
     // End of the path but still out of range: unreachable. Stopped by a crowd: try again.
     if (m.arrived[e] === 1) return 'blocked';
     m.arrived[e] = 0;
+  } else if (m.moving[e] && Math.abs(m.tx[e] - tx) <= TILE && Math.abs(m.ty[e] - ty) <= TILE) {
+    // A target that has moved less than a tile from where the unit is heading keeps the route it has:
+    // re-planning a path every tick after a moving unit is the costliest thing a chase can do.
+    return 'moving';
   }
   return sim.setDestination(e, tx, ty) < 0 ? 'blocked' : 'moving';
 }
@@ -289,7 +325,8 @@ function step(sim: Simulation, e: number, a: ActivityState): number {
       const seen = sim.locate(e, a.target);
       if (seen < 0) return 1;
       sim.weapon.f.target[e] = a.target;
-      if (sim.edgeDistance(e, t) > w.range) {
+      // Stop as soon as the target (or the enemy shield in front of it) is in reach: no need to get any closer to fire.
+      if (reachDistance(sim, e, t) > w.range + rangeBonus(sim, e, t, w.kind)) {
         const r = approach(sim, e, t, ENGAGE_CLOSE);
         if (r === 'blocked') return blocked;
       } else if (sim.motion.has(e) && sim.motion.f.moving[e]) {

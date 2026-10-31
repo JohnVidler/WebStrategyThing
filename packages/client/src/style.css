@@ -201,6 +201,9 @@ html[data-reduce-motion] .connecting-tile .env-bar i { transition: none; }
 #waiting ul { margin: 0 0 12px; padding: 0; list-style: none; text-align: left; }
 #waiting li { padding: 3px 0; display: flex; align-items: center; gap: 6px; }
 #waiting li .tag { margin-left: auto; color: var(--muted); font-size: 12px; }
+#waiting .bot-name { flex: 1; min-width: 0; }
+#waiting .bot-level { flex: none; }
+#waiting .bot-remove { flex: none; padding: 2px 8px; }
 #waiting .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex: none; }
 #waiting .row, #defeat .row { display: flex; justify-content: center; gap: 8px; margin-top: 10px; }
 #spectating {
@@ -261,6 +264,10 @@ html[data-reduce-motion] .menu-bg-scroll { animation: none; }
 #lobby-create { width: min(900px, 100%); display: flex; flex-direction: column; gap: 8px; }
 .mode-picker { display: flex; flex-direction: column; gap: 4px; border: 1px solid var(--line); border-radius: 4px; }
 .mode-picker small { color: var(--muted); }
+.bot-options { padding: 4px 8px 8px; }
+.bot-options .bot-row { display: flex; align-items: center; gap: 6px; }
+.bot-options .bot-name { flex: 1; min-width: 0; }
+.bot-options #bot-add { align-self: flex-start; }
 .lobby-view { width: min(1100px, 100%); display: flex; flex-direction: column; align-items: center; gap: 8px; }
 .menu-buttons { width: min(420px, 100%); display: flex; flex-direction: column; gap: 8px; }
 .menu-buttons button { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 10px 14px; text-align: left; font-size: 1.15em; }
@@ -1007,6 +1014,16 @@ html[data-reduce-motion] .menu-columns > .menu-news { transition: none; }
 .menu-main .menu-panel { box-sizing: border-box; }
 /* The big play buttons on the main menu centre their title and caption. */
 .menu-main .menu-buttons button { align-items: center; text-align: center; }
+/* "Playing now" indicator: floats over the backdrop to the right of the Multiplayer button (no panel); hidden on narrow windows. */
+.menu-anchor { position: relative; display: flex; flex-direction: column; }
+.menu-online { position: absolute; left: calc(100% + 44px); top: 50%; transform: translateY(-50%); display: flex; align-items: center; gap: 10px; white-space: nowrap; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--line); background: rgba(10, 14, 22, 0.55); backdrop-filter: blur(4px); pointer-events: none; }
+.menu-online[hidden] { display: none; }
+.menu-online b { display: block; font-size: 0.95em; }
+.menu-online small { display: block; color: var(--muted); font-size: 0.7em; }
+.menu-online-dot { width: 10px; height: 10px; border-radius: 50%; background: #4cd964; box-shadow: 0 0 8px #4cd964; animation: online-pulse 2.4s ease-in-out infinite; }
+html[data-reduce-motion] .menu-online-dot { animation: none; }
+@keyframes online-pulse { 50% { opacity: 0.45; } }
+@media (max-width: 1000px) { .menu-online { display: none; } }
 .menu-links { flex-direction: row; }
 .menu-links button { flex: 1; align-items: center; text-align: center; padding: 6px 10px; font-size: 1em; }
 .menu-news { box-sizing: border-box; max-height: 70vh; display: flex; flex-direction: column; gap: 10px; }
@@ -1018,6 +1035,8 @@ html[data-reduce-motion] .menu-columns > .menu-news { transition: none; }
 .menu-news ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 3px; font-size: 0.75em; color: var(--muted); }
 /* Touch-only devices get a modal on the main menu (showTouchWarning); same blur as the menu panels. */
 .touch-warning { backdrop-filter: blur(3px); }
+/* The flashing-lights warning (flashingWarning.ts) sits over everything, including the connecting cover and the other warnings. */
+.flashing-warning { backdrop-filter: blur(3px); z-index: 200; }
 /* The main menu sits in the vertical middle of the window; other screens start near the top. */
 #lobby:has(.menu-columns) { justify-content: center; gap: 16px; padding-block: 3vh; }
 .campaign-panel { width: 100%; box-sizing: border-box; }
@@ -1039,6 +1058,14 @@ html[data-reduce-motion] .menu-columns > .menu-news { transition: none; }
 #dev-button { position: absolute; right: 0; top: 50%; z-index: 40; transform: translateY(-50%); writing-mode: vertical-rl; padding: 10px 6px; border-radius: 6px 0 0 6px; border: 1px dashed var(--bad); background: var(--panel); color: var(--bad); font-size: 12px; letter-spacing: 0.05em; }
 #dev-panel { position: absolute; right: 36px; top: 8px; bottom: 8px; z-index: 41; width: min(400px, calc(100% - 52px)); overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 12px; background: rgb(22 27 34 / 0.96); border: 1px dashed var(--bad); border-radius: 8px; box-shadow: 0 12px 40px rgb(0 0 0 / 0.5); font-size: 12px; }
 #dev-panel[hidden] { display: none; }
+#dev-panel.dev-tabbed { width: min(560px, calc(100% - 52px)); overflow: hidden; }
+#dev-panel .dev-body { display: flex; flex: 1 1 auto; min-height: 0; gap: 8px; }
+#dev-panel .dev-tabs { display: flex; flex-direction: column; gap: 4px; flex: 0 0 auto; padding-right: 8px; border-right: 1px solid var(--line); }
+#dev-panel .dev-tab { text-align: left; border-color: transparent; background: transparent; color: var(--muted); }
+#dev-panel .dev-tab[aria-selected='true'] { border-color: var(--bad); background: rgb(255 255 255 / 0.06); color: var(--text); }
+#dev-panel .dev-pages { flex: 1 1 auto; min-width: 0; overflow-y: auto; }
+#dev-panel .dev-page { display: flex; flex-direction: column; gap: 8px; }
+#dev-panel .dev-page[hidden] { display: none; }
 #dev-panel .dev-head { display: flex; justify-content: space-between; align-items: center; }
 #dev-panel h2 { margin: 0; font-size: 15px; text-transform: none; letter-spacing: 0; color: var(--bad); }
 #dev-panel .dev-note { min-height: 1.4em; }
@@ -1057,7 +1084,17 @@ html[data-reduce-motion] .menu-columns > .menu-news { transition: none; }
 #dev-panel .dev-alert-warn { border-color: #f0b34a; }
 #dev-panel .dev-alert-error { border-color: var(--bad); }
 #dev-panel input[type='range'] { flex: 1 1 8em; min-width: 6em; }
+#dev-panel .dev-scale { position: relative; display: flex; flex: 1 1 8em; min-width: 6em; }
+#dev-panel .dev-scale input[type='range'] { width: 100%; margin: 0; }
+#dev-panel .dev-now { --p: 0; position: absolute; top: 0; bottom: 0; left: calc(8px + var(--p) * (100% - 16px)); width: 3px; margin-left: -1.5px; border-radius: 1px; background: var(--accent); box-shadow: 0 0 0 1px rgb(0 0 0 / 0.6); pointer-events: none; }
 #dev-panel .dev-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+#dev-panel .dev-targetbar { align-items: center; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; }
+#dev-panel .dev-target-out { flex: 1 1 auto; color: var(--text); font-variant-numeric: tabular-nums; }
+#dev-panel.dev-picking { visibility: hidden; pointer-events: none; }
+.dev-target { position: absolute; left: 0; top: 0; z-index: 39; width: 0; height: 0; pointer-events: none; }
+.dev-target[hidden] { display: none; }
+.dev-target::before { content: ''; position: absolute; left: -10px; top: -10px; width: 20px; height: 20px; box-sizing: border-box; border: 2px solid var(--bad); border-radius: 50%; box-shadow: 0 0 0 1px rgb(0 0 0 / 0.6); }
+.dev-target::after { content: ''; position: absolute; left: -1px; top: -1px; width: 2px; height: 2px; background: var(--bad); }
 /* Dev Rooms (the Multiplayer screen's sidebar) sits over the page, not inside the map. */
 #dev-button.dev-lobby, #dev-panel.dev-lobby { position: fixed; }
 #dev-panel .dev-room-list { display: flex; flex-direction: column; gap: 4px; }

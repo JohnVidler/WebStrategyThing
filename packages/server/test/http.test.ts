@@ -108,4 +108,14 @@ describe('a real server', () => {
     expect(((await (await get('/api/v1/menu')).json()) as { players: number }).players).toBeGreaterThanOrEqual(1);
     ws.close();
   });
+
+  it('reports who is online and who is playing', async () => {
+    const ws = new WebSocket(`ws://127.0.0.1:${server.port}/api/v1/ws?menu=1`);
+    await new Promise((resolve) => ws.on('open', resolve));
+    const stats = (await (await get('/api/v1/menu')).json()) as { players: number; playing: number; online: number };
+    expect(stats.online).toBeGreaterThanOrEqual(stats.players);
+    expect(stats.playing).toBeGreaterThanOrEqual(0);
+    expect(stats.playing).toBeLessThanOrEqual(stats.online);
+    ws.close();
+  });
 });

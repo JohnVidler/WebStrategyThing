@@ -2,6 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { aims, drawWall, gaitLength, hullOutline, isWall, legCount, lookOf, turretAnchor, turretAnchors, windAnchor } from '../src/art';
 
 describe('class art', () => {
+  it('reads steam turbines as a power building', () => {
+    const plant = lookOf(['frame.small', 'steam.turbine']);
+    expect(plant).toMatchObject({ structure: true, role: 'power', steam: 1, solar: 0, wind: 0 });
+  });
+
   it('reads a design as roles and features', () => {
     const tank = lookOf(['chassis.medium', 'cpu.basic', 'motor.large', 'gun.cannon', 'armor.plate', 'armor.plate']);
     expect(tank).toMatchObject({ structure: false, size: 2, radius: 0.38, role: 'combat', weapon: 'cannon', motor: 'large', armour: 2 });

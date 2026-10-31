@@ -14,4 +14,17 @@ export const SimEvent = {
   Break: 7,
   /** A harvester at work: harvester, resource (sent every other tick while it mines). */
   Harvest: 8,
+  /** A cannon shell struck an enemy: the shell's entity index (twice). It stays one tick at the spot. */
+  ShellHit: 9,
+  /** A shell glanced off rock or a unit and flew on (sparks), or landed at the end of its range (a small thud): the shell's index (twice). */
+  ShellBounce: 10,
+  ShellLand: 11,
+  /** A shield stopped a hit: the shield's owner, and the direction of the hit (256ths of a turn from east) plus 256 times the damage stopped (capped at 255). */
+  ShieldHit: 12,
+  /** A shield ran its owner's battery flat and blew up: the owner (twice). */
+  ShieldBurst: 13,
+  /** Lightning struck a unit or building: its entity index (twice). Strikes on open ground need no event: the client works out where they land. */
+  Lightning: 14,
+  /** A fireball landed and set a fire: the flame entity's index (twice). */
+  FlameLand: 15,
 } as const;

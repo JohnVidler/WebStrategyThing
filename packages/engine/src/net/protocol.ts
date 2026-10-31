@@ -27,6 +27,12 @@ export type ClientMessage =
   | { t: 'resign' }
   /** The lobby host starts the match (needs enough players). */
   | { t: 'startGame' }
+  /** The lobby host adds a computer player to a Free for all or standard Co-op (`level` indexes `BOT_SKILLS`; the server trims the name). */
+  | { t: 'addBot'; name: string; level: number }
+  /** The lobby host renames a computer player or changes its level. */
+  | { t: 'editBot'; id: number; name: string; level: number }
+  /** The lobby host removes a computer player. */
+  | { t: 'removeBot'; id: number }
   /** A defeated player (or anyone once the match is over) switches to the spectator view: fog of war lifted, no orders. */
   | { t: 'spectate' }
   | { t: 'defineBlueprint'; name: string; parts: string[] }
@@ -68,7 +74,7 @@ export type ServerMessage =
       height: number;
       /** Needed to reproduce wind locally. */
       seed: number;
-      /** Terrain.encode(): one digit per cell, its height ('0' open ground, '1'-'9' rock), row-major. */
+      /** Terrain.encode(): one character per cell, row-major: '0' open ground, '1'-'9' rock height, 'a'-'i' liquid depth 1-9. */
       terrain: string;
       /** Fog of war: the client only receives what its units and buildings can see (never for spectators). */
       fog: boolean;
@@ -78,7 +84,7 @@ export type ServerMessage =
       spectating: boolean;
     }
   /** The lobby's occupants; sent whenever it changes while the match has not started. */
-  | { t: 'lobby'; players: LobbyPlayer[]; hostId: number; mode: GameMode; mapName: string; capacity: number; minPlayers: number }
+  | { t: 'lobby'; players: LobbyPlayer[]; bots: LobbyBot[]; botsAllowed: boolean; canAddBot: boolean; minBots: number; hostId: number; mode: GameMode; mapName: string; capacity: number; minPlayers: number }
   /** The host started the match: bases are being created. */
   | { t: 'started' }
   /** The player has no forces left but the match goes on: offer to spectate or leave. */
@@ -120,10 +126,16 @@ export type ServerMessage =
   | { t: 'error'; message: string }
   /** A pop-up alert raised by one of the player's own programs (`notify()`); `kind` indexes `NOTICE_KINDS`. Only sent to the owner. */
   | { t: 'notice'; kind: number; text: string }
+  /**
+   * Terrain changed (only a developer command does this today): flat [cell index (row-major), signed elevation, ...] pairs,
+   * where elevation is above 0 for rock of that height, 0 for dry ground and below 0 for liquid of that depth.
+   * At most `MAX_TERRAIN_PATCH_CELLS` cells; sent to everyone, only when cells change.
+   */
+  | { t: 'terrainPatch'; cells: number[] }
   /** The outcome of a developer command: shown in the Dev Options menu. */
   | { t: 'devNote'; text: string; ok: boolean }
-  /** Dev tools: sunlight and wind are fixed at these levels (-1: natural). Sent to everyone when they change, and on joining. */
-  | { t: 'weather'; sun: number; wind: number };
+  /** Dev tools: sunlight and wind are fixed at these levels the sky forced to a `Sky` (-1: natural), all weather scaled to `intensity` 0..100, and changes taking `change` seconds (-1: natural). Sent to everyone when they change, and on joining. */
+  | { t: 'weather'; sun: number; wind: number; sky: number; intensity: number; change: number };
 
 /**
  * Why a match ended: every other side was destroyed, every other player left,
@@ -135,6 +147,14 @@ export type MatchEndReason = 'eliminated' | 'last-player' | 'no-power';
 export interface LobbyPlayer {
   readonly id: number;
   readonly name: string;
+}
+
+/** A computer player waiting in the lobby. */
+export interface LobbyBot {
+  readonly id: number;
+  readonly name: string;
+  /** Index into `BOT_SKILLS`. */
+  readonly level: number;
 }
 
 /** One player's line on the scoreboard. */
@@ -173,6 +193,9 @@ export interface NetworkInfo {
   readonly flow: readonly number[];
 }
 
+/** The most cells one `terrainPatch` message carries (a client ignores a longer one). */
+export const MAX_TERRAIN_PATCH_CELLS = 4096;
+
 export const LIMITS = {
   nameLength: 24,
   partsPerClass: 32,
@@ -190,7 +213,7 @@ export type ClientPhase = 'lobby' | 'playing' | 'spectating';
 
 const ALWAYS: readonly ClientMessage['t'][] = ['setName', 'resign', 'leave'];
 // loadDesigns is let through so the server can answer that designs can't change yet.
-const BEFORE_START = new Set<ClientMessage['t']>([...ALWAYS, 'startGame', 'loadDesigns']);
+const BEFORE_START = new Set<ClientMessage['t']>([...ALWAYS, 'startGame', 'addBot', 'editBot', 'removeBot', 'loadDesigns']);
 const WATCHING = new Set<ClientMessage['t']>([...ALWAYS, 'loadDesigns', 'dev']);
 
 /** Whether a client in `phase` may send a message of type `t`: nothing is ordered before the start or while spectating. */
@@ -211,6 +234,15 @@ export function parseClientMessage(raw: unknown): ClientMessage | null {
     case 'startGame':
     case 'spectate':
       return { t: m.t };
+    case 'addBot':
+      if (typeof m.name !== 'string' || !isInt(m.level)) return null;
+      return { t: m.t, name: m.name.slice(0, 64), level: m.level };
+    case 'editBot':
+      if (!isInt(m.id) || typeof m.name !== 'string' || !isInt(m.level)) return null;
+      return { t: m.t, id: m.id, name: m.name.slice(0, 64), level: m.level };
+    case 'removeBot':
+      if (!isInt(m.id)) return null;
+      return { t: m.t, id: m.id };
     case 'defineBlueprint':
       if (typeof m.name !== 'string' || m.name.length < 1 || m.name.length > LIMITS.nameLength) return null;
       if (!Array.isArray(m.parts) || m.parts.length > LIMITS.partsPerClass) return null;

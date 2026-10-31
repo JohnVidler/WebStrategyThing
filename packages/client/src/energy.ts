@@ -1,4 +1,4 @@
-import { GENERATION_SCALE, SOLAR_GENERATION_MULTIPLIER, WIND_GENERATION_MULTIPLIER } from '@wst/engine';
+import { GENERATION_SCALE, SOLAR_GENERATION_MULTIPLIER, STEAM_GENERATION_MULTIPLIER, WIND_GENERATION_MULTIPLIER } from '@wst/engine';
 
 /**
  * Energy per tick a building makes at the given daylight and wind (both 0..100), before transmission
@@ -7,6 +7,11 @@ import { GENERATION_SCALE, SOLAR_GENERATION_MULTIPLIER, WIND_GENERATION_MULTIPLI
  */
 export function generationPerTick(solar: number, wind: number, daylight: number, windLevel: number): number {
   return (solar * daylight * SOLAR_GENERATION_MULTIPLIER + wind * windLevel * WIND_GENERATION_MULTIPLIER) / (100 * GENERATION_SCALE);
+}
+
+/** Energy per tick from steam turbines: `steam` is the building's peak (`BlueprintStats.steam`), and only as many turbines run as there are vents under it. */
+export function steamPerTick(steam: number, turbines: number, vents: number): number {
+  return turbines > 0 ? (steam * Math.min(vents, turbines) * STEAM_GENERATION_MULTIPLIER) / (turbines * GENERATION_SCALE) : 0;
 }
 
 /** A class with more than this many buildings is listed as one "Name (xN)" row instead of one row each. */

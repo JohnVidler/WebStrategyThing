@@ -3,6 +3,7 @@ import { prog } from './helpers';
 import {
   BUILDER_ENERGY_RESERVE,
   DECAY_TICKS,
+  RESOURCE_REGEN_INTERVAL_TICKS,
   Simulation,
   SOLAR_GENERATION_MULTIPLIER,
   SOLAR_PANEL_OUTPUT,
@@ -68,11 +69,14 @@ describe('cannon', () => {
     const t = sim.spawnUnit(target, at(13), at(10));
     sim.weapon.f.target[e] = sim.world.handle(t);
     const hp = sim.health.f.hp[t];
+    expect(sim.cargo.f.amount[e]).toBe(30); // leaves the factory with ten shots loaded
+    sim.cargo.f.amount[e] = 0;
     run(sim, 30);
     expect(sim.health.f.hp[t]).toBe(hp);
     sim.cargo.f.amount[e] = 9;
     run(sim, 1);
     expect(sim.cargo.f.amount[e]).toBe(6);
+    run(sim, 10); // the shell takes a few ticks to arrive
     expect(sim.health.f.hp[t]).toBeLessThan(hp);
   });
 });
@@ -122,6 +126,15 @@ describe('decay', () => {
     expect(sim.world.isAlive(e)).toBe(false);
     const blocks = sim.world.query(sim.resource.def);
     expect([...blocks].some((r) => sim.resource.f.amount[r] === bp.stats.cost)).toBe(true);
+    // It is debris, not a matter field: marked as such, sized by the hull, never regrown, and gone once used up.
+    const debris = [...blocks].find((r) => sim.resource.f.amount[r] === bp.stats.cost)!;
+    expect(sim.debris.has(debris)).toBe(true);
+    expect(sim.resourcePatch.has(debris)).toBe(false);
+    expect(sim.debris.f.maximum[debris]).toBe(bp.stats.cost);
+    expect(sim.debris.f.look[debris]).toBe(1); // a light chassis
+    sim.resource.f.amount[debris] = 1;
+    run(sim, RESOURCE_REGEN_INTERVAL_TICKS * 2);
+    expect(sim.resource.f.amount[debris]).toBe(1);
     expect(sim.tally(1).lostUnits).toBe(1);
   });
 
@@ -217,7 +230,7 @@ describe('storage with an empty store', () => {
   for (const mode of [2, 3]) {
     it(`recharges from surplus even if its mode is ${mode === 2 ? 'DISCHARGE' : 'HOLD'}`, () => {
       const sim = newSim();
-      sim.tick = 300; // midday
+      sim.tick = 420; // midday
       const solar = sim.blueprints.define(1, 'Solar', ['frame.medium', ...Array(8).fill('solar.panel')]);
       const storeBp = sim.blueprints.define(1, 'Store', ['frame.medium', 'cpu.basic', 'battery.bank', 'battery.bank']);
       sim.setProgram(storeBp.id, prog('on(Idle, { interval: 4 }, () => {\n  if (netSupply() >= netDemand()) {\n    config.storageMode(CHARGE_STORE);\n  }\n});'));
@@ -250,7 +263,7 @@ describe('design upload', () => {
 describe('transmission losses', () => {
   const supplyWith = (sinkX: number | undefined): number => {
     const sim = newSim();
-    sim.tick = 300; // midday
+    sim.tick = 420; // midday
     const solar = sim.blueprints.define(1, 'Solar', ['frame.medium', ...Array(8).fill('solar.panel')]);
     const sink = sim.blueprints.define(1, 'Sink', ['frame.small', 'battery.cell']);
     const gen = sim.spawnStructure(solar, 2, 2);
@@ -285,7 +298,7 @@ describe('repair', () => {
 
   const setup = () => {
     const sim = newSim();
-    sim.tick = 300; // midday, so solar keeps the building powered
+    sim.tick = 420; // midday, so solar keeps the building powered
     const tower = sim.blueprints.define(1, 'Tower', ['frame.small', 'cpu.basic', 'repair.beam', 'battery.bank', 'silo']);
     const drone = sim.blueprints.define(1, 'Drone', ['chassis.medium', 'cpu.basic', 'motor.small', 'cargo.bay', 'repair.beam', 'battery.cell']);
     const wall = sim.blueprints.define(1, 'Wall', ['frame.small', 'armor.plate']);

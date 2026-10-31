@@ -61,6 +61,28 @@ const roundTrips = (p: Program) => {
 };
 const ids = (p: Program) => p.doc.handlers[0].body.map((s) => s.id);
 
+describe('list chains in the graph', () => {
+  const CHAIN = [
+    'on(Free, () => {',
+    '  const home = findDepots().minBy(d => dist(d) + 12 * crowdOver(d, 6, 4));',
+    '  swapOrder(HARVEST, 0, 0, findResourcesNear(home, 10).take(4).minBy(r => distBetween(home, r)));',
+    '});',
+    '',
+  ].join('\n');
+
+  it('shows a chain as one query node with its steps as text and a cost for a full list', () => {
+    const p = program(CHAIN);
+    const g = buildGraph(p, FLOW_HOST);
+    const node = g.nodes.find((n) => n.title === 'findResourcesNear')!;
+    expect(node.subtitle).toContain('.take(4).minBy(r => distBetween(home, r))');
+    expect(node.kind).toBe('query');
+    // The source's own arguments are wired like any call's.
+    expect(node.inputs.map((i) => i.label)).toEqual(['h', 'min']);
+    expect(g.nodes.some((n) => n.title === '?')).toBe(false);
+    roundTrips(p);
+  });
+});
+
 describe('graph model', () => {
   it('draws handlers as event blocks, statements as nodes, execution as chains and values as wires', () => {
     const p = program(SAMPLE);
@@ -364,7 +386,8 @@ describe('built-in blocks in the graph', () => {
     expect(textOf(p)).toContain('on(Delivered, () => {');
     const expanded = expandBlock(p, added.id, FLOW_HOST);
     expect(expanded.doc.blocks).toBeUndefined();
-    expect(textOf(expanded)).toContain('swapOrder(HARVEST, 0, 0, randomResource(4, 25));');
+    expect(textOf(expanded)).toContain('swapOrder(HARVEST, 0, 0, harvestLoop_pick);');
+    expect(textOf(expanded)).toContain('findResourcesNear(harvestLoop_home, 25).take(4).minBy(');
     roundTrips(expanded);
     expect(deleteNode(p, added.id).doc.blocks).toBeUndefined();
   });

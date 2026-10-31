@@ -31,12 +31,18 @@ export type DevCommand =
   | { kind: 'clear'; owner: number }
   /** Full health, repaired modules and full energy for an owner's forces (-1 = everyone's). */
   | { kind: 'heal'; owner: number }
+  /** Hurt the listed units or buildings (entity ids, as selected on the map) by `amount` hit points each; enough kills them. */
+  | { kind: 'damage'; ids: number[]; amount: number }
   /** Finish every construction site of an owner (-1 = everyone's) without paying for it. */
   | { kind: 'finish'; owner: number }
+  /** Set fires: `ground` starts `count` fires scattered round tile (x, y); `burst` throws `count` fireballs all round it, like a dying flamethrower unit. */
+  | { kind: 'fire'; x: number; y: number; mode: 'ground' | 'burst'; count: number }
+  /** Paint terrain: every cell within `r` tiles of (x, y) without a building gets this signed elevation (above 0 rock of that height, 0 dry ground, below 0 liquid of that depth: -1..-2 shallow water, -3..-5 deep, -6..-8 lava, -9 void). */
+  | { kind: 'terrain'; x: number; y: number; r: number; elevation: number }
   /** Stop or resume the simulation; the "disconnect" kind shows the waiting-for-a-player notice instead. */
   | { kind: 'pause'; mode: 'off' | 'dev' | 'disconnect' }
-  /** Fix sunlight and wind at a level 0..100 for everyone, or -1 for the natural cycle. */
-  | { kind: 'weather'; sun: number; wind: number }
+  /** Fix sunlight and wind at a level 0..100 for everyone, or -1 for the natural cycle; `sky` forces a `Sky` (0 dry, 1 rain, 2 storm, 3 heatwave, 4 dust, 5 mist), or -1 for natural; `intensity` 0..100 scales how strong all weather is (-1: full); `change` is how many seconds a change of weather takes, 0..120 (-1: the natural 15 to 45 s). */
+  | { kind: 'weather'; sun: number; wind: number; sky: number; intensity: number; change: number }
   /** End the match now with the given outcome, for the sender's side. */
   | { kind: 'end'; outcome: DevOutcome }
   /** The sender is out: shows the defeat choice (spectate or leave) without ending the match. */
@@ -44,7 +50,7 @@ export type DevCommand =
   /** Let the normal victory check end the match again after a dev "end". */
   | { kind: 'reopen' };
 
-export const DEV_LIMITS = { spawnCount: 50, removeRadius: 200, amount: 1_000_000, coordinate: 4096 } as const;
+export const DEV_LIMITS = { spawnCount: 50, removeRadius: 200, amount: 1_000_000, coordinate: 4096, damageIds: 500, paintRadius: 20 } as const;
 
 const isInt = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v);
 const inRange = (v: unknown, lo: number, hi: number): v is number => isInt(v) && v >= lo && v <= hi;
@@ -75,13 +81,22 @@ export function parseDevCommand(raw: unknown): DevCommand | null {
     }
     case 'clear':
       return inRange(m.owner, 0, 1_000_000) ? { kind: 'clear', owner: m.owner } : null;
+    case 'fire':
+      if (!isTile(m.x) || !isTile(m.y) || (m.mode !== 'ground' && m.mode !== 'burst') || !inRange(m.count, 1, 40)) return null;
+      return { kind: 'fire', x: m.x, y: m.y, mode: m.mode, count: m.count };
+    case 'terrain':
+      if (!isTile(m.x) || !isTile(m.y) || !inRange(m.r, 0, DEV_LIMITS.paintRadius) || !inRange(m.elevation, -9, 9)) return null;
+      return { kind: 'terrain', x: m.x, y: m.y, r: m.r, elevation: m.elevation };
+    case 'damage':
+      if (!Array.isArray(m.ids) || m.ids.length > DEV_LIMITS.damageIds || !m.ids.every((id) => inRange(id, 0, 1_000_000)) || !inRange(m.amount, 1, DEV_LIMITS.amount)) return null;
+      return { kind: 'damage', ids: m.ids as number[], amount: m.amount };
     case 'heal':
     case 'finish':
       return inRange(m.owner, -1, 1_000_000) ? { kind: m.kind, owner: m.owner } : null;
     case 'pause':
       return m.mode === 'off' || m.mode === 'dev' || m.mode === 'disconnect' ? { kind: 'pause', mode: m.mode } : null;
     case 'weather':
-      return inRange(m.sun, -1, 100) && inRange(m.wind, -1, 100) ? { kind: 'weather', sun: m.sun, wind: m.wind } : null;
+      return inRange(m.sun, -1, 100) && inRange(m.wind, -1, 100) && inRange(m.sky, -1, 5) && inRange(m.intensity, -1, 100) && inRange(m.change, -1, 120) ? { kind: 'weather', sun: m.sun, wind: m.wind, sky: m.sky, intensity: m.intensity, change: m.change } : null;
     case 'end':
       return typeof m.outcome === 'string' && (DEV_OUTCOMES as readonly string[]).includes(m.outcome) ? { kind: 'end', outcome: m.outcome as DevOutcome } : null;
     case 'defeat':

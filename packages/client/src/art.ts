@@ -22,6 +22,7 @@ const GUN = 0xe6ecf5;
 /** Hazard stripes: yellow marks a unit that builds, red one that repairs. */
 const BUILD_STRIPE = ENERGY;
 const REPAIR_STRIPE = 0xff5d73;
+const SHIELD_GLYPH = 0x6fd8ff;
 
 /** What a design is made of, reduced to the things the art cares about. */
 export interface Look {
@@ -40,7 +41,7 @@ export interface Look {
   readonly motor: 'none' | 'small' | 'large' | 'huge' | 'rotor' | 'legs';
   /** Legs, by the strongest pair fitted. */
   readonly legs: 'none' | 'light' | 'heavy' | 'colossus';
-  readonly weapon: 'none' | 'gun' | 'cannon' | 'laser' | 'tesla' | 'missile' | 'flak';
+  readonly weapon: 'none' | 'gun' | 'cannon' | 'laser' | 'tesla' | 'missile' | 'flak' | 'flame';
   /** Mass of the weapon module: heavier guns get bigger turret housings. */
   readonly weaponMass: number;
   /** How many weapon modules: a building shows one turret for each it has room for. */
@@ -51,6 +52,7 @@ export interface Look {
   readonly cargo: number;
   readonly builders: number;
   readonly repairers: number;
+  readonly shields: number;
   readonly sensor: 'none' | 'short' | 'long';
   readonly batteries: number;
   readonly cpu: 'none' | 'basic' | 'fast' | 'quantum';
@@ -59,6 +61,7 @@ export interface Look {
   readonly chargers: number;
   readonly solar: number;
   readonly wind: number;
+  readonly steam: number;
   readonly antenna: 'none' | 'small' | 'medium' | 'large';
   /** The hull shape follows the design's main job. */
   readonly role: 'combat' | 'worker' | 'scout' | 'industry' | 'power' | 'plain';
@@ -73,7 +76,7 @@ export function lookOf(parts: readonly string[]): Look {
 
   const rotor = mods.some((d) => d.flight);
   const legs = (biggest(['legs.light', 'legs.heavy', 'legs.colossus'])?.slice(5) ?? 'none') as Look['legs'];
-  const motor = rotor ? 'rotor' : legs !== 'none' ? 'legs' : parts.includes('motor.huge') ? 'huge' : parts.includes('motor.large') ? 'large' : count('motor') > 0 ? 'small' : 'none';
+  const motor = rotor ? 'rotor' : legs !== 'none' ? 'legs' : parts.includes('motor.huge') ? 'huge' : parts.includes('motor.large') ? 'large' : count('motor') > 0 ? (parts.includes('motor.hover') || parts.includes('motor.amphibious') ? 'large' : 'small') : 'none';
   const weaponDef = mods.find((d) => d.weapon);
   const weapon = weaponDef ? (weaponDef.weapon!.kind ?? 'gun') : 'none';
   const sensor = parts.includes('sensor.long') ? 'long' : parts.includes('sensor.short') ? 'short' : 'none';
@@ -83,12 +86,13 @@ export function lookOf(parts: readonly string[]): Look {
   const factories = count('factory');
   const solar = mods.filter((d) => d.generator === 'solar').length;
   const wind = mods.filter((d) => d.generator === 'wind').length;
+  const steam = mods.filter((d) => d.generator === 'steam').length;
 
   let role: Look['role'] = 'plain';
   if (weapon !== 'none') role = 'combat';
   else if (factories > 0 || count('builder') > 0) role = structure ? 'industry' : 'worker';
   else if (count('cargo') > 0) role = 'worker';
-  else if (solar + wind > 0 || count('charger') > 0 || count('battery') >= 2) role = structure ? 'power' : 'plain';
+  else if (solar + wind + steam > 0 || count('charger') > 0 || count('battery') >= 2) role = structure ? 'power' : 'plain';
   else if (sensor !== 'none') role = 'scout';
 
   return {
@@ -109,6 +113,7 @@ export function lookOf(parts: readonly string[]): Look {
     cargo: count('cargo'),
     builders: count('builder'),
     repairers: count('repair'),
+    shields: count('shield'),
     sensor,
     batteries: count('battery'),
     cpu,
@@ -117,6 +122,7 @@ export function lookOf(parts: readonly string[]): Look {
     chargers: count('charger'),
     solar,
     wind,
+    steam,
     antenna,
     role,
   };
@@ -573,6 +579,16 @@ function drawTurret(g: Graphics, kind: Look['weapon'], r: number, mass = 0): voi
       }
       break;
     }
+    case 'flame': {
+      // A fuel tank on the mount and a short nozzle with a lit pilot.
+      const hr = housingRadius(r, mass, 0.34);
+      g.roundRect(-hr * 0.8, hr * 0.1, hr * 1.6, hr * 1.1, 3).fill(DARK).stroke({ width: 1.2, color: WARN });
+      housing(g, hr * 0.8, GUN);
+      g.rect(-r * 0.1, -r * 1.0 * BARREL, r * 0.2, r * 1.0 * BARREL).fill(GUN).stroke({ width: 1.2, color: DARK });
+      g.rect(-r * 0.16, -r * 1.0 * BARREL, r * 0.32, r * 0.14).fill(WARN);
+      g.circle(0, -r * 1.12 * BARREL, Math.max(1.5, r * 0.1)).fill(0xffa030);
+      break;
+    }
     case 'laser':
       housing(g, housingRadius(r, mass, 0.26), LASER);
       g.poly([0, -r * 1.2 * BARREL, r * 0.18, -r * 0.3, -r * 0.18, -r * 0.3]).fill(LASER).stroke({ width: 1.5, color: DARK });
@@ -637,7 +653,7 @@ function drawSolarPanel(g: Graphics, x: number, y: number, w: number, h: number)
 }
 
 type Glyph = (g: Graphics, cx: number, cy: number, s: number) => void;
-type GlyphKind = 'weapon' | 'factory' | 'builder' | 'repair' | 'solar' | 'wind' | 'charger' | 'silo' | 'battery' | 'antenna' | 'sensor' | 'cpu';
+type GlyphKind = 'weapon' | 'factory' | 'builder' | 'repair' | 'shield' | 'solar' | 'wind' | 'steam' | 'charger' | 'silo' | 'battery' | 'antenna' | 'sensor' | 'cpu';
 type KindGlyph = Glyph & { kind: GlyphKind };
 
 /** Small module symbols that fill a building's cells. Highest priority first. */
@@ -684,6 +700,15 @@ function glyphs(l: Look): KindGlyph[] {
       stripes(g, cx - s * 0.9, cy + s * 0.55, s * 1.8, s * 0.4, REPAIR_STRIPE);
     });
   }
+  if (l.shields > 0) {
+    add('shield', (g, cx, cy, s) => {
+      // An emitter: a dark dish with a ring of cyan energy and a bright core, and two arcs of the shield it casts.
+      g.circle(cx, cy, s * 0.62).fill(DARK).stroke({ width: 1.5, color: STEEL });
+      g.circle(cx, cy, s * 0.36).stroke({ width: 1.2, color: SHIELD_GLYPH, alpha: 0.9 });
+      g.circle(cx, cy, s * 0.14).fill(0xe6f6ff);
+      for (const r of [0.82, 1]) g.arc(cx, cy, s * r, -2.2, -0.94).stroke({ width: 1.5, color: SHIELD_GLYPH, alpha: r === 1 ? 0.55 : 0.85 });
+    });
+  }
   if (l.solar > 0) {
     add('solar', (g, cx, cy, s) => {
       // Panel array: up to a 2×2 of cells, filling the tile.
@@ -699,6 +724,18 @@ function glyphs(l: Look): KindGlyph[] {
     add('wind', (g, cx, cy, s) => {
       for (const a of [0, 2.1, 4.2]) g.moveTo(cx, cy).lineTo(cx + Math.sin(a) * s, cy - Math.cos(a) * s).stroke({ width: 2, color: 0xffffff });
       g.circle(cx, cy, 2).fill(DARK);
+    });
+  }
+  if (l.steam > 0) {
+    add('steam', (g, cx, cy, s) => {
+      // A turbine drum: a dark housing with a ring of blades, a pipe stub each side and a pale valve wheel.
+      g.rect(cx - s, cy - s * 0.18, s * 2, s * 0.36).fill(STEEL);
+      g.circle(cx, cy, s * 0.82).fill(DARK).stroke({ width: 1.8, color: STEEL });
+      for (let i = 0; i < 8; i++) {
+        const a = (i * Math.PI) / 4;
+        g.moveTo(cx + Math.cos(a) * s * 0.2, cy + Math.sin(a) * s * 0.2).lineTo(cx + Math.cos(a + 0.5) * s * 0.66, cy + Math.sin(a + 0.5) * s * 0.66).stroke({ width: 1.5, color: 0xe8eef3, alpha: 0.85 });
+      }
+      g.circle(cx, cy, s * 0.14).fill(0xe8eef3);
     });
   }
   if (l.chargers > 0) {

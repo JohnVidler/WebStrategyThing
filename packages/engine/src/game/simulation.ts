@@ -10,6 +10,7 @@ import { activitySystem, cancelActivity, type ActivityState } from './activity';
 import { VisitReason, type UnitContext } from './api';
 import { DEFAULT_DESIGNS, type DesignEntry } from './designs';
 import { SimEvent } from './events';
+import { FEATURES, FeatureKind } from './features';
 import { BlueprintError, BlueprintRegistry, Caps, CHASSIS_HIT, statsFor, type Blueprint, type BlueprintStats } from './blueprint';
 import {
   Builder,
@@ -19,10 +20,16 @@ import {
   CpuStatus,
   Energy,
   EnergyView,
+  Debris,
+  Feature,
   GAME_COMPONENTS,
   Harvester,
   Health,
   Missile,
+  Flame,
+  Shell,
+  Aim,
+  Shield,
   Modules,
   Motion,
   Position,
@@ -35,10 +42,14 @@ import {
   Weapon,
 } from './components';
 import { missileSystem, type MissileFlight } from './missile';
+import { shellSystem, type ShellFlight } from './shell';
+import { carriesFlame, flameSystem, type FlameFlight } from './flame';
+import { addAim, aimSystem } from './aim';
+import { addShield, shieldSystem, type ShieldState } from './shield';
 import { PARTS, SWITCHABLE, TILE } from './parts';
 import { findPath, searchWork } from './path';
-import { daylight, emptyNetwork, powerLinks, powerNetworks, powerTopology, wind, type PowerNetwork, type PowerNode } from './power';
-import { factoryCanBuild, FACTORY_TIER_NAMES, BASE_LINK_RANGE, BUILD_RANGE, BUILDING_BUILD_RANGE, BUILDING_TRANSFER_RANGE, DEMOLISH_REFUND, DOCK_RANGE, HARVEST_RANGE, MAX_PRODUCTION_QUEUE, MAX_SITES_PER_PLAYER, MOONLIGHT, PLAN_WORK_PER_TICK, RADAR_COOLDOWN_TICKS, RADAR_ENERGY_PER_TILE, SITE_START_HP, UNIT_TRANSFER_RANGE } from './rules';
+import { daylight, emptyNetwork, powerLinks, powerNetworks, powerTopology, wind, Weather, type PowerNetwork, type PowerNode } from './power';
+import { factoryCanBuild, FACTORY_TIER_NAMES, FLAME_VULNERABILITY, BASE_LINK_RANGE, BUILD_RANGE, BUILDING_BUILD_RANGE, BUILDING_TRANSFER_RANGE, DEMOLISH_REFUND, DOCK_RANGE, FLY_LOITER_RADIUS, HARVEST_RANGE, MAX_PRODUCTION_QUEUE, MAX_SITES_PER_PLAYER, MOONLIGHT, PLAN_WORK_PER_TICK, RADAR_COOLDOWN_TICKS, RADAR_ENERGY_PER_TILE, SITE_START_HP, STARTING_SHOTS, UNIT_TRANSFER_RANGE } from './rules';
 import { SpatialGrid } from './spatial';
 import { inSight, viewersOf } from './vision';
 import {
@@ -51,8 +62,10 @@ import {
   energyViewSystem,
   harvestSystem,
   movementSystem,
+  liquidSystem,
   cheatSystem,
   powerSystem,
+  lightningSystem,
   productionSystem,
   resourceRegenerationSystem,
   scriptSystem,
@@ -257,6 +270,11 @@ export class Simulation {
   private readonly planWaiting = new Set<number>();
   readonly stuckTicks: number[] = [];
   readonly lastDistance: number[] = [];
+  /** Ticks left of a sidestep round another unit (sign: which way it turns); 0 when walking the path. */
+  readonly avoidTicks: number[] = [];
+  /** A flying unit's heading in radians (undefined: it points at its goal when it next moves), and its approach phase: -1 cruising, above 0 loitering (ticks left), 0 landing. */
+  readonly flyHeading: (number | undefined)[] = [];
+  readonly flyPhase: number[] = [];
   /** CPU energy owed, in hundredths of an energy unit (cycles × use, billed per 100). */
   readonly cpuDebt: number[] = [];
   /** Building -> handle of the unit it may currently order (-1 = none). */
@@ -269,10 +287,19 @@ export class Simulation {
   readonly tallies = new Map<number, PlayerTally>();
   /** Missile entity -> the parts of its flight that are not replicated (see missile.ts). */
   readonly flights: (MissileFlight | undefined)[] = [];
+  /** Shell entity -> its flight (see shell.ts). */
+  readonly shellFlights: (ShellFlight | undefined)[] = [];
+  /** Flame entity -> its flight or burn (see flame.ts). */
+  readonly flameFlights: (FlameFlight | undefined)[] = [];
+  /** Entity -> its energy shield's settings, and the shields that are up this tick (see shield.ts). */
+  readonly shields: (ShieldState | undefined)[] = [];
+  readonly shieldList: number[] = [];
   /** Entity -> owner of the last weapon that damaged it (0 = none). */
   readonly lastHitBy: number[] = [];
   /** Building -> generation left over from last tick (in 1/100 of 1/GENERATION_SCALE energy). */
   readonly genCarry: number[] = [];
+  /** Per building with steam turbines: how many vents its footprint covers (worked out when the networks are rebuilt). */
+  readonly ventsUnder: number[] = [];
   /** Matter each repair module has paid for but not yet used (matter is bought in whole units). */
   readonly repairCarry: number[] = [];
   /** Entity -> damage each of its modules has taken (by part index); made on the first hit that lands on a module. */
@@ -286,6 +313,12 @@ export class Simulation {
   /** Dev tools only: a fixed sunlight / wind level 0..100 for testing, or -1 for the natural cycle (see `sunNow`, `windNow`). */
   devSun = -1;
   devWind = -1;
+  /** The weather (`Sky` mix and its effects); the dev tools can force a kind and scale it (`weather.setDev`). Read it through `weatherNow()`. */
+  readonly weather = new Weather();
+  /** Dev tools only: the forced `Sky`, or -1 for the natural weather. */
+  get devSky(): number {
+    return this.weather.forced;
+  }
   /** Sunlight 0..100 now: the natural cycle, unless the dev tools fixed it. */
   sunNow(): number {
     return this.devSun >= 0 ? this.devSun : daylight(this.tick);
@@ -300,9 +333,27 @@ export class Simulation {
     return MOONLIGHT + Math.floor(((100 - MOONLIGHT) * sun) / 100);
   }
 
-  /** Wind 0..100 now: the natural drift, unless the dev tools fixed it. */
+  /** The weather, brought up to date for this tick. */
+  weatherNow(): Weather {
+    this.weather.update(this.config.seed, this.tick);
+    return this.weather;
+  }
+
+  /** Wind 0..100 now: the natural drift lifted to the weather's floor and held to its ceiling, unless the dev tools fixed it. */
   windNow(): number {
-    return this.devWind >= 0 ? this.devWind : wind(this.config.seed, this.tick);
+    if (this.devWind >= 0) return this.devWind;
+    return this.weatherNow().windy(wind(this.config.seed, this.tick));
+  }
+
+  /** Sunlight that solar panels get now: `sunNow` scaled and capped by the weather (a heatwave lifts it above 100; the dev tools' fixed level is used as is). */
+  solarNow(): number {
+    const sun = this.sunNow();
+    return this.devSun >= 0 ? sun : this.weatherNow().solar(sun);
+  }
+
+  /** Haze 0..100 now (mist, dust and the like), which shrinks every viewer's sight. */
+  hazeNow(): number {
+    return this.weatherNow().haze;
   }
 
   /** Owners kept at full energy with full silos (co-op mode bots). */
@@ -323,6 +374,8 @@ export class Simulation {
   readonly cpu = this.world.store(CpuStatus);
   readonly resource = this.world.store(Resource);
   readonly resourcePatch = this.world.store(ResourcePatch);
+  readonly feature = this.world.store(Feature);
+  readonly debris = this.world.store(Debris);
   readonly cargo = this.world.store(Cargo);
   readonly production = this.world.store(Production);
   readonly energyView = this.world.store(EnergyView);
@@ -337,6 +390,10 @@ export class Simulation {
   readonly builder = this.world.store(Builder);
   readonly repairer = this.world.store(Repairer);
   readonly missile = this.world.store(Missile);
+  readonly shell = this.world.store(Shell);
+  readonly flame = this.world.store(Flame);
+  readonly aim = this.world.store(Aim);
+  readonly shield = this.world.store(Shield);
 
   constructor(
     readonly config: SimConfig,
@@ -370,7 +427,7 @@ export class Simulation {
   spawnUnit(bp: Blueprint, x: number, y: number): number {
     if (bp.stats.structure) throw new BlueprintError(`${bp.name} is a building: use spawnStructure`);
     // On open ground, with room for the hull if there is any nearby.
-    const cell = this.terrain.nearestFit(this.tileX(x), this.tileY(y), { climb: 0, clearance: bp.stats.clearance }, 20) ?? this.terrain.nearestWalkable(this.tileX(x), this.tileY(y), 20);
+    const cell = this.terrain.nearestFit(this.tileX(x), this.tileY(y), { climb: 0, clearance: bp.stats.clearance, wade: 0 }, 20) ?? this.terrain.nearestWalkable(this.tileX(x), this.tileY(y), 20);
     if (!cell) throw new CommandError('No room to place a unit');
     if (cell[0] !== this.tileX(x) || cell[1] !== this.tileY(y)) {
       x = cell[0] * TILE + TILE / 2;
@@ -378,9 +435,13 @@ export class Simulation {
     }
     const e = this.addCommon(bp, x, y);
     this.motion.add(e);
-    if (bp.stats.weapon) this.weapon.add(e, { target: -1 });
+    if (bp.stats.weapon) {
+      this.weapon.add(e, { target: -1 });
+      addAim(this, e);
+    }
     if (bp.stats.cargo > 0) {
-      this.cargo.add(e);
+      // A unit whose weapon burns matter leaves the factory with a few shots loaded instead of an empty bay.
+      this.cargo.add(e, { amount: Math.min(bp.stats.cargo, (bp.stats.weapon?.matter ?? 0) * STARTING_SHOTS) });
       this.harvester.add(e, { target: -1 });
     }
     if (bp.stats.buildRate > 0) this.builder.add(e, { target: -1 });
@@ -462,7 +523,10 @@ export class Simulation {
     if (s.resourceCapacity > 0) this.stockpile.add(e);
     if (s.buildRate > 0) this.builder.add(e, { target: -1 });
     if (s.repairRate > 0) this.repairer.add(e, { target: -1 });
-    if (s.weapon) this.weapon.add(e, { target: -1 });
+    if (s.weapon) {
+      this.weapon.add(e, { target: -1 });
+      addAim(this, e);
+    }
     this.tally(this.unit.f.owner[e]).createdBuildings++;
     this.powerDirty = true;
   }
@@ -615,6 +679,7 @@ export class Simulation {
     this.stunUntil[e] = 0;
     this.flatTicks[e] = 0;
     this.cpuDebt[e] = 0;
+    if (bp.stats.shield) addShield(this, e);
     return e;
   }
 
@@ -631,6 +696,24 @@ export class Simulation {
     return e;
   }
 
+  /** The wreck of a unit: a matter block of `amount` that is used up and removed, never regrown. `look` is for the art (see Debris). */
+  spawnDebris(x: number, y: number, amount: number, look: number): number {
+    const e = this.spawnResource(x, y, amount);
+    this.debris.add(e, { maximum: this.resource.f.amount[e], look });
+    return e;
+  }
+
+  /** A map feature (see features.ts) with its top-left on tile (tx, ty). Solid scenery blocks its tiles for good. */
+  spawnFeature(kind: number, tx: number, ty: number): number {
+    const def = FEATURES[kind];
+    if (!def) throw new CommandError(`Unknown feature ${kind}`);
+    const e = this.world.create();
+    this.pos.add(e, { x: this.clamp((tx + def.size / 2) * TILE, this.widthSub), y: this.clamp((ty + def.size / 2) * TILE, this.heightSub) });
+    this.feature.add(e, { kind });
+    if (def.solid) this.terrain.occupy(tx, ty, def.size, 1);
+    return e;
+  }
+
   destroyEntity(e: number): void {
     const s = this.unit.has(e) ? this.stats(e) : undefined;
     if (s?.structure) {
@@ -640,6 +723,9 @@ export class Simulation {
     }
     this.flows[e] = undefined;
     this.flights[e] = undefined;
+    this.shellFlights[e] = undefined;
+    this.flameFlights[e] = undefined;
+    this.shields[e] = undefined;
     this.activities[e] = undefined;
     this.suspended[e] = undefined;
     this.activeUnits.delete(e);
@@ -661,6 +747,7 @@ export class Simulation {
    * otherwise any module at random (`aim` 0).
    */
   damage(t: number, amount: number, owner: number, aim = 0): void {
+    if (carriesFlame(this, t)) amount = Math.ceil(amount * FLAME_VULNERABILITY); // full of fuel
     this.health.f.hp[t] -= amount;
     this.lastHitBy[t] = owner;
     if (this.health.f.hp[t] > 0) this.hitModule(t, amount, aim);
@@ -714,6 +801,18 @@ export class Simulation {
     this.modules.f.broken[t] = (broken | (1 << pick)) >>> 0;
     this.modulesChanged(t);
     this.emit(SimEvent.Break, t, pick);
+  }
+
+  /** Breaks part `i` of `t` outright (a shield emitter that collapsed): it does nothing until repaired, like a module worn down by hits. */
+  breakPart(t: number, i: number): void {
+    const bp = this.blueprintOf(t);
+    const broken = this.modules.f.broken[t];
+    if (!bp || i < 0 || i >= bp.parts.length || (broken >>> i) & 1) return;
+    const dmg = (this.moduleDamage[t] ??= new Uint16Array(bp.hit.slot.length));
+    dmg[i] = bp.hit.integrity[i];
+    this.modules.f.broken[t] = (broken | (1 << i)) >>> 0;
+    this.modulesChanged(t);
+    this.emit(SimEvent.Break, t, i);
   }
 
   /** Total damage the modules of `t` have taken (0 for an undamaged unit). */
@@ -914,10 +1013,16 @@ export class Simulation {
     if (m.tx[e] === x && m.ty[e] === y && (m.moving[e] || m.arrived[e])) return 1;
     m.tx[e] = x;
     m.ty[e] = y;
+    if (s.flying) {
+      // A craft that is already flying keeps its heading and arcs round to the new goal; one that was hovering turns to face it.
+      if (!m.moving[e]) this.flyHeading[e] = undefined;
+      this.flyPhase[e] = Math.hypot(x - this.pos.f.x[e], y - this.pos.f.y[e]) > FLY_LOITER_RADIUS * 1.5 ? -1 : 0;
+    }
     m.moving[e] = 1;
     m.arrived[e] = 0;
     this.stuckTicks[e] = 0;
     this.lastDistance[e] = Infinity;
+    this.avoidTicks[e] = 0;
     if (this.planWork <= 0 && !s.flying) {
       // A big group order: head straight for the goal until the planner gets to this unit.
       this.paths[e] = [x, y];
@@ -960,6 +1065,7 @@ export class Simulation {
     const m = this.motion.f;
     m.tx[e] = cell[0] * TILE + TILE / 2;
     m.ty[e] = cell[1] * TILE + TILE / 2;
+    this.flyPhase[e] = 0; // a drift to open ground: no circling
     m.moving[e] = 1;
     m.arrived[e] = 0;
     this.paths[e] = [m.tx[e], m.ty[e]];
@@ -1311,7 +1417,7 @@ export class Simulation {
     const team = this.teams.get(owner);
     const owners = new Set([owner]);
     if (team !== undefined) for (const [o, t] of this.teams) if (t === team) owners.add(o);
-    return inSight(this.terrain, viewersOf(this.world, owners, (e) => this.stats(e), (e) => this.isSite(e), this.sunNow()), x * TILE, y * TILE);
+    return inSight(this.terrain, viewersOf(this.world, owners, (e) => this.stats(e), (e) => this.isSite(e), this.sunNow(), this.hazeNow()), x * TILE, y * TILE);
   }
 
   /**
@@ -1507,7 +1613,29 @@ export class Simulation {
       Object.assign(net, topologies[id]);
       net.linkTiles = linkTiles[id];
     });
+    this.updateVents(nodes);
     this.powerDirty = false;
+  }
+
+  /** Counts the steam vents under each building that has steam turbines. */
+  private updateVents(nodes: readonly PowerNode[]): void {
+    const vents: number[] = [];
+    for (const f of this.feature.dense) if (this.feature.f.kind[f] === FeatureKind.Vent) vents.push(f);
+    for (const n of nodes) {
+      const s = this.stats(n.e);
+      if (s.steam <= 0) {
+        this.ventsUnder[n.e] = 0;
+        continue;
+      }
+      let count = 0;
+      for (const v of vents) {
+        const x = Math.floor(this.pos.f.x[v] / TILE) - n.x;
+        const y = Math.floor(this.pos.f.y[v] / TILE) - n.y;
+        if (x < 0 || y < 0 || x >= n.size || y >= n.size) continue;
+        if (!s.shape || s.shape[y][x] === 'X') count++;
+      }
+      this.ventsUnder[n.e] = count;
+    }
   }
 
   powerNodes(): PowerNode[] {
@@ -1553,10 +1681,16 @@ export class Simulation {
     scriptSystem(this);
     activitySystem(this);
     movementSystem(this);
+    liquidSystem(this);
     separationSystem(this);
     harvestSystem(this);
     resourceRegenerationSystem(this);
+    shieldSystem(this);
+    lightningSystem(this);
     combatSystem(this);
+    shellSystem(this);
+    flameSystem(this);
+    aimSystem(this);
     missileSystem(this);
     buildSystem(this);
     repairSystem(this);

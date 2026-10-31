@@ -201,6 +201,11 @@ export function rollVolume(volume: SoundFileInfo['volume'], random: () => number
   return typeof volume === 'number' ? volume : volume.min + (volume.max - volume.min) * random();
 }
 
+/** A sound's level at `level` 0..1 of its range (min at 0, max at 1); a fixed volume is just itself. */
+export function volumeAt(volume: SoundFileInfo['volume'], level: number): number {
+  return typeof volume === 'number' ? volume : volume.min + (volume.max - volume.min) * Math.min(1, Math.max(0, level));
+}
+
 /** Picks a sound at random, never the one chosen last time when there is a choice. Returns undefined for an empty pool. */
 export function pick(pool: Pool, random: () => number = Math.random): SoundFileInfo | undefined {
   const n = pool.sounds.length;

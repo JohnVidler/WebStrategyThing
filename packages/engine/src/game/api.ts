@@ -1,12 +1,16 @@
 import { CommsLink, FLOW_CONSTANT_DOCS } from '../flow/events';
 import { MAX_TEXT } from '../flow/check';
+import { LIST_MAX } from '../flow/cost';
 import { addTimer, textAt } from '../flow/run';
 import { ACTIVITY_OUTCOMES, ActivityKind, cancelActivity, resumeActivity, startActivity, suspendActivity } from './activity';
 import type { Builtin, CallKind, HostApi } from '../flow/host';
 import { Caps, type Blueprint, type BlueprintStats } from './blueprint';
 import { PARTS, SLOT_CODES, TIER_NAMES, TILE } from './parts';
 import { StorageMode } from './power';
+import { DEEP_MAX } from './rules';
 import type { Simulation } from './simulation';
+import { rangeBonus } from './shell';
+import { bearingTo, incomingBearing, reachDistance, setShieldAngle, setShieldArc, setShieldRange } from './shield';
 import { TaskFlag, TaskType } from './tasks';
 
 /**
@@ -43,6 +47,7 @@ export const API_GROUPS = [
   'Self',
   'Orders',
   'Sensing',
+  'Lists',
   'Movement',
   'Activities',
   'Actions',
@@ -90,6 +95,7 @@ export const SCRIPT_CONSTANT_DOCS: readonly (readonly [string, number, string])[
   ['HAS_RADIO', Caps.Radio, 'Capability: has a working radio module'],
   ['HAS_LASER', Caps.Laser, 'Capability: has a working laser link module'],
   ['CAN_REPAIR', Caps.Repair, 'Capability: has a working repair module'],
+  ['HAS_SHIELD', Caps.Shield, 'Capability: has a working shield emitter'],
   ['IS_STRUCTURE', Caps.Structure, 'Capability: is a building'],
   ['IS_FACTORY', Caps.Factory, 'Capability: can produce units'],
   ['IS_DEPOT', Caps.Depot, 'Capability: has resource silos (units can fill or take)'],
@@ -151,6 +157,85 @@ function currentVisitor(c: UnitContext): number {
 
 const handleOf = (c: UnitContext, t: number) => (t < 0 ? -1 : c.sim.world.handle(t));
 
+/** Squared distances of the entries `offer` is holding in `out`, in step with it. */
+const NEAR_D = new Float64Array(LIST_MAX);
+
+/**
+ * Keeps the `out.length` nearest of the things offered, nearest first (ties by entity index, so the order is the
+ * same on every replay). `n` is how many are held; returns the new count. No allocation.
+ */
+function offer(out: Int32Array, n: number, e: number, d: number): number {
+  const cap = out.length;
+  let i = n < cap ? n : cap - 1;
+  if (n === cap && (d > NEAR_D[i] || (d === NEAR_D[i] && e > out[i]))) return n;
+  while (i > 0 && (NEAR_D[i - 1] > d || (NEAR_D[i - 1] === d && out[i - 1] > e))) {
+    NEAR_D[i] = NEAR_D[i - 1];
+    out[i] = out[i - 1];
+    i--;
+  }
+  NEAR_D[i] = d;
+  out[i] = e;
+  return n < cap ? n + 1 : n;
+}
+
+/** Turns the entity indices `offer` collected into handles. */
+function toHandles(c: UnitContext, out: Int32Array, n: number): number {
+  for (let i = 0; i < n; i++) out[i] = c.sim.world.handle(out[i]);
+  return n;
+}
+
+/** Resources with at least `min` matter, nearest to (x, y) first. */
+function fillResources(c: UnitContext, out: Int32Array, x: number, y: number, min: number): number {
+  const { sim } = c;
+  let n = 0;
+  for (const r of sim.resource.dense) {
+    if (sim.resource.f.amount[r] < min || sim.resource.f.amount[r] <= 0) continue;
+    n = offer(out, n, r, (sim.pos.f.x[r] - x) ** 2 + (sim.pos.f.y[r] - y) ** 2);
+  }
+  return toHandles(c, out, n);
+}
+
+/** Own finished buildings with the given capabilities, nearest first. `self` includes the caller (a depot looking for depots). */
+function fillOwn(c: UnitContext, out: Int32Array, caps: number, self: boolean, accept?: (b: number) => boolean): number {
+  const { sim, e } = c;
+  const owner = sim.unit.f.owner[e];
+  let n = 0;
+  for (const b of sim.unit.dense) {
+    if ((b === e && !self) || sim.unit.f.owner[b] !== owner || sim.isSite(b) || (sim.stats(b).caps & caps) !== caps) continue;
+    if (accept && !accept(b)) continue;
+    n = offer(out, n, b, sim.distSq(e, b));
+  }
+  return toHandles(c, out, n);
+}
+
+/** Own harvesters (other than the caller) within r tiles (at most 20) of the known thing h; 0 if h is not known. */
+function crowdAround(c: UnitContext, h: number, r: number): number {
+  const t = locate(c, h);
+  if (t < 0) return 0;
+  const { sim, e } = c;
+  const owner = sim.unit.f.owner[e];
+  let n = 0;
+  sim.spatial.forEachInRadius(sim.pos.f.x[t], sim.pos.f.y[t], Math.max(0, Math.min(20, r)) * TILE, (o) => {
+    if (o !== e && sim.harvester.has(o) && sim.unit.f.owner[o] === owner) n++;
+  });
+  return n;
+}
+
+/** Units in sensor range, nearest first: enemies, or own. */
+function fillScan(c: UnitContext, out: Int32Array, enemy: boolean): number {
+  if (!powerSensor(c)) return 0;
+  const { sim, e } = c;
+  const mine = sim.unit.f.owner[e];
+  const x = sim.pos.f.x[e];
+  const y = sim.pos.f.y[e];
+  let n = 0;
+  sim.spatial.forEachInRadius(x, y, c.stats.sensorRange, (o) => {
+    if (o === e || !sim.unit.has(o) || (enemy ? sim.allied(sim.unit.f.owner[o], mine) : sim.unit.f.owner[o] !== mine)) return;
+    n = offer(out, n, o, (sim.pos.f.x[o] - x) ** 2 + (sim.pos.f.y[o] - y) ** 2);
+  });
+  return toHandles(c, out, n);
+}
+
 type Fn = (c: UnitContext, a: Int32Array) => number;
 
 /** Declares a builtin from a signature string like 'approach(h, r)'. */
@@ -160,12 +245,12 @@ function api(
   cost: number,
   doc: string,
   fn: Fn,
-  opts: { free?: boolean; outcomes?: readonly string[]; text?: readonly number[] } = {},
+  opts: { free?: boolean; outcomes?: readonly string[]; text?: readonly number[]; fill?: Builtin<UnitContext>['fill'] } = {},
 ): Builtin<UnitContext> {
   const m = /^(\w+)\((.*)\)$/.exec(sig);
   if (!m) throw new Error(`Bad signature ${sig}`);
   const args = m[2] ? m[2].split(',').map((s) => s.trim()) : [];
-  return { name: m[1], argc: args.length, cost, doc, group, args, fn, free: opts.free, outcomes: opts.outcomes, text: opts.text, kind: kindOf(m[1]) };
+  return { name: m[1], argc: args.length, cost, doc, group, args, fn, free: opts.free, outcomes: opts.outcomes, text: opts.text, kind: kindOf(m[1]), ...(opts.fill ? { fill: opts.fill, list: true } : {}) };
 }
 
 /** Calls that change the world now (statements). Everything else is a query unless it is a runtime setting. */
@@ -175,7 +260,7 @@ const ACTIONS: ReadonlySet<string> = new Set([
   'nextOrder', 'swapOrder', 'clearOrders',
 ]);
 /** Runtime settings: persistent standing settings of a module or the CPU, written config.name(...). */
-const SETTINGS: ReadonlySet<string> = new Set(['rest', 'laserPower', 'aim', 'setModule', 'storageMode']);
+const SETTINGS: ReadonlySet<string> = new Set(['rest', 'laserPower', 'aim', 'setModule', 'storageMode', 'shieldAngle', 'shieldArc', 'shieldRange']);
 const kindOf = (name: string): CallKind => (SETTINGS.has(name) ? 'config' : ACTIONS.has(name) ? 'action' : 'query');
 
 /**
@@ -192,6 +277,7 @@ export const UNIT_API: HostApi<UnitContext> = [
   api('Self', 'me()', 0, 'Own handle.', (c) => c.sim.world.handle(c.e)),
   api('Self', 'caps()', 0, 'Own capability bits (CAN_*, IS_*), reflecting switched-off modules.', (c) => c.stats.caps),
   api('Self', 'tick()', 0, 'Current simulation tick (10 per second).', (c) => c.sim.tick),
+  api('Self', 'calc(x)', 0, 'Returns x. It lets a const hold any expression: in the text form write const best = findResources(10).first(); (a graph shows it as a calc node).', (_c, a) => a[0]),
   api('Self', 'rand(n)', 1, 'Random integer 0..n-1 (deterministic).', (c, a) => c.sim.rng.int(a[0])),
   api('Self', 'credits()', 0, "Owner's common pool: resources held in all their silos.", (c) => c.sim.pool(c.sim.unit.f.owner[c.e])),
   api('Self', 'rest(n)', 0,
@@ -210,6 +296,8 @@ export const UNIT_API: HostApi<UnitContext> = [
 
   // --- Orders -----------------------------------------------------------------
   api('Orders', 'orderCount()', 0, 'Orders waiting. The front one is the order being worked on.', (c) => c.sim.tasks[c.e]?.count ?? 0),
+  api('Orders', 'orderType()', 0, 'Type of the order being worked on, as a task constant such as ATTACK or MOVE, or -1 when there is none.',
+    (c) => { const t = c.sim.tasks[c.e]; return t && t.count > 0 ? t.type(0) : -1; }),
   api('Orders', 'nextOrder()', 2,
     'Finish the current order: cancels the activity working on it, drops the order and raises Order for the next one (or marks the unit Free when there is none).',
     (c) => (c.sim.nextOrder(c.e), 1)),
@@ -266,11 +354,60 @@ export const UNIT_API: HostApi<UnitContext> = [
       const pool = near.slice(0, Math.max(1, Math.min(16, a[0])));
       return pool.length ? handleOf(c, pool[sim.rng.int(pool.length)].r) : -1;
     }),
+  // Lists: each find call returns up to LIST_MAX things, nearest first, and starts a chain (flow/lists.ts).
+  api('Lists', 'findResources(min)', 12,
+    'List of the resources that hold at least min matter, nearest to you first (at most 32). Resources are known everywhere; no sensor needed. Start of a chain: findResources(10).first().',
+    () => -1, { fill: (c, a, out) => fillResources(c, out, c.sim.pos.f.x[c.e], c.sim.pos.f.y[c.e], a[0]) }),
+  api('Lists', 'findResourcesNear(h, min)', 12,
+    'Like findResources, but nearest to the known thing h first (a depot, say): findResourcesNear(depot, 10).first() is the field closest to the depot. An unknown h gives an empty list.',
+    () => -1, {
+      fill: (c, a, out) => {
+        const t = locate(c, a[0]);
+        return t < 0 ? 0 : fillResources(c, out, c.sim.pos.f.x[t], c.sim.pos.f.y[t], a[1]);
+      },
+    }),
+  api('Lists', 'findDepots()', 8,
+    'List of your finished buildings with silos, nearest first (at most 32). A depot running this sees itself first. Full silos are included: filter with stock(d) < stockMax(d) for ones with room.',
+    () => -1, { fill: (c, _a, out) => fillOwn(c, out, Caps.Depot, true) }),
+  api('Lists', 'findChargers()', 8, 'List of your buildings with a working charging pad, nearest first.',
+    () => -1, { fill: (c, _a, out) => fillOwn(c, out, Caps.Charger, false) }),
+  api('Lists', 'findSites()', 8, 'List of your unfinished construction sites, nearest first.',
+    () => -1, {
+      fill: (c, _a, out) => {
+        const { sim, e } = c;
+        const owner = sim.unit.f.owner[e];
+        let n = 0;
+        for (const s of sim.construction.dense) if (sim.unit.f.owner[s] === owner) n = offer(out, n, s, sim.distSq(e, s));
+        return toHandles(c, out, n);
+      },
+    }),
+  api('Lists', 'findDamaged()', 8, 'List of your other finished units and buildings that are missing hit points, nearest first.',
+    () => -1, { fill: (c, _a, out) => fillOwn(c, out, 0, false, (b) => c.sim.health.has(b) && c.sim.health.f.hp[b] < c.sim.stats(b).hp) }),
+  api('Lists', 'findEnemies()', 16, 'List of the enemies in sensor range, nearest first. Energy: sensor use.',
+    () => -1, { fill: (c, _a, out) => fillScan(c, out, true) }),
+  api('Lists', 'findAllies()', 16, 'List of your other units in sensor range, nearest first. Energy: sensor use.',
+    () => -1, { fill: (c, _a, out) => fillScan(c, out, false) }),
+  api('Sensing', 'distBetween(a, b)', 3, 'Tiles between two known things (from edge to edge for buildings), or -1 if either is not known. Handy inside a list function: distBetween(depot, r).',
+    (c, a) => {
+      const t = locate(c, a[0]);
+      const u = locate(c, a[1]);
+      return t < 0 || u < 0 ? -1 : Math.floor(c.sim.edgeDistance(t, u) / TILE);
+    }),
+  api('Sensing', 'crowd(h, r)', 6,
+    'How many of your other harvesters (units that can gather) are within r tiles (at most 20) of the known thing h: a measure of how busy a depot or field is. 0 if h is not known.',
+    (c, a) => {
+      return crowdAround(c, a[0], a[1]);
+    }),
+  api('Sensing', 'crowdOver(h, r, limit)', 6,
+    'How many of your other harvesters within r tiles (at most 20) of the known thing h are beyond the first `limit`: 0 while it is not overcrowded. crowdOver(depot, 6, 4) is 3 when 7 harvesters are round the depot.',
+    (c, a) => {
+      return Math.max(0, crowdAround(c, a[0], a[1]) - Math.max(0, a[2]));
+    }),
   api('Sensing', 'resource(h)', 1, 'Amount left in a resource; 0 if gone.', (c, a) => {
     const t = c.sim.world.resolve(a[0]);
     return t >= 0 && c.sim.resource.has(t) ? c.sim.resource.f.amount[t] : 0;
   }),
-  api('Sensing', 'passable(x, y)', 1, '1 if ground units can enter tile (x, y): passable terrain with no building.',
+  api('Sensing', 'passable(x, y)', 1, '1 if tile (x, y) is dry, open ground with no building (rock, water, lava and voids are all 0: see depthAt, and wade for what this unit itself can enter).',
     (c, a) => (c.sim.terrain.walkable(a[0], a[1]) ? 1 : 0)),
 
   // --- Movement ---------------------------------------------------------------
@@ -353,7 +490,7 @@ export const UNIT_API: HostApi<UnitContext> = [
         return 0;
       }
       sim.weapon.f.target[e] = sim.world.handle(t);
-      return sim.edgeDistance(e, t) <= w.range ? 1 : 0;
+      return reachDistance(sim, e, t) <= w.range + rangeBonus(sim, e, t, w.kind) ? 1 : 0;
     }),
   api('Actions', 'laserPower(energy)', 1,
     "Set the energy a laser spends per shot (1 to the laser's maximum); damage scales in proportion, so half the energy is half the damage. 0 restores the maximum. Returns the energy now in use, or 0 without a laser.",
@@ -374,6 +511,21 @@ export const UNIT_API: HostApi<UnitContext> = [
       sim.weapon.f.aim[e] = kind;
       return kind;
     }),
+  api('Actions', 'shieldAngle(degrees)', 1,
+    'Point the energy shield along an angle in degrees (0 = east, 90 = south, 180 = west, 270 = north). The shield never aims itself: a program (the ShieldGuard block, say) must point it. It turns at a limited speed. Returns the angle, or -1 without a working shield emitter.',
+    (c, a) => setShieldAngle(c.sim, c.e, a[0])),
+  api('Actions', 'shieldArc(degrees)', 1,
+    'Set how wide the energy shield is, in degrees (10 up to what the emitter allows). A wider arc costs more energy every tick. Returns the arc now, or -1 without a working shield emitter.',
+    (c, a) => setShieldArc(c.sim, c.e, a[0])),
+  api('Actions', 'shieldRange(tiles)', 1,
+    'Set how far from the unit or building the energy shield is cast, in tiles (from just outside the hull up to what the emitter allows). A longer reach costs more energy every tick. Returns the tiles now, or -1 without a working shield emitter.',
+    (c, a) => setShieldRange(c.sim, c.e, a[0])),
+  api('Sensing', 'shieldUp()', 0, '1 while the energy shield is up (emitter on, unbroken and paid for this tick), else 0.',
+    (c) => (c.sim.shields[c.e]?.live ? 1 : 0)),
+  api('Sensing', 'incomingBearing()', 6, 'Angle in degrees (0 = east, 90 = south) to the nearest enemy shell or missile in flight within 10 tiles, or -1 if none. No sensor needed: it is what a shield turns to face.',
+    (c) => incomingBearing(c.sim, c.e)),
+  api('Sensing', 'bearing(h)', 2, 'Angle in degrees (0 = east, 90 = south) from you to a known unit, or -1 if it is not known: pass it to config.shieldAngle to face it.',
+    (c, a) => { const t = locate(c, a[0]); return t < 0 ? -1 : bearingTo(c.sim, c.e, t); }),
   api('Actions', 'cargo()', 0, 'Resources carried.', (c) => (c.sim.cargo.has(c.e) ? c.sim.cargo.f.amount[c.e] : 0)),
   api('Actions', 'cargoMax()', 0, 'Cargo capacity (0 if the cargo bay is off).', (c) => c.stats.cargo),
   // --- Construction & resources ---------------------------------------------------
@@ -433,8 +585,8 @@ export const UNIT_API: HostApi<UnitContext> = [
     (c) => c.sim.lightAt(c.sim.pos.f.x[c.e], c.sim.pos.f.y[c.e])),
 
   // --- Power network ------------------------------------------------------------
-  api('Power network', 'daylight()', 0, 'Sunlight 0..100 (solar output follows it).', (c) => c.sim.sunNow()),
-  api('Power network', 'wind()', 0, 'Wind 0..100 (turbine output follows it).', (c) => c.sim.windNow()),
+  api('Power network', 'daylight()', 0, 'Sunlight 0..100 (solar output follows it, but weather such as rain, storms and dust cuts what panels get, and a heatwave adds to it).', (c) => c.sim.sunNow()),
+  api('Power network', 'wind()', 0, 'Wind 0..100 (turbine output follows it; rain, storms and dust keep it up, a heatwave holds it down).', (c) => c.sim.windNow()),
   api('Power network', 'netSupply()', 0, "This building's network: energy generated last tick (0 for units).",
     (c) => c.sim.networkFor(c.e)?.supply ?? 0),
   api('Power network', 'netDemand()', 0, "This building's network: energy normal consumers wanted last tick.",
@@ -490,9 +642,23 @@ export const UNIT_API: HostApi<UnitContext> = [
     return s.structure ? -1 : s.size;
   }),
   api('Movement', 'climb()', 0, 'Highest rock this unit can walk onto: 0 on wheels or tracks, 1 light legs, 2 heavy legs, 9 colossus legs (flying units: 0).', (c) => (c.stats.flying ? 0 : c.stats.climb)),
-  api('Sensing', 'heightAt(x, y)', 0, 'Terrain height of tile (x, y): 0 open ground, 1-9 rock (higher deeper inside an outcrop; cliffs are 3 or more from their edge), 10 off the map.',
+  api('Sensing', 'heightAt(x, y)', 0, 'Terrain height of tile (x, y): 0 open ground (and under any liquid: see depthAt), 1-9 rock (higher deeper inside an outcrop; cliffs are 3 or more from their edge), 10 off the map.',
     (c, a) => c.sim.terrain.heightAt(a[0], a[1])),
+  api('Sensing', 'depthAt(x, y)', 0, 'Liquid depth of tile (x, y): 0 on dry ground, rock and off the map; 1-2 shallow water, 3-5 deep water, 6-8 lava, 9 a void (a drop with no floor). heightAt reads 0 over liquid, so check depthAt before assuming open ground can be stood on.',
+    (c, a) => c.sim.terrain.depthAt(a[0], a[1])),
+  api('Movement', 'escapeX()', 6, 'Tile x of the nearest tile within 8 of this unit that it can stand on and that is not lava or a void (so a hover unit that stopped on lava can step off it), or -1 if there is none. Pair with escapeY().',
+    (c) => escapeCell(c)?.[0] ?? -1),
+  api('Movement', 'escapeY()', 6, 'Tile y of the tile escapeX() finds, or -1.', (c) => escapeCell(c)?.[1] ?? -1),
+  api('Movement', 'wade()', 0, 'Deepest liquid (see depthAt) this unit can enter: 2 (shallow water, slowly) on wheels, tracks and legs, 5 on an amphibious drive, 8 on a hover skirt (which skims at full speed, and is scorched by lava). Flying units: 0.', (c) => (c.stats.flying ? 0 : c.stats.wade)),
 ];
+
+/** The nearest cell round the unit that it fits in and that is neither lava nor a void: ground it can leave lava for. */
+function escapeCell(c: UnitContext): [number, number] | null {
+  const s = c.stats;
+  const tx = Math.floor(c.sim.pos.f.x[c.e] / TILE);
+  const ty = Math.floor(c.sim.pos.f.y[c.e] / TILE);
+  return c.sim.terrain.nearestFit(tx, ty, { climb: s.climb, clearance: s.clearance, wade: Math.min(s.wade, DEEP_MAX), hover: s.hover }, 8);
+}
 
 /** The owner's producible classes, in definition order. */
 function unitClasses(c: UnitContext) {

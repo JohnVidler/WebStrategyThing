@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BEAM_H, BEAM_LAMP_Y, BEAM_W, beamIntensity, glowIntensity } from '../src/lights';
+import { BEAM_H, BEAM_LAMP_Y, BEAM_W, beamIntensity, FLICKER_MS, glowIntensity, lampDaylight, lampLevel, mistIntensity, mixColour } from '../src/lights';
 import { headlampsOf } from '../src/art';
 
 describe('lights', () => {
@@ -63,5 +63,54 @@ describe('headlamps', () => {
     const lamps = headlampsOf(['whatever']);
     expect(lamps.length).toBe(2);
     expect(lamps[0].side).toBe(-lamps[1].side);
+  });
+});
+
+describe('lamp flicker', () => {
+  it('holds the old state until the switch, settles after FLICKER_MS, and stutters in between', () => {
+    for (const seed of [1, 7, 42]) {
+      expect(lampLevel(-5, true, seed)).toBe(0);
+      expect(lampLevel(-5, false, seed)).toBe(1);
+      expect(lampLevel(FLICKER_MS, true, seed)).toBe(1);
+      expect(lampLevel(FLICKER_MS, false, seed)).toBe(0);
+      const levels = Array.from({ length: 70 }, (_, i) => lampLevel(1 + i * 10, true, seed));
+      expect(levels.every((l) => l >= 0 && l <= 1)).toBe(true);
+      expect(new Set(levels).size).toBeGreaterThan(3); // it really changes
+      expect(levels.some((l) => l === 0)).toBe(true); // with dark gaps
+      expect(lampLevel(100, true, seed)).toBe(lampLevel(100, true, seed)); // deterministic
+    }
+  });
+});
+
+describe('lamps in haze', () => {
+  it('come on in the middle of the day in mist and dust, but not in clear air or light rain', () => {
+    expect(lampDaylight(100, 0)).toBe(100);
+    expect(lampDaylight(100, 20)).toBeGreaterThan(45); // storm: still off
+    expect(lampDaylight(100, 40)).toBeLessThan(45); // mist
+    expect(lampDaylight(100, 65)).toBeLessThan(20); // dust: fully on
+    expect(lampDaylight(10, 0)).toBe(10); // dusk is unchanged
+    expect(lampDaylight(100, 100)).toBe(0);
+  });
+
+  it('mixes colours', () => {
+    expect(mixColour(0xff0000, 0x0000ff, 0)).toBe(0xff0000);
+    expect(mixColour(0xff0000, 0x0000ff, 1)).toBe(0x0000ff);
+    expect(mixColour(0x000000, 0xffffff, 0.5)).toBe(0x808080);
+  });
+});
+
+describe('mist puffs', () => {
+  it('are brightest in the middle and ease to nothing at the edge, with no step', () => {
+    expect(mistIntensity(0)).toBe(1);
+    expect(mistIntensity(1)).toBe(0);
+    expect(mistIntensity(1.5)).toBe(0);
+    let last = 1;
+    for (let d = 0.05; d < 1; d += 0.05) {
+      const v = mistIntensity(d);
+      expect(v).toBeLessThanOrEqual(last);
+      expect(last - v).toBeLessThan(0.2); // never a hard step
+      last = v;
+    }
+    expect(mistIntensity(0.95)).toBeLessThan(0.02);
   });
 });

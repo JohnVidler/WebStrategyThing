@@ -22,7 +22,20 @@ export type Expr =
   | { readonly k: 'bin'; readonly op: BinOp; readonly a: Expr; readonly b: Expr }
   | { readonly k: 'cond'; readonly c: Expr; readonly a: Expr; readonly b: Expr }
   /** A query (reads state, no effect). Actions are statements. */
-  | { readonly k: 'call'; readonly fn: string; readonly args: readonly Expr[] };
+  | { readonly k: 'call'; readonly fn: string; readonly args: readonly Expr[] }
+  /** A list chain (see `lists.ts`): a list source, then steps, the last of which gives one number. */
+  | { readonly k: 'chain'; readonly fn: string; readonly args: readonly Expr[]; readonly steps: readonly ChainStep[] };
+
+/**
+ * One step of a chain: `filter(r => ...)`, `take(3)`, `reduce(0, (a, r) => ...)`. `params` names the
+ * function's parameters (empty for a step without a function); `args` holds the plain arguments, then the
+ * function's body expression last.
+ */
+export interface ChainStep {
+  readonly op: string;
+  readonly params: readonly string[];
+  readonly args: readonly Expr[];
+}
 
 /** True for text: a quoted string, or a `+` with text on either side (`'HP: ' + hp`). Only allowed where a built-in takes text. */
 export function isTextExpr(e: Expr): boolean {
@@ -254,6 +267,14 @@ function shapeProblem(doc: Record<string, unknown>): string | null {
       case 'call':
         if (!isStr(v.fn) || !Array.isArray(v.args)) return 'Malformed call';
         for (const a of v.args) work.push([a, 'e', d]);
+        break;
+      case 'chain':
+        if (!isStr(v.fn) || !Array.isArray(v.args) || !Array.isArray(v.steps)) return 'Malformed list chain';
+        for (const a of v.args) work.push([a, 'e', d]);
+        for (const st of v.steps as unknown[]) {
+          if (!isObj(st) || !isStr(st.op) || !Array.isArray(st.params) || !st.params.every(isStr) || !Array.isArray(st.args)) return 'Malformed list chain step';
+          for (const a of st.args) work.push([a, 'e', d]);
+        }
         break;
       default:
         return 'Unknown expression kind';

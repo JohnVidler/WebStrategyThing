@@ -1,4 +1,4 @@
-import { Cargo, Construction, CpuState, CpuStatus, EnergyView, Health, Position, SimEvent, TILE, Unit, type NetworkInfo, type ServerMessage, type TickInfo } from '@wst/engine';
+import { Cargo, Construction, CpuState, CpuStatus, EnergyView, Health, Position, SimEvent, strikeIsAimed, TILE, Unit, type NetworkInfo, type ServerMessage, type TickInfo } from '@wst/engine';
 import { playSound, sound } from './sound';
 import type { ClientState } from './state';
 
@@ -231,6 +231,8 @@ export class GameSounds {
       }
     }
 
+    this.onWeather(info.tick, quiet);
+
     // Replicated events.
     const died = new Set<number>();
     for (let i = 0; i < info.events.length; i += 3) {
@@ -239,7 +241,8 @@ export class GameSounds {
       if (type === SimEvent.Shot) {
         const kind = state.stats(a)?.weapon?.kind;
         if (kind && kind !== 'tesla' && pos.has(a)) playSound(`combat.shot.${kind}`, at(a));
-      } else if (type === SimEvent.Pulse) {
+      } else if (type === SimEvent.Pulse || type === SimEvent.Lightning) {
+        if (type === SimEvent.Lightning && !quiet) playSound('ambient.thunder');
         if (pos.has(a)) playSound('combat.tesla', at(a));
       } else if (type === SimEvent.Repair) {
         if (pos.has(a)) playSound('combat.repair', at(a));
@@ -321,6 +324,18 @@ export class GameSounds {
     }
   }
 
+  /** Rain for as long as it is wet, as loud as the rain and storm in the air; thunder for strikes on open ground (strikes on units arrive as events). */
+  private onWeather(tick: number, quiet: boolean): void {
+    const state = this.state;
+    const weather = state.weather;
+    const wet = weather.wetness;
+    sound.setAmbient('weather', wet > 0 ? 'ambient.rain' : undefined);
+    if (wet > 0) sound.setAmbientLevel('weather', wet / 100);
+    if (quiet) return;
+    const strike = weather.lightning(state.seed, tick);
+    if (strike !== 0 && !strikeIsAimed(strike)) playSound('ambient.thunder');
+  }
+
   private onDeath(e: number): void {
     const s = this.seen.get(e);
     if (!s) return;
@@ -342,6 +357,7 @@ export class GameSounds {
 
   private reset(): void {
     this.clearWorld();
+    sound.setAmbient('weather', undefined);
     this.lobbyPlayers = new Set();
     this.lobbyHost = -1;
     this.lobbyReady = false;

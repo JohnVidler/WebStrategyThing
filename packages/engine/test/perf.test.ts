@@ -5,6 +5,7 @@ import {
   findPath,
   HARVESTER_CLASS,
   SCOUT_CLASS,
+  searchWork,
   setUpPlayer,
   Simulation,
   Terrain,
@@ -140,6 +141,25 @@ on(Damaged, (amount, attacker) => {
     const per = (performance.now() - start) / 20;
     // Corner to corner across the 144x112 maze. Today: ~2.7 ms.
     expect(per).toBeLessThan(14 * SLACK);
+  }, 60_000);
+
+  // Liquids make some steps dearer (a ford costs more than dry ground), so the search explores more near water. Measured 2026-10-30
+  // (corner to corner, seed 3): Twin Rivers 2716 cells and 1.2 ms against 2527 and 0.9 ms for a dry map of the same size; the
+  // budgets are about 3x and 5x that. The work count is deterministic, so it also catches a search that quietly got dearer.
+  it('plans paths across a river and round lakes about as cheaply as on dry ground', () => {
+    for (const [id, workBudget] of [['twin-rivers', 8000], ['lakeland', 3000], ['cinder-fields', 6500], ['the-rift', 6000]] as const) {
+      const sim = createMatch(3, id);
+      const t = sim.terrain;
+      const [sx, sy] = t.nearestWalkable(4, 4, 30)!;
+      const [gx, gy] = t.nearestWalkable(t.width - 5, t.height - 5, 30)!;
+      findPath(t, sx, sy, gx, gy); // warm-up
+      const before = searchWork();
+      const start = performance.now();
+      for (let i = 0; i < 10; i++) findPath(t, sx, sy, gx, gy);
+      const per = (performance.now() - start) / 10;
+      expect((searchWork() - before) / 10, id).toBeLessThan(workBudget);
+      expect(per, id).toBeLessThan(7 * SLACK);
+    }
   }, 60_000);
 
   it('gives a 256-unit group order quickly', () => {

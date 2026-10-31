@@ -1,4 +1,5 @@
 import { Caps, type Blueprint } from './blueprint';
+import { BOT_SKILLS, HARD_BOT_LEVEL, type BotSkill } from './difficulty';
 import { CommandError, type Simulation } from './simulation';
 import { flip, NEUTRAL, CORNERS, setUpPlayer, type Corner } from './map';
 import { TILE } from './parts';
@@ -102,6 +103,8 @@ export class AiPlayer implements BotController {
   private scoutLeg = 0;
   private expansionAt = 0;
   private readonly credit = new Map<string, number>();
+  /** The caller's pace times the level's. */
+  private readonly pace: number;
 
   private readonly classes = new Map<string, Blueprint>();
   private readonly seen = new Map<number, Seen>();
@@ -133,10 +136,13 @@ export class AiPlayer implements BotController {
     readonly owner: number,
     classes: readonly Blueprint[],
     /** Stretches the time before attacks (1 = normal; more is slower and gentler). */
-    private readonly pace = 1,
+    pace = 1,
+    /** How well it plays (see `difficulty.ts`); the default is the AI as it was before levels. */
+    private readonly skill: BotSkill = BOT_SKILLS[HARD_BOT_LEVEL],
   ) {
+    this.pace = pace * skill.pace;
     for (const bp of classes) this.classes.set(bp.name, bp);
-    this.nextAttack = Math.round(AI_FIRST_ATTACK_TICKS * pace);
+    this.nextAttack = Math.round(AI_FIRST_ATTACK_TICKS * this.pace);
     this.survey();
   }
 
@@ -148,7 +154,7 @@ export class AiPlayer implements BotController {
   /** Call once per tick, before Simulation.step(). */
   step(): void {
     const sim = this.sim;
-    if ((sim.tick + this.owner) % AI_THINK_TICKS !== 0) return;
+    if ((sim.tick + this.owner) % this.skill.thinkTicks !== 0) return;
     this.census();
     if (this.structures.length === 0) return;
     this.observe();
@@ -244,7 +250,7 @@ export class AiPlayer implements BotController {
   /** What is in sight: remembers enemy buildings (until they die) and fresh sightings of units; finds the nearest attack on the base. */
   private observe(): void {
     const sim = this.sim;
-    const viewers = viewersOf(sim.world, this.allies, (e) => sim.stats(e), (e) => sim.isSite(e), sim.sunNow());
+    const viewers = viewersOf(sim.world, this.allies, (e) => sim.stats(e), (e) => sim.isSite(e), sim.sunNow(), sim.hazeNow());
     const own = this.structures.map((e) => sim.footprintOf(e));
     let tx = 0, ty = 0, tc = 0, tn = 0;
     for (const e of sim.unit.dense) {
@@ -274,7 +280,7 @@ export class AiPlayer implements BotController {
         tn++;
       }
     }
-    if (sim.tick % 300 < AI_THINK_TICKS) this.learnStarts();
+    if (sim.tick % 300 < this.skill.thinkTicks) this.learnStarts();
     this.threat = tn ? { x: Math.round(tx / tn), y: Math.round(ty / tn), cost: tc } : undefined;
     for (const [h, s] of this.seen) {
       if (sim.world.resolve(h) < 0 || (!s.structure && sim.tick - s.tick > 300)) this.seen.delete(h);
@@ -495,7 +501,7 @@ export class AiPlayer implements BotController {
     const pool = sim.pool(this.owner);
     const cap = sim.poolCapacity(this.owner);
     const h = this.harvesters.length;
-    const maxSites = AI_MAX_SITES + (this.builders.length >> 1);
+    const maxSites = this.skill.maxSites + (this.builders.length >> 1);
     this.saving = false;
     if (this.builders.length === 0) return;
     const front = this.toward(this.focus(), 8);
@@ -559,7 +565,7 @@ export class AiPlayer implements BotController {
     const sim = this.sim;
     let cur = this.expansions.find((x) => x.stage !== 'done');
     if (!cur) {
-      if (h < 5 || t < this.expansionAt || this.expansions.length > AI_MAX_EXPANSIONS + 2) return;
+      if (h < 5 || t < this.expansionAt || this.expansions.length > this.skill.maxExpansions + 2) return;
       const c = this.nextCluster(t);
       const post = this.needForward ? this.outpostSite() : undefined;
       const outpost = !!post && (!c || this.needForward);
@@ -597,7 +603,7 @@ export class AiPlayer implements BotController {
         return;
       case 'path': {
         const bp = this.classes.get(kind);
-        if (!bp || this.free() < bp.stats.cost * 0.5 || this.openSites() >= AI_MAX_SITES + 1) return;
+        if (!bp || this.free() < bp.stats.cost * 0.5 || this.openSites() >= this.skill.maxSites + 1) return;
         const spot = this.findSpot(bp, Math.round(target.x), Math.round(target.y), 6);
         if (spot) {
           const site = this.buildAt(bp, spot);
@@ -684,15 +690,15 @@ export class AiPlayer implements BotController {
     const t = sim.tick;
     let free = this.free();
     const claimed = this.expansions.filter((x) => x.stage === 'done').length - 1;
-    const wantHarvesters = Math.min(18, 6 + 3 * Math.max(0, claimed) + Math.floor(t / 1800));
+    const wantHarvesters = Math.max(2, Math.round(Math.min(18, 6 + 3 * Math.max(0, claimed) + Math.floor(t / 1800)) * this.skill.economy));
     const wantBuilders = Math.min(4, 1 + (this.harvesters.length >= 4 ? 1 : 0) + (claimed > 0 ? 1 : 0) + (t > 6000 ? 1 : 0));
     const wantScout = t >= 300 && t - this.lastScoutAt >= 900 && this.scouts.length === 0;
     const armySize = this.fighters.length;
     for (const b of this.structures) {
       const queue = sim.productionQueue[b];
       const s = sim.stats(b);
-      if (!queue || !s.factory || queue.length >= AI_QUEUE_DEPTH) continue;
-      for (let slot = queue.length; slot < AI_QUEUE_DEPTH; slot++) {
+      if (!queue || !s.factory || queue.length >= this.skill.queueDepth) continue;
+      for (let slot = queue.length; slot < this.skill.queueDepth; slot++) {
         const pick = this.pick(s.factoryTiers, free, wantHarvesters, wantBuilders, wantScout, armySize);
         if (!pick) break;
         if (!this.tryCommand(() => sim.enqueueProduction(this.owner, b, pick.id))) break;
@@ -732,7 +738,7 @@ export class AiPlayer implements BotController {
     const roster = flak ? [...ARMY, { name: 'Flak Truck', weight: 2, from: 0 }] : ARMY;
     for (const r of roster) {
       const bp = this.classes.get(r.name);
-      if (r.from > t || !bp || bp.retired || !factoryCanBuild(tiers, bp.stats.size)) continue;
+      if (r.from * this.skill.techDelay > t || !bp || bp.retired || !factoryCanBuild(tiers, bp.stats.size)) continue;
       eligible.push(r);
       sum += r.weight;
       const c = (this.credit.get(r.name) ?? 0) + r.weight;
@@ -938,7 +944,7 @@ export class AiPlayer implements BotController {
 }
 
 /** Gives `owner` a full starting base in `corner` (the same one a person gets) and an AI to run it. */
-export function setUpAi(sim: Simulation, owner: number, corner: Corner, pace = 1): { bot: AiPlayer; classes: Blueprint[] } {
+export function setUpAi(sim: Simulation, owner: number, corner: Corner, pace = 1, level = HARD_BOT_LEVEL): { bot: AiPlayer; classes: Blueprint[] } {
   const classes = setUpPlayer(sim, owner, corner, STARTING_CREDITS);
-  return { bot: new AiPlayer(sim, owner, classes, pace), classes };
+  return { bot: new AiPlayer(sim, owner, classes, pace, BOT_SKILLS[level] ?? BOT_SKILLS[HARD_BOT_LEVEL]), classes };
 }

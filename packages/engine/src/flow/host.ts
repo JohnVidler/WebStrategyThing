@@ -26,6 +26,8 @@ export interface BuiltinSig {
   readonly text?: readonly number[];
   /** Cycles spent in this builtin are not billed as CPU energy (e.g. rest). */
   readonly free?: boolean;
+  /** Returns a list (`findResources(10)`): it can only start a chain (`.filter(...)`, `.first()`), never stand alone. */
+  readonly list?: boolean;
   /** Documentation metadata. */
   readonly group?: string;
   readonly args?: readonly string[];
@@ -34,6 +36,8 @@ export interface BuiltinSig {
 /** A host function exposed to programs. Flow knows nothing about the game; it only calls these. */
 export interface Builtin<Ctx> extends BuiltinSig {
   readonly fn: (ctx: Ctx, args: Int32Array) => number;
+  /** For a list source: writes up to `out.length` handles into `out`, nearest first, and returns how many. */
+  readonly fill?: (ctx: Ctx, args: Int32Array, out: Int32Array) => number;
 }
 
 export type HostApi<Ctx> = readonly Builtin<Ctx>[];

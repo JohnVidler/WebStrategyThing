@@ -37,13 +37,32 @@ const ints = (name: string, def: readonly number[], doc: string): ConfigField =>
 const text = (name: string, def: string, doc: string): ConfigField => ({ name, type: 'string', default: def, doc });
 
 const quote = (s: string): string => `'${s.replace(/(['\\])/g, '\\$1')}'`;
+/** Timer id EngageEnemies uses to resume an attack-move after a fight (a program's own `after` should pick another). */
+const REGROUP_TIMER = 900;
 
-/** Pick a random nearby field: one of the `k` nearest with at least `min` matter left. */
-const nearbyField = (c: BlockContext): string => `randomResource(${c.num('fieldsToChooseFrom')}, ${c.num('minMatter')})`;
+/**
+ * Statements that choose a field to work: first a home depot (the nearest to the caller, but each harvester already
+ * working round it counts against it beyond `crowdLimit`, so a crowded depot loses to another one), then the field
+ * nearest that depot among the `fieldsToChooseFrom` closest, each harvester already on a field counting against it
+ * too. With no depot it takes the nearest field. `avoid` names a field to leave out (one that could not be reached).
+ * Leaves the choice in the block's `pick` variable, -1 for none.
+ */
+const chooseField = (c: BlockContext, avoid = ''): string => {
+  const [home, pick, d, r] = [c.v('home'), c.v('pick'), c.v('d'), c.v('r')];
+  const [limit, radius, min, k] = [c.num('crowdLimit'), c.num('crowdRadius'), c.num('minMatter'), c.num('fieldsToChooseFrom')];
+  const skip = avoid ? `.filter(${r} => ${r} !== ${avoid})` : '';
+  return `const ${home} = findDepots().minBy(${d} => dist(${d}) + 12 * crowdOver(${d}, ${radius}, ${limit}));
+const ${pick} = ${home} < 0 ? findResources(${min})${skip}.first() : findResourcesNear(${home}, ${min})${skip}.take(${k}).minBy(${r} => distBetween(${home}, ${r}) + 6 * crowd(${r}, 3));`;
+};
+
+/** Indents every line of `text` after the first by `by` (the first is placed by the caller). */
+const indent = (text: string, by: string): string => text.split('\n').join(`\n${by}`);
 
 const FIELD_SETTINGS: readonly ConfigField[] = [
-  int('fieldsToChooseFrom', 4, 1, 10, 'Pick one of this many nearest fields (so no field is farmed out)'),
+  int('fieldsToChooseFrom', 4, 1, 10, 'Choose among this many fields nearest the depot (so no field is farmed out)'),
   int('minMatter', 10, 0, 1000, 'Ignore fields with less matter than this'),
+  int('crowdLimit', 4, 1, 50, 'A depot with more harvesters than this round it is overcrowded: work from another depot instead'),
+  int('crowdRadius', 6, 1, 20, 'How many tiles round a depot count as "round it"'),
 ];
 
 export const BLOCKS: readonly BlockDef[] = [
@@ -84,6 +103,19 @@ export const BLOCKS: readonly BlockDef[] = [
 });`,
   },
   {
+    name: 'LeaveLava', group: 'Movement',
+    doc: 'For hover units: when standing still on lava (depth 6 or more) it walks to the nearest ground that is not lava or a void, within 8 tiles. Lava scorches a hover unit every moment it stays on it; crossing it on the way somewhere is fine and is left alone.',
+    settings: [int('interval', 10, 1, 600, 'Ticks between looks at the ground under the unit')],
+    text: (c) => `on(Every, { ticks: ${c.num('interval')} }, () => {
+  if (moving() === 0 && depthAt(x(), y()) >= 6) {
+    const ${c.v('ex')} = escapeX();
+    if (${c.v('ex')} >= 0) {
+      goTo(${c.v('ex')}, escapeY());
+    }
+  }
+});`,
+  },
+  {
     name: 'ReviveFlatUnits', group: 'Energy',
     doc: 'Right-click a flat unit: hand it 10% of our capacity until it reaches 50%, as long as we stay above half ourselves.',
     settings: [],
@@ -91,7 +123,7 @@ export const BLOCKS: readonly BlockDef[] = [
   },
   {
     name: 'HarvestLoop', group: 'Work',
-    doc: 'Harvest, unload at the nearest depot when full, and swap an empty field for a nearby one. When free it goes back to a storage building for new orders or finds a field itself. Raises Delivered(amount) after each unload.',
+    doc: 'Harvest, unload at the nearest depot when full, and swap an empty or unreachable field for another. It prefers fields close to a depot and moves on to another depot (and its fields) when one is overcrowded. When free it unloads any cargo and finds a field itself. Raises Delivered(amount) after each unload.',
     emits: ['Delivered'],
     settings: [...FIELD_SETTINGS, int('interval', 50, 1, 6000, 'Ticks between looks for work while the unit is free')],
     text: (c) => `on(Order, { types: [HARVEST] }, (type, tx, ty, field) => {
@@ -106,7 +138,28 @@ export const BLOCKS: readonly BlockDef[] = [
       });
     },
     empty: () => {
-      swapOrder(HARVEST, 0, 0, ${nearbyField(c)});
+      ${indent(chooseField(c), '      ')}
+      if (${c.v('pick')} >= 0) {
+        swapOrder(HARVEST, 0, 0, ${c.v('pick')});
+      } else {
+        nextOrder();
+      }
+    },
+    lost: () => {
+      ${indent(chooseField(c), '      ')}
+      if (${c.v('pick')} >= 0) {
+        swapOrder(HARVEST, 0, 0, ${c.v('pick')});
+      } else {
+        nextOrder();
+      }
+    },
+    blocked: () => {
+      ${indent(chooseField(c, 'field'), '      ')}
+      if (${c.v('pick')} >= 0) {
+        swapOrder(HARVEST, 0, 0, ${c.v('pick')});
+      } else {
+        nextOrder();
+      }
     },
   });
 });
@@ -116,11 +169,16 @@ on(Order, { types: [DOCK] }, (type, tx, ty, depot) => {
 });
 
 on(Free, { repeat: ${c.num('interval')} }, () => {
-  const store = nearestStorage();
-  if (store >= 0 && (cargo() > 0 || dist(store) > 2)) {
-    swapOrder(DOCK, 0, 0, store);
-  } else if (store >= 0) {
-    swapOrder(HARVEST, 0, 0, ${nearbyField(c)});
+  if (cargo() > 0) {
+    const ${c.v('room')} = nearestDepot();
+    if (${c.v('room')} >= 0) {
+      swapOrder(DOCK, 0, 0, ${c.v('room')});
+    }
+  } else {
+    ${indent(chooseField(c), '    ')}
+    if (${c.v('pick')} >= 0) {
+      swapOrder(HARVEST, 0, 0, ${c.v('pick')});
+    }
   }
 });`,
   },
@@ -186,20 +244,40 @@ on(Free, { repeat: ${c.num('interval')} }, () => {
   },
   {
     name: 'EngageEnemies', group: 'Combat',
-    doc: 'Shoots what the sensor finds (without chasing it), with a Hold fire button; and with orders on, closes in on an ATTACK target until it is dead, or heads for where it was if it slips away.',
+    doc: 'Shoots what the sensor finds (without chasing it), with a Hold fire button; and with orders on, closes in on an ATTACK target only until it is in weapon range (an enemy shield arc counts) and fights it until it is dead, or heads for where it was if it slips away. On an attack-move (ATTACK with no target) it stops to fight the first enemy its sensor finds, then marches on.',
     settings: [
       ints('watch', [1], 'What to look for, in priority order: ENEMY, MISSILE, ...'),
       int('interval', 5, 1, 600, 'Ticks between sensor sweeps'),
       text('holdFireKey', 'F', 'Hotkey of the Hold fire button: one upper-case letter, or empty for no button'),
       int('orders', 1, 0, 1, '1: obey ATTACK orders (units); 0: turrets, which cannot move'),
+      int('spareAllies', 0, 0, 20, 'Tiles: do not open fire while another own unit is this close to the target (for weapons whose fire burns friends too); 0 = always fire'),
     ],
     text: (c) => {
       const key = c.str('holdFireKey');
       const quiet = c.v('quiet');
       const out: string[] = [];
       if (key) out.push(`let ${quiet} = 0;\n\non(Button, { label: 'Hold fire', key: ${quote(key)} }, () => {\n  ${quiet} = !${quiet};\n});`);
-      out.push(`on(Detected, { watch: [${c.list('watch').join(', ')}], interval: ${c.num('interval')} }, (kind, enemy) => {\n  ${key ? `if (${quiet} === 0) {\n    fire(enemy);\n  }` : 'fire(enemy);'}\n});`);
+      // On an attack-move (ATTACK with no target) a unit puts the march aside as soon as it sees an enemy and engages it
+      // (closing in only to weapon range). When that fight ends it waits one more sweep: another enemy in sight is engaged
+      // straight away, and only with none left does the march resume. Resuming re-plans the whole route, so a squad that
+      // kills one target of many must not resume and stop again every few ticks.
+      const spare = c.num('spareAllies');
+      const shoot = spare > 0 ? `const friend = scanAlly();\n    if (friend < 0 || distBetween(enemy, friend) > ${spare}) {\n      fire(enemy);\n    }` : 'fire(enemy);';
+      const fireText = key ? `if (${quiet} === 0) {\n      ${shoot}\n    }` : shoot;
+      const wait = `after(${c.num('interval') + 1}, ${REGROUP_TIMER});`;
+      const body = c.num('orders')
+        ? `\n  if (kind === ENEMY && orderType() === ATTACK && (activity() === A_GOTO || activity() === A_NONE)${key ? ` && ${quiet} === 0` : ''}) {\n    if (activity() === A_GOTO) {\n      suspendActivity();\n    }\n    engage(enemy, {\n      destroyed: () => { ${wait} },\n      lost: () => { ${wait} },\n      blocked: () => { ${wait} },\n    });\n  } else {\n    ${fireText}\n  }\n`
+        : `\n  ${fireText}\n`;
+      out.push(`on(Detected, { watch: [${c.list('watch').join(', ')}], interval: ${c.num('interval')} }, (kind, enemy) => {${body}});`);
       if (c.num('orders')) {
+        out.push(`on(Timer, { ids: [${REGROUP_TIMER}] }, () => {
+  if (activity() === A_NONE && orderType() === ATTACK) {
+    resumeActivity();
+    if (activity() === A_NONE) {
+      nextOrder();
+    }
+  }
+});`);
         out.push(`on(Order, { types: [ATTACK] }, (type, tx, ty, target) => {
   if (target >= 0) {
     engage(target, {
@@ -253,13 +331,13 @@ on(Visitor, { reasons: [PRODUCED] }, (reason, who) => {
   },
   {
     name: 'DispatchHarvesters', group: 'Buildings',
-    doc: 'Sends every visiting harvester (produced here or docked here) to a random nearby field.',
+    doc: 'Sends every visiting harvester (produced here or docked here) to a field close to a depot, preferring a depot that is not overcrowded.',
     settings: FIELD_SETTINGS,
     text: (c) => `on(Visitor, () => {
   if ((visitorCaps() & (CAN_HARVEST | CAN_BUILD | CAN_FIGHT)) === CAN_HARVEST) {
-    const field = ${nearbyField(c)};
-    if (field >= 0) {
-      order(HARVEST, 0, 0, field);
+    ${indent(chooseField(c), '    ')}
+    if (${c.v('pick')} >= 0) {
+      order(HARVEST, 0, 0, ${c.v('pick')});
     }
   }
 });`,
@@ -299,6 +377,22 @@ on(Every, { ticks: ${c.num('interval')} }, () => {
     text: (c) => `on(Every, { ticks: ${c.num('interval')} }, () => {
   if (radarCooldown() === 0 && energy() * 2 > energyMax()) {
     radarPulse(${c.num('energy')});
+  }
+});`,
+  },
+  {
+    name: 'ShieldGuard', group: 'Combat',
+    doc: 'Points the energy shield at the nearest incoming enemy shell or missile, else at the nearest enemy its sensor finds, and leaves it where it was when there is nothing to face. Needs a shield emitter (and a sensor for the enemy part).',
+    settings: [int('interval', 3, 1, 100, 'Ticks between looks')],
+    text: (c) => `on(Every, { ticks: ${c.num('interval')} }, () => {
+  const threat = incomingBearing();
+  if (threat >= 0) {
+    config.shieldAngle(threat);
+  } else {
+    const foe = scan();
+    if (foe >= 0) {
+      config.shieldAngle(bearing(foe));
+    }
   }
 });`,
   },

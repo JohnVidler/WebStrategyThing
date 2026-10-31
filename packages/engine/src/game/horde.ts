@@ -1,5 +1,5 @@
 import type { Blueprint } from './blueprint';
-import { BOT_UNIT_CLASSES, type BotUnitClass } from './bot';
+import { botUnitClasses, type BotUnitClass } from './bot';
 import { defineClass, type Corner } from './map';
 import {
   BOT_STAGING_RADIUS,
@@ -154,7 +154,7 @@ export function setUpHorde(
   /** Tile the groups appear at, instead of the corner's own spawn tile (maps made for the horde name one). */
   at?: { readonly x: number; readonly y: number },
 ): { horde: HordeSpawner; classes: Blueprint[] } {
-  const units = BOT_UNIT_CLASSES.map((cls) => ({ cls, bp: defineClass(sim, owner, cls) }));
+  const units = botUnitClasses(sim).map((cls) => ({ cls, bp: defineClass(sim, owner, cls) }));
   sim.cheaters.add(owner);
   const spawn = at ?? hordeSpawnTile(corner, sim.config.width, sim.config.height);
   return { horde: new HordeSpawner(sim, owner, enemy, spawn, units), classes: units.map((u) => u.bp) };

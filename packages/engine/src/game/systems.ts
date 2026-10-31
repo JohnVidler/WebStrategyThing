@@ -6,13 +6,17 @@ import { activitySystem } from './activity';
 import { sensorSweep, sweepFor } from './sensor';
 import { CpuState } from './components';
 import { launchMissile, shotHitsMissile } from './missile';
+import { launchShell, rangeBonus } from './shell';
+import { carriesFlame, flameBurst, launchFlame } from './flame';
+import { moveBlocked, reachDistance, shieldAbsorb, shieldBlock, shieldHit } from './shield';
 import { SimEvent } from './events';
-import { PART_LIST, TILE } from './parts';
-import { routeEnergy, share, StorageMode } from './power';
+import { PART_LIST, PARTS, TILE } from './parts';
+import { routeEnergy, share, StorageMode, strikeIsAimed, strikeSpot } from './power';
 import { GENERATION_SCALE } from './parts';
-import { BUILDER_ENERGY_RESERVE, CLIMB_SPEED_PERMILLE, SEPARATION_GAP, DECAY_TICKS, MAX_TRANSMISSION_LOSS, MOBILE_SOLAR_EFFICIENCY_PERCENT, RESOURCE_REGEN_INTERVAL_TICKS, SOLAR_GENERATION_MULTIPLIER, STORAGE_DISCHARGE_FRACTION, STORAGE_RESERVE_FRACTION, TESLA_SELF_STUN_FACTOR, TESLA_STUN_TICKS, TRANSMISSION_LOSS_PER_TILE, WIND_GENERATION_MULTIPLIER, buildEnergyCost } from './rules';
-import { CHARGE_PAD_RATE_MULTIPLIER, CHARGE_RANGE, FLAK_BURST_RADIUS, factoryCanBuild } from './rules';
+import { BUILDER_ENERGY_RESERVE, CLIMB_SPEED_PERMILLE, LAVA_HEAT_DAMAGE, LAVA_HEAT_TICKS, LAVA_STRAND_DAMAGE, WADE_SPEED_PERMILLE, FLY_LOITER_RADIUS, FLY_LOITER_SPEED, FLY_LOITER_SPREAD, FLY_LOITER_TICKS, FLY_TURN_RADIUS, FLY_WEAVE, SEPARATION_GAP, DECAY_TICKS, MAX_TRANSMISSION_LOSS, MOBILE_SOLAR_EFFICIENCY_PERCENT, RESOURCE_REGEN_INTERVAL_TICKS, SOLAR_GENERATION_MULTIPLIER, STEAM_GENERATION_MULTIPLIER, STORAGE_DISCHARGE_FRACTION, STORAGE_RESERVE_FRACTION, LIGHTNING_RADIUS, LIGHTNING_STUN_TICKS, TESLA_SELF_STUN_FACTOR, TESLA_STUN_TICKS, TRANSMISSION_LOSS_PER_TILE, WIND_GENERATION_MULTIPLIER, buildEnergyCost } from './rules';
+import { CHARGE_PAD_RATE_MULTIPLIER, CHARGE_RANGE, FLAK_BURST_RADIUS, FLAME_SHOTS_PER_MATTER, factoryCanBuild } from './rules';
 import type { Simulation } from './simulation';
+import { liquidKind } from './terrain';
 
 /** Energy a storage building keeps back from discharging (and refills first), so its script can always run. */
 const reserveOf = (capacity: number): number => Math.max(1, Math.ceil(capacity * STORAGE_RESERVE_FRACTION));
@@ -20,7 +24,7 @@ const reserveOf = (capacity: number): number => Math.max(1, Math.ceil(capacity *
 /** Generation, then distribution inside each power network (consumers first, then storage). */
 export function powerSystem(sim: Simulation): void {
   if (sim.powerDirty) sim.rebuildNetworks();
-  const sun = sim.sunNow();
+  const sun = sim.solarNow();
   const air = sim.windNow();
   const store = sim.energy.f.amount;
   for (const net of sim.networks) {
@@ -43,6 +47,7 @@ export function powerSystem(sim: Simulation): void {
       const total =
         s.solar * sun * SOLAR_GENERATION_MULTIPLIER +
         s.wind * air * WIND_GENERATION_MULTIPLIER +
+        (s.steam > 0 ? (s.steam * Math.min(sim.ventsUnder[b] ?? 0, s.steamTurbines) * 100 * STEAM_GENERATION_MULTIPLIER) / s.steamTurbines : 0) +
         (sim.genCarry[b] ?? 0);
       gen[i] = Math.floor(total / unit);
       sim.genCarry[b] = total - gen[i] * unit;
@@ -148,7 +153,7 @@ export function powerSystem(sim: Simulation): void {
  * Same output formula as a building's panels, with the leftover fraction carried in `genCarry`.
  */
 export function unitSolarSystem(sim: Simulation): void {
-  const sun = sim.sunNow();
+  const sun = sim.solarNow();
   const amount = sim.energy.f.amount;
   const unit = 100 * GENERATION_SCALE;
   for (const e of sim.unit.dense) {
@@ -316,6 +321,137 @@ function arrive(sim: Simulation, e: number, how: 1 | 2 = 1): void {
   if (f && handles(f.program, EventId.Arrived)) raise(f, EventId.Arrived);
 }
 
+// Sidestepping: a ground unit whose way is blocked by another unit steers round it instead of pushing into it.
+// The test reads these module variables so the neighbour search needs no closure per unit per tick.
+/** Ticks a sidestep lasts once started, so the unit clears the other one before turning back to its path. */
+const AVOID_TICKS = 8;
+let avoidSim: Simulation;
+let avoidSelf = 0;
+let avoidX = 0;
+let avoidY = 0;
+let avoidHx = 0;
+let avoidHy = 0;
+let avoidRadius = 0;
+
+/** True for a unit that is ahead of the mover and close enough to its path to be in the way (not one that is walking the same way). */
+function inTheWay(o: number): boolean {
+  const sim = avoidSim;
+  if (o === avoidSelf || !sim.motion.has(o)) return false;
+  const so = sim.stats(o);
+  if (so.flying) return false;
+  const p = sim.pos.f;
+  const ox = p.x[o] - avoidX;
+  const oy = p.y[o] - avoidY;
+  const ahead = ox * avoidHx + oy * avoidHy;
+  if (ahead <= 0) return false;
+  const side = ox * avoidHy - oy * avoidHx;
+  const reach = avoidRadius + so.radius + SEPARATION_GAP;
+  if (side > reach || side < -reach) return false;
+  // Someone heading the same way is following, not blocking: separation handles that.
+  if (sim.motion.f.moving[o]) {
+    const path = sim.paths[o];
+    if (path && path.length >= 2) {
+      const wx = path[0] - p.x[o];
+      const wy = path[1] - p.y[o];
+      if (wx * avoidHx + wy * avoidHy > 0) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * If another ground unit stands in the way of the step from (x, y) towards (wx, wy), moves the unit one step round it
+ * (about 60 degrees off, the same turn for both of two units meeting head on, so they pass on opposite sides) and returns
+ * true. Returns false when nothing is in the way, the goal is close, or the sidestep would leave the open ground.
+ */
+function sidestep(sim: Simulation, e: number, s: { radius: number; speed: number; climb: number; wade: number }, x: number, y: number, wx: number, wy: number, step: number): boolean {
+  const dx = wx - x;
+  const dy = wy - y;
+  const d = Math.sqrt(dx * dx + dy * dy);
+  if (d < TILE) return false;
+  let turn = Math.sign(sim.avoidTicks[e] ?? 0);
+  if (turn === 0) {
+    avoidSim = sim;
+    avoidSelf = e;
+    avoidX = x;
+    avoidY = y;
+    avoidHx = dx / d;
+    avoidHy = dy / d;
+    avoidRadius = s.radius;
+    const look = s.radius + Math.max(maxRadius, TILE) + SEPARATION_GAP + step;
+    const o = sim.spatial.nearest(x, y, look, inTheWay);
+    if (o < 0) return false;
+    // Turn away from the side the blocker is on; dead ahead turns right.
+    const side = (sim.pos.f.x[o] - x) * avoidHy - (sim.pos.f.y[o] - y) * avoidHx;
+    turn = side > 0 ? -1 : 1;
+    sim.avoidTicks[e] = turn * AVOID_TICKS;
+  }
+  avoidHx = dx / d;
+  avoidHy = dy / d;
+  sim.avoidTicks[e] -= turn;
+  const c = 0.5;
+  const sn = 0.866 * turn;
+  const hx = avoidHx * c - avoidHy * sn;
+  const hy = avoidHx * sn + avoidHy * c;
+  const nx = x + Math.trunc(hx * step);
+  const ny = y + Math.trunc(hy * step);
+  if (!sim.terrain.enterable(Math.floor(nx / TILE), Math.floor(ny / TILE), s.climb, s.wade)) {
+    sim.avoidTicks[e] = 0;
+    return false;
+  }
+  sim.pos.f.x[e] = nx;
+  sim.pos.f.y[e] = ny;
+  return true;
+}
+
+/**
+ * One tick of flight. A flying unit has a heading and a limited turn rate, so it moves in arcs; on the way it weaves a little
+ * about the straight line (its own phase per unit); near the goal it loiters, circling at reduced speed for a few ticks, and then
+ * comes straight in and lands. Returns true once it has arrived. Deterministic: the weave comes from the tick and the unit index.
+ */
+function flyStep(sim: Simulation, e: number, speed: number, gx: number, gy: number): boolean {
+  const p = sim.pos.f;
+  const x = p.x[e];
+  const y = p.y[e];
+  const dx = gx - x;
+  const dy = gy - y;
+  const d = Math.sqrt(dx * dx + dy * dy);
+  let phase = sim.flyPhase[e] ?? 0;
+  if (phase < 0 && d < FLY_LOITER_RADIUS) phase = FLY_LOITER_TICKS + ((e * 7) % FLY_LOITER_SPREAD);
+  const want = Math.atan2(dy, dx);
+  let h = sim.flyHeading[e] ?? want;
+  let v = speed;
+  if (phase === 0) {
+    // Landing: straight in, slowing as it comes.
+    h = want;
+    v = Math.min(speed, Math.max(d, 1));
+    if (d > speed) v = Math.floor((speed * FLY_LOITER_SPEED) / 100) + Math.floor(((speed * (100 - FLY_LOITER_SPEED)) / 100) * Math.min(1, d / FLY_LOITER_RADIUS));
+  } else {
+    let aim = want;
+    if (phase > 0) {
+      v = Math.floor((speed * FLY_LOITER_SPEED) / 100);
+      phase--;
+    } else {
+      aim += FLY_WEAVE * Math.sin(sim.tick * 0.06 + e * 2.399) * Math.min(1, Math.max(0, (d - FLY_LOITER_RADIUS) / FLY_LOITER_RADIUS));
+    }
+    const maxTurn = v / FLY_TURN_RADIUS;
+    const diff = Math.atan2(Math.sin(aim - h), Math.cos(aim - h));
+    h += Math.max(-maxTurn, Math.min(maxTurn, diff));
+  }
+  sim.flyHeading[e] = h;
+  sim.flyPhase[e] = phase;
+  if (d <= v) {
+    p.x[e] = gx;
+    p.y[e] = gy;
+    sim.pos.markChanged(e);
+    return true;
+  }
+  p.x[e] = Math.min(sim.widthSub - 1, Math.max(0, x + Math.trunc(Math.cos(h) * v)));
+  p.y[e] = Math.min(sim.heightSub - 1, Math.max(0, y + Math.trunc(Math.sin(h) * v)));
+  sim.pos.markChanged(e);
+  return false;
+}
+
 /** Follows each unit's waypoints. Units that stop making progress near the goal count as arrived. */
 export function movementSystem(sim: Simulation): void {
   const m = sim.motion.f;
@@ -333,23 +469,50 @@ export function movementSystem(sim: Simulation): void {
       arrive(sim, e);
       continue;
     }
+    if (s.flying) {
+      const fx = p.x[e];
+      const fy = p.y[e];
+      const arrived = flyStep(sim, e, s.speed, path[0], path[1]);
+      // An enemy shield is a wall to flyers too: they stay where they were and try again next tick.
+      if (sim.shieldList.length > 0 && moveBlocked(sim, e, fx, fy, p.x[e], p.y[e])) {
+        p.x[e] = fx;
+        p.y[e] = fy;
+        continue;
+      }
+      if (arrived) arrive(sim, e);
+      continue;
+    }
     let budget = s.speed;
     let x = p.x[e];
     let y = p.y[e];
     // Legs are slower on rock than on open ground.
     if (s.climb > 0 && !s.flying && sim.terrain.heightAt(Math.floor(x / TILE), Math.floor(y / TILE)) > 0) budget = Math.floor((budget * CLIMB_SPEED_PERMILLE) / 1000);
+    // Wading through water or lava is slower, except on a hover drive.
+    else if (sim.terrain.hasLiquid && !s.hover) {
+      const d = sim.terrain.depthAt(Math.floor(x / TILE), Math.floor(y / TILE));
+      if (d > 0) budget = Math.floor((budget * WADE_SPEED_PERMILLE[liquidKind(d)]) / 1000);
+    }
+    if (!s.flying && path.length >= 2 && budget > 0 && sidestep(sim, e, s, x, y, path[0], path[1], budget)) {
+      x = p.x[e];
+      y = p.y[e];
+      budget = 0;
+    }
+    const shielded = sim.shieldList.length > 0;
     while (budget > 0 && path.length) {
       const dx = path[0] - x;
       const dy = path[1] - y;
       const d = Math.sqrt(dx * dx + dy * dy);
-      if (d <= budget) {
-        x = path[0];
-        y = path[1];
+      const reached = d <= budget;
+      const nx = reached ? path[0] : x + Math.trunc((dx * budget) / d);
+      const ny = reached ? path[1] : y + Math.trunc((dy * budget) / d);
+      // An enemy shield is a wall: the unit stops short of it and keeps its path, so it goes on when the shield drops or turns away.
+      if (shielded && moveBlocked(sim, e, x, y, nx, ny)) break;
+      x = nx;
+      y = ny;
+      if (reached) {
         budget -= d;
         path.splice(0, 2);
       } else {
-        x += Math.trunc((dx * budget) / d);
-        y += Math.trunc((dy * budget) / d);
         budget = 0;
       }
     }
@@ -369,6 +532,26 @@ export function movementSystem(sim: Simulation): void {
     const stuck = sim.stuckTicks[e];
     if (stuck >= 8 && left < 2.5 * TILE) arrive(sim, e, 2);
     else if (stuck % 25 === 0 && stuck > 0) sim.paths[e] = sim.planPath(e, m.tx[e], m.ty[e], s.flying); // jammed: re-plan
+  }
+}
+
+/**
+ * Lava and voids: every LAVA_HEAT_TICKS ticks (and only on maps with liquid) a hover unit over lava is scorched, a ground unit
+ * left in lava (painted under it, pushed in) burns up fast, and one over a void is lost. Units that cannot enter a liquid do not
+ * get there by themselves, so this is a rare case and the loop is cheap.
+ */
+export function liquidSystem(sim: Simulation): void {
+  const t = sim.terrain;
+  if (!t.hasLiquid || sim.tick % LAVA_HEAT_TICKS !== 0) return;
+  const p = sim.pos.f;
+  for (const e of sim.motion.dense) {
+    const s = sim.stats(e);
+    if (s.flying) continue;
+    const d = t.depthAt(Math.floor(p.x[e] / TILE), Math.floor(p.y[e] / TILE));
+    if (d === 0) continue;
+    const kind = liquidKind(d);
+    if (kind === 4) sim.damage(e, sim.health.f.hp[e] + 1, 0);
+    else if (kind === 3) sim.damage(e, d <= s.wade ? LAVA_HEAT_DAMAGE : LAVA_STRAND_DAMAGE, 0);
   }
 }
 
@@ -434,7 +617,7 @@ export function separationSystem(sim: Simulation): void {
     pushY[e] = 0;
     const s = sim.stats(e);
     // Pushes never move a unit onto ground it could not walk to (clearance aside: crowds may squeeze a big hull).
-    const ok = (ax: number, ay: number) => s.flying || t.enterable(Math.floor(ax / TILE), Math.floor(ay / TILE), s.climb);
+    const ok = (ax: number, ay: number) => s.flying || t.enterable(Math.floor(ax / TILE), Math.floor(ay / TILE), s.climb, s.wade);
     if (ok(nx, ny)) {
       p.x[e] = nx;
       p.y[e] = ny;
@@ -495,12 +678,15 @@ export function combatSystem(sim: Simulation): void {
       w.target[e] = -1;
       continue;
     }
-    if (sim.edgeDistance(e, t) > stats.range) continue;
-    if (!sim.canSpendMatter(e, stats.matter)) continue;
+    if (reachDistance(sim, e, t) > stats.range + rangeBonus(sim, e, t, stats.kind)) continue;
+    // A flamethrower pays one matter for every FLAME_SHOTS_PER_MATTER fireballs, counting them in `power` (a laser's setting, unused here).
+    const fuel = stats.kind === 'flame' && w.power[e] % FLAME_SHOTS_PER_MATTER !== 0 ? 0 : stats.matter;
+    if (!sim.canSpendMatter(e, fuel)) continue;
     // A laser's script may choose the energy per shot (laserPower); damage scales with it.
     const shotEnergy = stats.kind === 'laser' && w.power[e] > 0 ? Math.min(w.power[e], stats.use) : stats.use;
     if (!sim.spend(e, shotEnergy)) continue;
-    sim.spendMatter(e, stats.matter);
+    sim.spendMatter(e, fuel);
+    if (stats.kind === 'flame') w.power[e] = (w.power[e] + 1) % FLAME_SHOTS_PER_MATTER;
     w.cooldown[e] = stats.cooldown;
     sim.emit(SimEvent.Shot, e, t);
     if (stats.kind === 'tesla') {
@@ -519,9 +705,27 @@ export function combatSystem(sim: Simulation): void {
       });
       continue;
     }
+    // A flamethrower lobs a fireball at the spot; it can do nothing about a missile.
+    if (stats.kind === 'flame' && !sim.missile.has(t)) {
+      launchFlame(sim, e, t);
+      continue;
+    }
+    // A cannon fires a shell that flies to the end of its range; one aimed at a missile is still a quick shot.
+    if (stats.kind === 'cannon' && !sim.missile.has(t)) {
+      launchShell(sim, e, t, stats);
+      continue;
+    }
     // Small missiles are hard to hit: the shot (and its energy) is simply wasted.
     if (sim.missile.has(t) && !shotHitsMissile(sim, t)) continue;
     const damage = stats.kind === 'laser' && stats.use > 0 ? Math.max(1, Math.round((stats.damage * shotEnergy) / stats.use)) : stats.damage;
+    // An enemy shield across the line takes the hit instead (shots at a missile fly over it).
+    if (sim.shieldList.length > 0 && !sim.missile.has(t)) {
+      const shield = shieldBlock(sim, sim.unit.f.owner[e], sim.pos.f.x[e], sim.pos.f.y[e], sim.pos.f.x[t], sim.pos.f.y[t]);
+      if (shield >= 0) {
+        shieldAbsorb(sim, shield, damage, sim.unit.f.owner[e], shieldHit.x, shieldHit.y);
+        continue;
+      }
+    }
     sim.damage(t, damage, sim.unit.f.owner[e], w.aim[e]);
   }
 }
@@ -533,6 +737,34 @@ function teslaDischarge(sim: Simulation, e: number, range: number): void {
     if (o !== e && sim.unit.has(o)) sim.stun(o, TESLA_STUN_TICKS);
   });
   if (!sim.stats(e).structure) sim.stun(e, Math.round(TESLA_STUN_TICKS * TESLA_SELF_STUN_FACTOR));
+}
+
+/**
+ * Lightning in a storm: now and then a strike stuns the CPU of everything near where it lands, briefly (a short
+ * tesla stun). Half the strikes pick out one of the units or buildings, so they do hit something; the rest land on
+ * open ground at a spot the client works out for itself (`strikeSpot`), and only matter if something stands there.
+ * Which tick has a strike, and where, comes from the seed and the tick alone.
+ */
+export function lightningSystem(sim: Simulation): void {
+  const strike = sim.weatherNow().lightning(sim.config.seed, sim.tick);
+  if (strike === 0) return;
+  let x: number, y: number;
+  if (strikeIsAimed(strike)) {
+    const dense = sim.unit.dense;
+    if (dense.length === 0) return;
+    const e = dense[(strike >>> 1) % dense.length];
+    if (!sim.pos.has(e)) return;
+    x = sim.pos.f.x[e];
+    y = sim.pos.f.y[e];
+    sim.emit(SimEvent.Lightning, e, e);
+  } else {
+    const spot = strikeSpot(strike, sim.terrain.width, sim.terrain.height);
+    x = (spot.x + 0.5) * TILE;
+    y = (spot.y + 0.5) * TILE;
+  }
+  sim.spatial.forEachInRadius(x, y, LIGHTNING_RADIUS, (o) => {
+    if (sim.unit.has(o)) sim.stun(o, LIGHTNING_STUN_TICKS);
+  });
 }
 
 /**
@@ -635,6 +867,7 @@ export function deathSystem(sim: Simulation): void {
     if (hp[e] > 0) continue;
     sim.emit(SimEvent.Death, e, 0);
     sim.recordDeath(e);
+    if (carriesFlame(sim, e)) flameBurst(sim, e); // its fuel goes up
     sim.destroyEntity(e);
   }
 }
@@ -728,7 +961,14 @@ export function buildSystem(sim: Simulation): void {
   }
 }
 
-/** Units that stay without energy for DECAY_TICKS break down into a matter block worth their cost. */
+/** The hull size tier of a unit (0 micro to 5 colossus), plus 8 if it flies: what its debris is drawn from. */
+function wreckLook(sim: Simulation, e: number): number {
+  const parts = sim.blueprintOf(e)?.parts ?? [];
+  const chassis = parts.map((id) => PARTS[id]).find((d) => d?.slot === 'chassis');
+  return (chassis?.size ?? 0) + (sim.stats(e).flying ? 8 : 0);
+}
+
+/** Units that stay without energy for DECAY_TICKS break down into debris: a matter block worth their cost, used up by harvesting. */
 export function decaySystem(sim: Simulation): void {
   for (const e of [...sim.unit.dense]) {
     if (!sim.motion.has(e)) continue;
@@ -738,7 +978,8 @@ export function decaySystem(sim: Simulation): void {
     }
     if (++sim.flatTicks[e] < DECAY_TICKS) continue;
     const bp = sim.blueprintOf(e);
-    sim.spawnResource(sim.pos.f.x[e], sim.pos.f.y[e], bp?.stats.cost ?? 0);
+    const cost = bp?.stats.cost ?? 0;
+    if (cost > 0) sim.spawnDebris(sim.pos.f.x[e], sim.pos.f.y[e], cost, wreckLook(sim, e));
     sim.lastHitBy[e] = 0;
     sim.emit(SimEvent.Death, e, 0);
     sim.recordDeath(e);

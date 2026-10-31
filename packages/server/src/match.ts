@@ -8,14 +8,19 @@ import {
   HordeSpawner,
   mapStarts,
   devClear,
+  devDamage,
+  devPaintTerrain,
   devFinishSites,
   devGive,
   devHeal,
   devRemove,
+  devFire,
   devSpawn,
   NEUTRAL,
   mapById,
   messageAllowed,
+  DEFAULT_BOT_LEVEL,
+  parseBotLevel,
   parseGameMode,
   parseScenario,
   setUpAi,
@@ -70,6 +75,8 @@ interface BotSide extends Side {
   readonly start: Corner;
   /** Stepped once per tick before the simulation. */
   controller?: { step(): void };
+  /** How well it plays, an index into `BOT_SKILLS` (the waiting room's bots; the rest play at Hard). */
+  level?: number;
 }
 
 interface Player extends Side {
@@ -97,6 +104,10 @@ export interface MatchOptions {
   readonly mode?: GameMode;
   /** Single Player and Co-op: how the game is set up. Default 'standard'. A map made for a scenario (`MapDefinition.scenario`) decides it; Free for all ignores it. */
   readonly scenario?: Scenario;
+  /** Single Player and Co-op (standard scenario): the opponents, each a name and a level (`BOT_SKILLS` index). Default: one Normal bot. Co-op hosts change them in the waiting room. */
+  readonly bots?: readonly { readonly name: string; readonly level: number }[];
+  /** Surrounded (alone or co-op): the level all four corner bots play at (`BOT_SKILLS` index). Default Normal. */
+  readonly difficulty?: number;
   /** Campaign mode: the level's own map definition and terrain seed (replaces `mapId`). */
   readonly level?: { readonly map: MapDefinition; readonly seed: number };
   /** Accept the developer commands of the client's Dev Options menu (cheats). Default off: the server sets it from WST_DEV_TOOLS=1. */
@@ -113,6 +124,12 @@ type Command =
   | { kind: 'leave'; player: Player }
   | { kind: 'forfeit'; player: Player }
   | { kind: 'msg'; player: Player; msg: ClientMessage };
+
+/** A player or computer player's name: no control characters or markup, at most 16 characters. */
+function cleanName(name: string): string {
+  // eslint-disable-next-line no-control-regex
+  return name.replace(/[\u0000-\u001f\u007f<>&"]/g, '').trim().slice(0, 16);
+}
 
 function ignoreRefused(fn: () => void): void {
   try {
@@ -157,6 +174,10 @@ export class Match {
   private readonly bots = new Map<number, BotSide[]>();
   /** Co-op Horde and Surrounded: one set of opponents that every human faces together. */
   private shared: BotSide[] = [];
+  /** The computer players chosen by the host (Free for all and standard Single Player and Co-op). They hold a seat each until removed. */
+  private readonly lobbyBots: BotSide[] = [];
+  /** Surrounded: the level of every corner bot. */
+  private readonly difficulty: number;
 
   constructor(options: MatchOptions = {}) {
     this.mode = parseGameMode(options.mode);
@@ -171,6 +192,11 @@ export class Match {
     this.fog = options.fog ?? true;
     this.devTools = options.devTools ?? false;
     this.sim.requirePlacementVision = this.fog;
+    this.difficulty = parseBotLevel(options.difficulty);
+    if (this.chosenBots && this.botted) {
+      for (const bot of (options.bots ?? []).slice(0, this.corners.length - 1)) this.addLobbyBot(bot.name, bot.level);
+      if (!this.lobbyBots.length) this.addLobbyBot('', DEFAULT_BOT_LEVEL);
+    }
   }
 
   get playerCount(): number {
@@ -179,7 +205,7 @@ export class Match {
 
   /** Most human players a match holds: one per seat, or two in co-op mode (the other corners hold bots); co-op Horde and Surrounded fill every seat. */
   get capacity(): number {
-    return this.single ? 1 : this.mode === 'coop' ? (this.sharedOpposition ? this.seats.length : 2) : this.corners.length;
+    return this.single ? 1 : this.mode === 'coop' ? (this.sharedOpposition ? this.seats.length : 2) : this.corners.length - this.lobbyBots.length;
   }
 
   /** Co-op rooms with a scenario: the humans face one horde or one ring of bots together. */
@@ -197,9 +223,14 @@ export class Match {
     return this.mode !== 'versus';
   }
 
+  /** Whether the opponents are a list the host chooses (every game type but the scenarios, which bring their own). */
+  private get chosenBots(): boolean {
+    return this.mode === 'versus' || this.scenario === 'standard';
+  }
+
   /** Every server-run opponent in the match. */
   private get allBots(): BotSide[] {
-    return [...[...this.bots.values()].flat(), ...this.shared];
+    return [...[...this.bots.values()].flat(), ...this.shared, ...this.lobbyBots];
   }
 
   /** Surrounded starts the human in the middle of the map and gives the four corners to bots. */
@@ -236,9 +267,9 @@ export class Match {
 
   /** Bot modes need a seat for the human and another for their bot, unless the bots' bases are elsewhere. */
   private freeCorner(): number {
-    const sides = this.botted && !this.surrounded && !(this.endless && this.map.hordeFrom) ? 2 : 1;
+    const sides = this.botted && !this.chosenBots && !this.surrounded && !(this.endless && this.map.hordeFrom) ? 2 : 1;
     const free = this.corners.filter((id) => id === 0).length;
-    if (free < sides || (this.corners.length - free) / sides >= this.capacity) return -1;
+    if (free < sides || (this.corners.length - free - this.lobbyBots.length) / sides >= this.capacity) return -1;
     // Seats on a map made for a scenario are all close together: fill them in order.
     return this.map.starts ? this.corners.indexOf(0) : this.randomFreeCorner();
   }
@@ -252,9 +283,9 @@ export class Match {
     return !this.started;
   }
 
-  /** Fewest players the host may start with: bot modes run with one human, a free-for-all needs two. */
+  /** Fewest humans the host may start with: bot modes run with one, a free-for-all needs two sides (a computer player counts as one). */
   get minPlayers(): number {
-    return this.botted ? 1 : 2;
+    return this.botted || this.lobbyBots.length > 0 ? 1 : 2;
   }
 
   /** The lobby host: whoever has been present longest. */
@@ -336,7 +367,9 @@ export class Match {
     this.corners[corner] = player.id;
     if (this.botted) {
       this.sim.teams.set(player.id, 1);
-      if (!this.sharedOpposition) {
+      if (this.chosenBots) {
+        // The opponents already exist (see the constructor and editLobbyBots).
+      } else if (!this.sharedOpposition) {
         const opponents = this.makeOpponents(corner);
         this.bots.set(player.id, opponents);
         for (const bot of opponents) this.sim.teams.set(bot.id, 2);
@@ -367,7 +400,7 @@ export class Match {
       spectating: player.spectating,
     });
     if (!this.started) this.send(player, this.lobbyMessage());
-    if (this.sim.devSun >= 0 || this.sim.devWind >= 0) this.send(player, { t: 'weather', sun: this.sim.devSun, wind: this.sim.devWind });
+    if (this.sim.devSun >= 0 || this.sim.devWind >= 0 || this.sim.devSky >= 0 || this.sim.weather.intensity < 100 || this.sim.weather.changeTicks >= 0) this.send(player, { t: 'weather', sun: this.sim.devSun, wind: this.sim.devWind, sky: this.sim.devSky, intensity: this.sim.weather.intensity, change: this.sim.weather.changeTicks < 0 ? -1 : this.sim.weather.changeTicks / TICK_RATE });
     this.send(player, { t: 'blueprints', list: this.sim.blueprints.all().map(toInfo) });
     this.send(player, this.pauseMessage());
     const view = this.fog && !player.spectating ? player.interest.reset(this.visibleTo(player)) : undefined;
@@ -577,10 +610,14 @@ export class Match {
     return {
       t: 'lobby',
       players,
+      bots: this.lobbyBots.map((b) => ({ id: b.id, name: b.name, level: b.level ?? DEFAULT_BOT_LEVEL })),
+      botsAllowed: this.chosenBots && !this.single,
+      canAddBot: this.chosenBots && !this.single && this.freeSeats() > 0,
+      minBots: this.botted ? 1 : 0,
       hostId: this.host?.id ?? 0,
       mode: this.mode,
       mapName: this.map.name,
-      capacity: this.capacity,
+      capacity: this.capacity + this.lobbyBots.length,
       minPlayers: this.minPlayers,
     };
   }
@@ -605,6 +642,12 @@ export class Match {
   private setUpSide(player: Player): void {
     const classes = setUpPlayer(this.sim, player.id, this.seats[this.corners.indexOf(player.id)], STARTING_CREDITS);
     this.announce(player, classes);
+    for (const bot of this.lobbyBots) {
+      if (bot.controller) continue;
+      const set = setUpAi(this.sim, bot.id, bot.start, 1, bot.level);
+      bot.controller = set.bot;
+      this.broadcast({ t: 'blueprints', list: set.classes.map(toInfo) });
+    }
     for (const bot of this.sharedOpposition ? this.shared : this.bots.get(player.id) ?? []) {
       let list: Blueprint[];
       if (bot.controller) {
@@ -620,7 +663,7 @@ export class Match {
         bot.hadForces = true;
         this.fielded.add(bot.id);
       } else {
-        const set = setUpAi(this.sim, bot.id, bot.start, this.surrounded ? SURROUNDED_BOT_PACE : 1);
+        const set = setUpAi(this.sim, bot.id, bot.start, this.surrounded ? SURROUNDED_BOT_PACE : 1, this.difficulty);
         bot.controller = set.bot;
         list = set.classes;
       }
@@ -749,7 +792,7 @@ export class Match {
   private visibleTo(player: Player): Set<number> {
     // Co-op-mode humans are one team: they see what each other sees.
     const team = this.botted ? new Set([...this.players.values(), ...[...this.away.values()].map((a) => a.player)].map((p) => p.id)) : undefined;
-    return visibleTo(this.sim.world, team?.has(player.id) ? team : player.id, (e) => this.sim.stats(e), this.sim.terrain, this.sim.sunNow());
+    return visibleTo(this.sim.world, team?.has(player.id) ? team : player.id, (e) => this.sim.stats(e), this.sim.terrain, this.sim.sunNow(), this.sim.hazeNow());
   }
 
   /** Full queues of units whose tasks changed, grouped by owner (only the owner sees them). */
@@ -855,13 +898,15 @@ export class Match {
           this.sendWelcome(player);
         }
         return;
-      case 'setName': {
-        // eslint-disable-next-line no-control-regex
-        const name = msg.name.replace(/[\u0000-\u001f\u007f<>&"]/g, '').trim().slice(0, 16);
-        player.name = name || `Player ${player.id}`;
+      case 'setName':
+        player.name = cleanName(msg.name) || `Player ${player.id}`;
         this.lastScoreboard = '';
         return;
-      }
+      case 'addBot':
+      case 'editBot':
+      case 'removeBot':
+        this.editLobbyBots(player, msg);
+        return;
       case 'defineBlueprint': {
         if (this.sim.blueprints.ownedBy(player.id).filter((b) => !b.retired).length >= MAX_CLASSES_PER_PLAYER) {
           throw new CommandError(`At most ${MAX_CLASSES_PER_PLAYER} classes per player`);
@@ -949,6 +994,54 @@ export class Match {
     }
   }
 
+  /** Free seats a computer player may still take: Co-op keeps a seat free for each human it still has room for. */
+  private freeSeats(): number {
+    const free = this.corners.filter((id) => id === 0).length;
+    return free - (this.mode === 'coop' ? Math.max(0, this.capacity - this.players.size) : 0);
+  }
+
+  /** Seats a computer player at once; returns it, or undefined when no seat is free. */
+  private addLobbyBot(name: string, level: number): BotSide | undefined {
+    const seat = this.map.starts ? this.corners.indexOf(0) : this.randomFreeCorner();
+    if (seat < 0) return undefined;
+    const taken = new Set(this.lobbyBots.map((b) => b.name));
+    let n = 1;
+    while (taken.has(`Bot ${n}`)) n++;
+    const bot: BotSide = {
+      id: this.nextPlayerId++,
+      name: cleanName(name) || `Bot ${n}`,
+      hadForces: false,
+      seat,
+      start: this.seats[seat],
+      level: parseBotLevel(level),
+    };
+    this.corners[seat] = bot.id;
+    this.lobbyBots.push(bot);
+    if (this.botted) this.sim.teams.set(bot.id, 2);
+    return bot;
+  }
+
+  /** The host's changes to the computer players before the match starts. Others' requests are ignored. */
+  private editLobbyBots(player: Player, msg: Extract<ClientMessage, { t: 'addBot' | 'editBot' | 'removeBot' }>): void {
+    if (this.started || !this.chosenBots || this.host !== player) return;
+    if (msg.t === 'addBot') {
+      if (this.freeSeats() <= 0 || !this.addLobbyBot(msg.name, msg.level)) throw new CommandError('No free seat for a computer player');
+      return;
+    }
+    const at = this.lobbyBots.findIndex((b) => b.id === msg.id);
+    if (at < 0) return;
+    const bot = this.lobbyBots[at];
+    if (msg.t === 'removeBot') {
+      // A bot match needs an opponent.
+      if (this.botted && this.lobbyBots.length <= 1) return;
+      this.lobbyBots.splice(at, 1);
+      this.retire([bot]);
+    } else {
+      bot.name = cleanName(msg.name) || bot.name;
+      bot.level = parseBotLevel(msg.level, bot.level);
+    }
+  }
+
   /** Whether `id` is neutral or a side of this match. */
   private knownOwner(id: number): boolean {
     return id === NEUTRAL || [...this.players.values(), ...[...this.away.values()].map((a) => a.player), ...this.allBots].some((s) => s.id === id);
@@ -995,6 +1088,18 @@ export class Match {
       case 'clear':
         note(`Destroyed ${devClear(this.sim, cmd.owner)} units and buildings.`);
         return;
+      case 'fire':
+        note(`Started ${devFire(this.sim, cmd.x, cmd.y, cmd.mode, cmd.count)} ${cmd.mode === 'burst' ? 'fireballs' : 'fires'}.`);
+        return;
+      case 'terrain': {
+        const cells = devPaintTerrain(this.sim, cmd.x, cmd.y, cmd.r, cmd.elevation);
+        if (cells.length) this.broadcast({ t: 'terrainPatch', cells });
+        note(cells.length ? `Painted ${cells.length / 2} tiles.` : 'Nothing to paint there (already that, or under a building).', cells.length > 0);
+        return;
+      }
+      case 'damage':
+        note(`Hurt ${devDamage(this.sim, cmd.ids, cmd.amount)} of ${cmd.ids.length} selected things by ${cmd.amount}.`, cmd.ids.length > 0);
+        return;
       case 'heal':
         note(`Restored ${devHeal(this.sim, cmd.owner)} units and buildings.`);
         return;
@@ -1004,8 +1109,9 @@ export class Match {
       case 'weather':
         this.sim.devSun = cmd.sun;
         this.sim.devWind = cmd.wind;
-        this.broadcast({ t: 'weather', sun: cmd.sun, wind: cmd.wind });
-        note(`Sunlight ${cmd.sun < 0 ? 'natural' : cmd.sun}, wind ${cmd.wind < 0 ? 'natural' : cmd.wind}.`);
+        this.sim.weather.setDev(cmd.sky, cmd.intensity, this.sim.tick, cmd.change < 0 ? -1 : cmd.change * TICK_RATE);
+        this.broadcast({ t: 'weather', sun: cmd.sun, wind: cmd.wind, sky: cmd.sky, intensity: this.sim.weather.intensity, change: cmd.change });
+        note(`Sunlight ${cmd.sun < 0 ? 'natural' : cmd.sun}, wind ${cmd.wind < 0 ? 'natural' : cmd.wind}, sky ${['dry', 'rain', 'storm', 'heatwave', 'dust', 'mist'][cmd.sky] ?? 'natural'}, intensity ${this.sim.weather.intensity}, changes ${cmd.change < 0 ? 'natural' : `${cmd.change}s`}.`);
         return;
       case 'pause':
         this.devPause = cmd.mode;

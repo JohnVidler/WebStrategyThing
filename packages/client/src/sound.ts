@@ -1,6 +1,8 @@
-import { pick, rollVolume, SoundBank, spatialise, type Pool, type SoundFileInfo, type SoundManifest } from './soundbank';
+import { pick, rollVolume, SoundBank, spatialise, volumeAt, type Pool, type SoundFileInfo, type SoundManifest } from './soundbank';
 
 const STORAGE_KEY = 'wst-sfx';
+/** Seconds a looping bed takes to ease to a new level (`SoundHandle.setLevel`). */
+const LEVEL_EASE_S = 1;
 
 interface Saved {
   volume: number;
@@ -25,10 +27,14 @@ export interface PlayOptions {
   loop?: boolean;
   /** Fade in over this long. */
   fadeInMs?: number;
+  /** Where in the sound's volume range to play it, 0 (its min) to 1 (its max), instead of a random level. Adjustable later with `SoundHandle.setLevel`. */
+  level?: number;
 }
 
 /** A looping sound that can be stopped. */
 export interface SoundHandle {
+  /** Moves the sound to `level` 0..1 of its volume range (see `PlayOptions.level`), easing there. */
+  setLevel(level: number): void;
   /** Stops it, fading out over `fadeMs` if given. */
   stop(fadeMs?: number): void;
   /** Set once it has stopped for any reason. */
@@ -60,7 +66,7 @@ export class SoundPlayer {
   private readonly raw = new Map<string, Promise<ArrayBuffer | undefined>>();
   private readonly decoded = new Map<string, AudioBuffer | Promise<AudioBuffer | undefined> | null>();
   /** Looping beds by layer (e.g. 'bed', 'combat'): the tag wanted and the sound currently carrying it. */
-  private readonly layers = new Map<string, { tag: string; handle?: SoundHandle }>();
+  private readonly layers = new Map<string, { tag: string; handle?: SoundHandle; level?: number }>();
   private ambientTimer: number | undefined;
 
   constructor() {
@@ -146,7 +152,15 @@ export class SoundPlayer {
     const buffer = this.buffer(sound);
     if (!buffer) return undefined; // still loading: skipped this once
     pool.lastPlayed = now;
-    return this.start(ctx, this.master, pool, sound, buffer, gain * rollVolume(sound.volume), pan, cutoff, options);
+    return this.start(ctx, this.master, pool, sound, buffer, gain, options?.level === undefined ? rollVolume(sound.volume) : volumeAt(sound.volume, options.level), pan, cutoff, options);
+  }
+
+  /** Moves the looping bed on `layer` to `level` 0..1 of its volume range (quiet at 0, loudest at 1); a bed that starts later starts there. */
+  setAmbientLevel(layer: string, level: number): void {
+    const have = this.layers.get(layer);
+    if (!have || have.level === level) return;
+    have.level = level;
+    if (have.handle && !have.handle.ended) have.handle.setLevel(level);
   }
 
   /**
@@ -166,7 +180,7 @@ export class SoundPlayer {
     let waiting = false;
     for (const layer of this.layers.values()) {
       if (layer.handle && !layer.handle.ended) continue;
-      layer.handle = this.play(layer.tag, { loop: true, fadeInMs: 1500 });
+      layer.handle = this.play(layer.tag, { loop: true, fadeInMs: 1500, level: layer.level });
       if (!layer.handle && this.bank?.pool(layer.tag).sounds.length) waiting = true; // has sounds, just not ready yet
     }
     if (waiting && this.ambientTimer === undefined) this.ambientTimer = window.setInterval(() => this.syncAmbient(), 1000);
@@ -182,7 +196,8 @@ export class SoundPlayer {
     pool: Pool,
     sound: SoundFileInfo,
     buffer: AudioBuffer,
-    gain: number,
+    base: number,
+    rolled: number,
     pan: number,
     cutoff: number,
     options?: PlayOptions,
@@ -192,6 +207,7 @@ export class SoundPlayer {
     source.loop = options?.loop ?? sound.loop;
     if (sound.pitchVariance > 0) source.playbackRate.value = 1 + (Math.random() * 2 - 1) * sound.pitchVariance;
     const level = ctx.createGain();
+    const gain = base * rolled;
     if (options?.fadeInMs) {
       level.gain.value = 0;
       level.gain.linearRampToValueAtTime(gain, ctx.currentTime + options.fadeInMs / 1000);
@@ -231,6 +247,12 @@ export class SoundPlayer {
     const handle = {
       get ended() {
         return ended;
+      },
+      setLevel: (to: number) => {
+        if (ended) return;
+        level.gain.cancelScheduledValues(ctx.currentTime);
+        level.gain.setValueAtTime(level.gain.value, ctx.currentTime);
+        level.gain.linearRampToValueAtTime(base * volumeAt(sound.volume, to), ctx.currentTime + LEVEL_EASE_S);
       },
       stop: (fadeMs = 0) => {
         if (ended) return;

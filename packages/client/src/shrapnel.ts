@@ -19,6 +19,8 @@ export interface Shrapnel {
   bounces: number;
   /** Ground distance of the first hop, in tiles; every bounce travels `BOUNCE_SPEED` times this far. */
   hop: number;
+  /** True once it has bounced: only a fragment that bounced can start a fire where it finally comes to rest. */
+  bounced: boolean;
 }
 
 /** Never hold more than this many at once: a big battle must not slow the frame. */
@@ -33,6 +35,19 @@ const ARC = 0.35;
 export const BOUNCE_CHANCE = 0.4;
 /** A bounce leaves at this fraction of the first hop's speed (each hop lasts as long as the first, so it goes this much of the distance). */
 export const BOUNCE_SPEED = 0.75;
+
+/** Chance that a fragment which bounced sets the ground alight where it expires (none in heavy rain; see `emberChance`). */
+export const EMBER_CHANCE = 0.12;
+/** How long such a fire burns on a dry day (ms); rain shortens it. */
+export const EMBER_MS = 3500;
+
+/** The chance a fragment that has just come to rest starts a fire, given the wetness 0..1: never for one that did not bounce, and less the wetter it is. */
+export function emberChance(s: Shrapnel, wet: number): number {
+  return s.bounced && s.bounces <= 0 ? EMBER_CHANCE * (1 - Math.min(1, Math.max(0, wet))) : 0;
+}
+
+/** How long (ms) a fire started now lasts: a dry day's, cut by up to three quarters in the wettest weather. */
+export const emberLife = (wet: number): number => EMBER_MS * (1 - 0.75 * Math.min(1, Math.max(0, wet)));
 
 /** How many fragments a blast of this radius can throw (the actual count is 0..this). */
 export const maxShrapnel = (radius: number): number => Math.min(10, Math.round(3 + radius * 3));
@@ -53,6 +68,7 @@ export function throwShrapnel(list: Shrapnel[], x: number, y: number, radius: nu
       size: 1.4 + rand() * 1.4,
       bounces: rand() < BOUNCE_CHANCE ? 1 + Math.floor(rand() * 3) : 0,
       hop: dist,
+      bounced: false,
     });
   }
 }
@@ -78,6 +94,7 @@ export function landShrapnel(list: Shrapnel[], now: number, land: (s: Shrapnel) 
     s.ty += Math.sin(angle) * s.hop * BOUNCE_SPEED;
     s.born += s.ms;
     s.bounces--;
+    s.bounced = true;
     list[w++] = s;
   }
   list.length = w;

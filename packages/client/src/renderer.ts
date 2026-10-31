@@ -1,3 +1,6 @@
+import type { DevGlow, EffectSinks } from './devEffects';
+import { drawShot, SHOT_LIFE_MS, shotKindOf, shotPower, type ShotKind } from './beams';
+import { drawBlast, energyRadius, hasBatteryPart, makeBlast, shieldRadius, type Blast, type BlastKind } from './blasts';
 import { buildSparksDone, drawBuildSparks, makeBuildSparks, type BuildSparks } from './buildSparks';
 import {
   Cargo,
@@ -5,9 +8,17 @@ import {
   CpuState,
   CpuStatus,
   EnergyView,
+  Debris,
+  Feature,
+  FeatureKind,
   findPath,
   Health,
   Missile,
+  Flame,
+  FLAME_LIFE_STEPS,
+  Shell,
+  Aim,
+  Shield,
   Position,
   Production,
   Resource,
@@ -15,23 +26,36 @@ import {
   SimEvent,
   TaskType,
   TICK_RATE,
+  LIGHTNING_RADIUS,
   CLIFF_HEIGHT,
   WHEELS,
   chargeZoneRadius,
   RADAR_FADE_TICKS,
   RESOURCE_PATCH_AMOUNT,
+  Sky,
   TILE,
   Unit,
   type Blueprint,
+  type Terrain,
   type TickInfo,
 } from '@wst/engine';
 import { AlphaFilter, Application, Container, Graphics, Sprite, Text, Texture } from 'pixi.js';
 import { buildingHalf, dishAnchor, drawDish, drawLook, drawRotor, drawTurretSprite, drawWall, factoryAnchor, GAIT_FRAMES, gaitLength, headlampsOf, isWall, lookOf, turretAnchors, WALL_E, WALL_N, WALL_NE, WALL_NW, WALL_S, WALL_SE, WALL_SW, WALL_W, windAnchor, type Lamp, type Look } from './art';
+import { contourSegments } from './contours';
+import { buildLiquids, type Liquids, type Loop } from './liquids';
+import { DEBRIS_VARIANTS, debrisStage, drawDebris } from './debris';
 import { drawFactoryFx, type FactoryParts } from './factoryFx';
-import { BEAM_H, BEAM_LAMP_Y, GLOW_SIZE, makeBeamTexture, makeGlowTexture } from './lights';
-import { reduceMotion } from './settings';
+import { drawScenery, drawVent, drawVentSteam, SCENERY_VARIANTS } from './features';
+import { BEAM_H, BEAM_LAMP_Y, GLOW_SIZE, lampDaylight, lampLevel, makeBeamTexture, makeGlowTexture, makeMistTexture, mixColour } from './lights';
+import { unit as hash01 } from './precipitation';
+import { fogImage } from './fogmap';
+import { Precipitation, type SkyProbe } from './precipitation';
+import { flashesAllowed, flickerAllowed, reduceMotion, weatherDetail } from './settings';
+import { arcIntersections, drawBloom, drawShield, easeAngle, easeBy, FLASH_MS, MAX_CROSSING_BLOOMS, MAX_FLASHES, MAX_INTERFERING, shieldLevel, type ShieldDraw, type ShieldFlash } from './shields';
 import { burstSparks, drawSparks, expireSparks, type Spark } from './sparks';
-import { drawShrapnel, landShrapnel, throwShrapnel, type Shrapnel } from './shrapnel';
+import { drawFire, drawFireball, MAX_TONGUES, fireStrength, flicker, FIRE_LIGHT, FIRE_YELLOW, lobHeight } from './flames';
+import { landWrecks, wreckFireMs, wreckFlameSize, wreckThrowsFragments, MAX_WRECKS, shouldCrash, SMOKE_EVERY_MS, startWreck, wreckGround, wreckHeight, wreckProgress, wreckRotation, type Wreck } from './wrecks';
+import { drawShrapnel, emberChance, emberLife, landShrapnel, throwShrapnel, type Shrapnel } from './shrapnel';
 import { renderClassImage, TEX, TEX_RESOLUTION } from './artstudio';
 import type { ClientState } from './state';
 
@@ -39,8 +63,19 @@ import type { ClientState } from './state';
 const OWNER_COLOURS = [0x8a8f98, 0x4ea1ff, 0xff6b5b, 0x5bd68a, 0xf5c542, 0xc77dff, 0x4fd1c5, 0xff9f43];
 const RESOURCE_COLOUR = 0x7ee0b5;
 /** Sparks off a resource being mined: bright, with a few white-hot. */
+/** Fire thrown off by a falling wreck. */
+const WRECK_SPARK_COLOURS = [0xff9a2e, 0xffe08a, 0xff6a1a];
 const HARVEST_SPARK_COLOURS = [0xc8ffe6, 0x7ee0b5, 0xffffff, 0xfff0a8];
 const BREAK_SPARK_COLOUR = 0xffb066;
+/** Cannon shells: the dot, its streak, and the sparks of a glancing blow or an impact. */
+const SHELL_COLOUR = 0xfff2c0;
+const SHELL_SPARK_COLOURS = [0xffe08a, 0xffb347, 0xffffff];
+/** Sparks thrown off an energy shield that stops a hit: cool and bright. */
+const SHIELD_SPARK_COLOURS = [0xbfe9ff, 0xffffff, 0x8fd0ff];
+/** Where two shields cross, and at an emitter under strain, sparks are thrown this often (ms) and in these numbers. */
+const SHIELD_STRAIN_MS = 55;
+const CROSSING_SPARKS = 5;
+const EMITTER_SPARKS_PER_CROSSING = 3;
 /** Blast radius (tiles) used to size the fragments thrown when a module breaks: a few small ones. */
 const MODULE_BREAK_RADIUS = 0.5;
 /** A fragment that comes down: a small blast of this radius (tiles), and the sparks it sheds. */
@@ -56,8 +91,8 @@ const TURRET_SWEEP_MIN_MS = 1500;
 const TURRET_SWEEP_MAX_MS = 4500;
 const TURRET_SWEEP_SPEED = 0.25;
 /** A gun lamp's beam is this many times a headlight's length, at this share of its brightness. */
-const GUN_LAMP_LENGTH = 1.3;
-const GUN_LAMP_ALPHA = 0.85;
+const GUN_LAMP_LENGTH = 0.6;
+const GUN_LAMP_ALPHA = 0.5;
 /** Radians per second of a wind turbine rotor in the strongest wind. */
 const ROTOR_MAX_SPEED = 9;
 const ENERGY_COLOUR = 0xf5c542;
@@ -82,7 +117,6 @@ const CROWD_ROUTES = 6;
 /** Green when healthy, through yellow, to red. */
 const healthColour = (f: number) => (f > 0.6 ? 0x5bd68a : f > 0.3 ? 0xf5c542 : 0xff6b5b);
 /** Tasks from class buttons. */
-const SHOT_MS = 180;
 /** A missile leaving its launcher flashes briefly. */
 const LAUNCH_MS = 220;
 /** Missiles leave a trail of this many past positions, so their wide turns can be read. */
@@ -98,10 +132,6 @@ const AIR_LIFT_RATE = 4;
 const MISSILE_LIFT = 0.32;
 const MISSILE_BODY = 0xdfe5ee;
 const MISSILE_FLAME = 0xffb347;
-const EXPLOSION_MS = 600;
-/** Extra lifetime per tile of blast radius, so a building's blast lingers longer than a unit's. */
-const EXPLOSION_MS_PER_TILE = 260;
-const EXPLOSION_COLOUR = 0xff3b30;
 const PULSE_MS = 600;
 /** Lightning arcs per tesla discharge, segments per arc, and how often (ms) the crackle re-rolls. */
 const TESLA_BOLTS = 11;
@@ -144,15 +174,64 @@ const NIGHT_TINT = 0x3b4c80;
 const NIGHT_DEPTH = 0.7;
 const LIGHTS_ON_BELOW = 45;
 const LIGHTS_FULL_BELOW = 20;
+/** Lamps switch on (with a flicker) once daylight falls below this, a little after the glow starts to fade in. */
+const LAMPS_SWITCH_BELOW = LIGHTS_ON_BELOW - 0.15 * (LIGHTS_ON_BELOW - LIGHTS_FULL_BELOW);
 /** Headlight beam length in tiles, and its warm colour. */
 const BEAM_LENGTH = 2.4;
 const BEAM_COLOUR = 0xfff0c0;
+/** Mist wisps: how many, their pale colour, the alpha of each at full mist, their radius range in tiles (they are wider than tall) and their drift in tiles per second (the wind adds to it). */
+const MIST_WISPS = 44;
+const MIST_WISP_COLOUR = 0xe9eff2;
+const MIST_WISP_ALPHA = 0.16;
+const MIST_WISP_RADIUS = 4.5;
+const MIST_WISP_STRETCH = 1.7;
+const MIST_WISP_DRIFT = 0.12;
+/** The halo a light throws on the mist: its radius is the light's times this, and its alpha is the light's times this and the thickness of the mist (at most HALO_MAX_ALPHA). At most HALO_CAP are drawn a frame. */
+const HALO_RADIUS = 2.6;
+const HALO_ALPHA = 0.55;
+const HALO_MAX_ALPHA = 0.45;
+const HALO_CAP = 160;
+/** Chance that a lightning strike on a unit or building also throws a tesla-style ring of sparks round where it lands. */
+const LIGHTNING_RING_CHANCE = 0.35;
+/** In haze (mist, dust) headlight light scatters: it turns white-grey, the beams spread wider and brighter, and each lit vehicle gets a pool of pale glow round it. Haze at or above `HAZE_FULL_SPILL` (0..100) is the full effect. */
+const BEAM_HAZE_COLOUR = 0xe4ebf0;
+const HAZE_FULL_SPILL = 50;
+const HAZE_BEAM_WIDEN = 0.7;
+const HAZE_BEAM_BRIGHTEN = 0.5;
+const HAZE_POOL_RADIUS = 1.5;
+const HAZE_POOL_ALPHA = 0.28;
 /** Nav lights on flying units: port red, starboard green, and a white strobe that flashes every STROBE_MS (steady with Reduce motion). */
 const NAV_PORT = 0xff3030;
 const NAV_STARBOARD = 0x30ff60;
 const STROBE_MS = 1300;
 /** Fire lights (drawGlows): the most lights drawn in a frame, and the colours of blasts and gun flashes. */
 const GLOW_CAP = 300;
+/** Water glints and lava bubbles tried per frame (those that land on liquid are drawn), and how many of those tries may be bubbles. */
+const GLINT_CAP = 56;
+const BUBBLE_CAP = 28;
+/** Lava spits: slots tried per frame, and how long a fragment is in the air. */
+const SPIT_SLOTS = 4;
+const SPIT_MS = 1100;
+/** Water, by depth step: the first is the shallows' colour, the rest darken what is under them. [colour, alpha] */
+const WATER_TIERS: readonly (readonly [number, number])[] = [[0x2f8a9b, 0.92], [0x123c66, 0.16], [0x0f3260, 0.18], [0x0c2a55, 0.2], [0x0a2248, 0.24]];
+/** Lava, by depth step: crust, glowing rock, white-hot core. */
+const LAVA_TIERS: readonly (readonly [number, number])[] = [[0x4c1707, 1], [0xb8360f, 0.9], [0xf47a1e, 0.9]];
+
+/** A cheap deterministic hash of a counter and a cycle, for scattering glints without any state. */
+function cellHash(a: number, b: number): number {
+  let h = Math.imul(a + 1, 0x9e3779b1) ^ Math.imul(b + 7, 0x85ebca6b);
+  h ^= h >>> 15;
+  h = Math.imul(h, 0x2c1b3c6d);
+  h ^= h >>> 12;
+  return h >>> 0;
+}
+
+const SOFT_CAP = 600;
+const MAX_EMBERS = 40;
+const flameDirOut = { x: 0, y: 0 };
+/** Between fragments from a big burning wreck (ms, min and max), and the hull radius assumed when the unit's stats are not known. */
+const BIG_FRAGMENT_MS = [1200, 3200];
+const WRECK_FIRE_SIZE_FALLBACK = 0.45;
 /** Spotlights under flying units: glows stacked from the craft to the ground, their colour and brightness. */
 const SPOT_STEPS = 5;
 const SPOT_COLOUR = 0xcfe4ff;
@@ -162,7 +241,6 @@ const SPOT_MIN_RADIUS = 0.9;
 const SPOT_MAX_RADIUS = 5;
 /** Most spotlight glows drawn at once. */
 const SPOT_CAP = 200;
-const EXPLOSION_LIGHT = 0xff9a3c;
 const MUZZLE_LIGHT = 0xffd890;
 /** Buildings at night: how far (in tiles) the interior light spills past the footprint, and its warm colour. */
 const WINDOW_SPILL = 0.45;
@@ -188,54 +266,14 @@ const PING_MS = 500;
 export const ownerColour = (owner: number) =>
   owner === 0 ? OWNER_COLOURS[0] : OWNER_COLOURS[1 + ((owner - 1) % (OWNER_COLOURS.length - 1))];
 
-/** A red ring that expands from where a unit or building died; x, y and radius are in tiles. */
-/** One flying fragment of an explosion; angle and speed are fixed when it spawns. */
-interface Fragment {
-  angle: number;
-  /** Distance travelled by the end, in blast radii. */
-  reach: number;
-  size: number;
-}
-
-interface Explosion {
-  x: number;
-  y: number;
-  radius: number;
-  born: number;
-  /** Bigger blasts last longer. */
-  ms: number;
-  sparks: Fragment[];
-  debris: Fragment[];
-  smoke: Fragment[];
-}
-
-/** Rolls the random fragments for one blast; bigger blasts throw more of them. */
-function makeExplosion(x: number, y: number, radius: number, born: number): Explosion {
-  const fragments = (n: number, reach: [number, number], size: [number, number]): Fragment[] =>
-    Array.from({ length: n }, () => ({
-      angle: Math.random() * Math.PI * 2,
-      reach: reach[0] + Math.random() * (reach[1] - reach[0]),
-      size: size[0] + Math.random() * (size[1] - size[0]),
-    }));
-  const big = Math.min(3, radius);
-  return {
-    x,
-    y,
-    radius,
-    born,
-    ms: EXPLOSION_MS + EXPLOSION_MS_PER_TILE * radius,
-    sparks: fragments(Math.round(10 + big * 6), [1.1, 2.2], [1.5, 2.5]),
-    debris: fragments(Math.round(4 + big * 3), [0.8, 1.7], [1.5, 3.5]),
-    smoke: fragments(Math.round(3 + big * 2), [0.1, 0.7], [0.3, 0.5]),
-  };
-}
-
 interface Pulse {
   e: number;
   born: number;
   colour: number;
   /** Tesla discharges: the lightning arcs, each with a seed for its crackle. */
   bolts?: { angle: number; seed: number }[];
+  /** A discharge at a fixed point (tiles) with a radius (tiles), instead of round entity `e` with its weapon's range: where lightning struck. */
+  spot?: { x: number; y: number; radius: number };
 }
 
 interface BuildBeam {
@@ -253,10 +291,21 @@ interface Repair {
 }
 
 interface Shot {
+  /** Shooter and target entities (-1 when the shot has fixed ends, as from the dev Effects panel). */
   a: number;
   b: number;
+  /** Fixed ends in tiles, for a shot with no entities. */
+  from?: { x: number; y: number };
+  to?: { x: number; y: number };
   born: number;
+  kind: ShotKind;
+  damage: number;
+  /** How long it shows (ms), and a number that varies its flicker from shot to shot. */
+  ms: number;
+  seed: number;
   colour: number;
+  /** Tile where an enemy shield stopped the beam, if one did (it is drawn only that far). */
+  end?: { x: number; y: number };
 }
 
 export interface Ping {
@@ -298,12 +347,24 @@ interface Route {
  */
 export class Renderer {
   private readonly backdrop = new Graphics();
+  /** Water, lava and voids (`liquids.ts`): outlines built once per map shape; the shore foam and lava glow are their own Graphics so their alpha can breathe without a redraw, and the glints, bubbles and wakes are redrawn each frame (a handful of shapes). */
+  private liquids: Liquids | null = null;
+  private liquidsFor = '';
+  private readonly liquidFx = new Container();
+  private readonly foamG = new Graphics();
+  private readonly lavaG = new Graphics();
+  private readonly glintG = new Graphics();
+  /** Contour line segments in tiles (`contours.ts`), and the map they were made for. */
+  private contours: Float32Array = new Float32Array(0);
+  private contourFor = '';
   private readonly zoneLayer = new Graphics();
   private zonesDrawnFor = '';
   private readonly linkLayer = new Graphics();
   private readonly layer = new Container();
   /** Ore lies flat on the ground, under every unit and building whatever order they appeared in. */
   private readonly groundLayer = new Container();
+  /** Steam over the map's vents: above the units, under the night and fog. Redrawn each frame for the vents on screen. */
+  private readonly steamLayer = new Graphics();
   /** Night: a screen-sized white sprite, multiplied over the map and tinted darker as daylight falls. */
   private readonly nightLayer = new Sprite(Texture.WHITE);
   /** Headlights and nav lights, added on top of the night tint. */
@@ -321,8 +382,58 @@ export class Renderer {
   private readonly glowLayer = new Container();
   private readonly glows: Sprite[] = [];
   private glowsUsed = 0;
+  private readonly softLayer = new Container();
+  private softs: Sprite[] = [];
+  private softsUsed = 0;
+  /** Draws a soft, dark-or-coloured blob (smoke, scorch) from the pool: a radial sprite with no hard edge. */
+  private readonly softBlob = (x: number, y: number, radius: number, colour: number, alpha: number): void => {
+    if (alpha < 0.01 || radius < 1 || this.softsUsed >= SOFT_CAP) return;
+    let s = this.softs[this.softsUsed];
+    if (!s) {
+      s = new Sprite(this.glowTexture);
+      s.anchor.set(0.5);
+      this.softLayer.addChild(s);
+      this.softs[this.softsUsed] = s;
+    }
+    this.softsUsed++;
+    s.visible = true;
+    s.position.set(x, y);
+    s.scale.set((radius * 2) / GLOW_SIZE);
+    s.tint = colour;
+    s.alpha = Math.min(1, alpha);
+  };
   private readonly glowTexture = Texture.from(makeGlowTexture());
-  private readonly fogLayer = new Graphics();
+  /**
+   * Mist: soft wisps that live in the world (they drift over the ground and move with the camera's view of it), drawn over
+   * the units and every effect so it can tone what is under it. Lights shine through it: see `haloLayer`.
+   */
+  private readonly mistLayer = new Container();
+  /** Soft additive halos on top of the mist, one for each light (`glow`), so in mist every muzzle flash, laser, fire and lamp lights up the air round it. */
+  private readonly haloLayer = new Container();
+  private readonly halos: Sprite[] = [];
+  private halosUsed = 0;
+  /** How thick the mist is now, 0..1 (set by `drawMist` each frame). */
+  private mistAmount = 0;
+  private readonly mistTexture = Texture.from(makeMistTexture());
+  private readonly mistWisps: Sprite[] = [];
+  /** The fog of war: a picture one pixel per tile, stretched over the map with smoothing so its edge is soft (see `fogmap.ts`). */
+  private readonly fogView = new Sprite();
+  private fogCanvas: HTMLCanvasElement | undefined;
+  private fogTexture: Texture | undefined;
+  /** Energy shields: drawn with added light so overlapping ones burn brighter, under the fog so unseen ones stay hidden. */
+  private readonly shieldLayer = new Graphics();
+  private shieldFlashes: ShieldFlash[] = [];
+  /** Scratch for drawShields: the shields in sight this frame, and the points where two arcs cross. */
+  private readonly shieldsDrawn: ShieldDraw[] = [];
+  private readonly crossings: number[] = [];
+  /** Blooms where arcs cross, as [x, y, colour, colour, ...] with x and y in tiles, and when they were last worked out. */
+  private readonly crossBlooms: number[] = [];
+  private crossBloomAt = 0;
+  /** What each shield looks like right now, eased towards the latest replicated arc, radius and heading (they arrive ten times a second). */
+  private readonly shieldView = new Map<number, { head: number; arc: number; r: number }>();
+  private lastShieldFrame = 0;
+  private readonly shieldSeen = new Set<number>();
+  private nextShieldSparks = 0;
   /** Radar blips and pulse rings, above the fog so contacts show in the dark. */
   private readonly radarLayer = new Container();
   private readonly radarGfx = new Graphics();
@@ -330,6 +441,14 @@ export class Renderer {
   private readonly radarSprites: Sprite[] = [];
   private fogDrawnFor = '';
   private readonly overlay = new Graphics();
+  /** Rain, storm gloom and lightning, over the fog and under the interface. */
+  private readonly precipitation = new Precipitation();
+  /** What the weather needs to know of the view: where things are on screen, and what the player can see. */
+  private readonly skyProbe: SkyProbe = {
+    visible: (sx, sy) => this.state.tileVisible(Math.floor((sx - this.offX) / this.scale), Math.floor((sy - this.offY) / this.scale)),
+    tileVisible: (tx, ty) => this.state.tileVisible(tx, ty),
+    tileToScreen: (tx, ty) => this.tileToScreen(tx, ty),
+  };
   /** Floating damage numbers; they rise and fade over DAMAGE_NUMBER_MS. */
   private readonly damageLayer = new Container();
   private damageNumbers: { text: Text; x: number; y: number; born: number }[] = [];
@@ -353,6 +472,9 @@ export class Renderer {
   private readonly shadows = new Map<number, Sprite>();
   /** How high each flying unit rides above its shadow, 0 (on the ground) to 1 (flying at speed); eased from frame to frame. */
   private shadowLift = new Float32Array(1024);
+  /** Per entity: 0 not seen yet, 1 lamps off, 2 lamps on; and when (ms) the last switch began. A lamp is on in the dark while its owner has energy. */
+  private lampState = new Uint8Array(1024);
+  private lampSince = new Float64Array(1024);
   /** Spinning radar dishes riding on the sprites of radar-equipped units and buildings. */
   private readonly dishes = new Map<number, Sprite>();
   /** Entities known not to have a radar, so they are not checked every frame. */
@@ -380,6 +502,10 @@ export class Renderer {
   private sparks: Spark[] = [];
   /** Fragments thrown by explosions, still in flight. */
   private shrapnel: Shrapnel[] = [];
+  /** Shot-down fliers still tumbling to the ground before they explode. */
+  private wrecks: Wreck[] = [];
+  /** Dev tools: every shot-down flier crashes. */
+  private alwaysCrash = false;
   /** Cargo a harvester held at its last Harvest event: the difference is what it just mined. */
   private readonly lastCargo = new Map<number, number>();
   private readonly textures = new Map<string, Texture>();
@@ -387,6 +513,13 @@ export class Renderer {
   /** Sprite rotation each unit is turning towards (art faces up; 0 = up). Kept while stopped. */
   private readonly facing = new Map<number, number>();
   private lastFrameAt = 0;
+  /** Small cosmetic fires left by bouncing fragments (tiles, ms). */
+  private embers: { x: number; y: number; born: number; ms: number; seed: number; size: number; nextFrag: number }[] = [];
+  /** Last known direction of each fireball on screen (tiles per tick, the rise of the lob included): the tail follows it. */
+  private flameDirX = new Float32Array(1024);
+  private flameDirY = new Float32Array(1024);
+  private flameArcPrev = new Float32Array(1024);
+  private flameArcCur = new Float32Array(1024);
   private prevX = new Float32Array(1024);
   private prevY = new Float32Array(1024);
   private curX = new Float32Array(1024);
@@ -400,10 +533,17 @@ export class Renderer {
   private readonly trails = new Map<number, number[]>();
   private pulses: Pulse[] = [];
   private chargePulses: Pulse[] = [];
-  private explosions: Explosion[] = [];
+  private explosions: Blast[] = [];
   private buildSparks: BuildSparks[] = [];
+  /** Lights with no entity behind them, added by the dev Effects panel (empty in a real match). */
+  private devGlows: DevGlow[] = [];
   /** Blast radius in tiles per entity, remembered while alive because stats are gone once it dies. */
   private readonly blastRadius = new Map<number, number>();
+  /** What kind of blast each entity leaves (missing = plain fire), and the share of charge a battery building held at its last update. */
+  private readonly blastKind = new Map<number, BlastKind>();
+  private readonly blastCharge = new Map<number, number>();
+  /** Per design: does it hold a battery (its building bursts as a discharge). */
+  private readonly batteryDesign = new Map<number, boolean>();
   private repairs = new Map<string, Repair>();
   private buildBeams = new Map<string, BuildBeam>();
   private lastTickAt = 0;
@@ -439,7 +579,9 @@ export class Renderer {
     this.nightLayer.blendMode = 'multiply';
     this.nightLayer.visible = false;
     this.lightLayer.blendMode = 'add';
-    app.stage.addChild(this.backdrop, this.zoneLayer, this.linkLayer, this.shadowLayer, this.groundLayer, this.beamLayer, this.layer, this.nightLayer, this.lightLayer, this.fogLayer, this.radarLayer, this.glowLayer, this.overlay, this.damageLayer, this.bubbleLayer, this.powerLabelLayer, this.ghost);
+    this.shieldLayer.blendMode = 'add';
+    this.liquidFx.addChild(this.foamG, this.lavaG, this.glintG);
+    app.stage.addChild(this.backdrop, this.liquidFx, this.zoneLayer, this.linkLayer, this.shadowLayer, this.groundLayer, this.beamLayer, this.layer, this.steamLayer, this.nightLayer, this.lightLayer, this.shieldLayer, this.fogView, this.precipitation.view, this.radarLayer, this.softLayer, this.glowLayer, this.overlay, this.mistLayer, this.haloLayer, this.damageLayer, this.bubbleLayer, this.powerLabelLayer, this.ghost);
     app.ticker.add(() => this.frame());
   }
 
@@ -524,6 +666,12 @@ export class Renderer {
     this.laidOutFor = '';
   }
 
+  /** The ground changed shape (painted by a developer command): redraw it, and plan routes again. */
+  terrainChanged(): void {
+    this.laidOutFor = '';
+    this.routes.clear();
+  }
+
   resetView(): void {
     this.zoom = 1;
     this.camX = NaN;
@@ -575,8 +723,33 @@ export class Renderer {
     return { x: (sx - this.offX) / this.scale, y: (sy - this.offY) / this.scale };
   }
 
+  /** Inverse of `screenToTile`: canvas CSS pixels of a point given in tiles. */
+  tileToScreen(x: number, y: number): { x: number; y: number } {
+    return { x: this.offX + x * this.scale, y: this.offY + y * this.scale };
+  }
+
+  /** The live effect lists, for the dev Effects panel (devEffects.ts) to add to. Call again after each use: the lists are replaced as effects expire. */
+  devSinks(): EffectSinks {
+    return {
+      explosions: this.explosions,
+      sparks: this.sparks,
+      shrapnel: this.shrapnel,
+      buildSparks: this.buildSparks,
+      glows: this.devGlows,
+      shot: (kind, damage, x1, y1, x2, y2, colour, now) => this.fireShot(kind, damage, -1, -1, { x: x1, y: y1 }, { x: x2, y: y2 }, colour, now),
+      alwaysCrash: (on) => (this.alwaysCrash = on),
+      clear: () => {
+        this.explosions = [];
+        this.sparks.length = 0;
+        this.shrapnel.length = 0;
+        this.buildSparks = [];
+        this.devGlows = [];
+      },
+    };
+  }
+
   /** The middle of the view in tiles, and how far from it things can still be heard (a little past the screen corners). */
-  listener(): { x: number; y: number; radius: number } {
+  listener():{ x: number; y: number; radius: number } {
     const { width, height } = this.app.screen;
     const centre = this.screenToTile(width / 2, height / 2);
     return { x: centre.x, y: centre.y, radius: (Math.hypot(width, height) / 2 / this.scale) * 1.2 };
@@ -688,13 +861,22 @@ export class Renderer {
       this.lastCargo.clear();
       this.sparks.length = 0;
       this.shrapnel.length = 0;
+      for (const w of this.wrecks) {
+        w.sprite.destroy();
+        w.shadow.destroy();
+      }
+      this.wrecks.length = 0;
       this.facing.clear();
       this.lastHp.clear();
       this.blastRadius.clear();
+      this.blastKind.clear();
+      this.blastCharge.clear();
+      this.batteryDesign.clear();
       this.flying.clear();
       this.trails.clear();
     }
     for (const e of world.despawned) {
+      this.lampState[e] = 0; // an id that is reused starts afresh
       this.dishes.get(e)?.destroy();
       this.dishes.delete(e);
       this.noDish.delete(e);
@@ -706,9 +888,18 @@ export class Renderer {
       this.rotors.delete(e);
       this.noRotor.delete(e);
       this.lastCargo.delete(e);
-      this.sprites.get(e)?.destroy();
+      const sprite = this.sprites.get(e);
+      const shadow = this.shadows.get(e);
+      const crashed = !!sprite && !!shadow && dying.has(e) && this.crashes(e, sprite);
+      if (crashed && sprite && shadow) {
+        // Shot down: the sprite and shadow live on as a wreck, and the blast waits until it lands.
+        const heading = (this.facing.get(e) ?? sprite.rotation) - Math.PI / 2;
+        this.wrecks.push(startWreck(sprite, shadow, this.curX[e], this.curY[e], heading, this.blastRadius.get(e) ?? 0.9, performance.now(), Math.random, (this.state.stats(e)?.radius ?? WRECK_FIRE_SIZE_FALLBACK * TILE) / TILE));
+      } else {
+        sprite?.destroy();
+        shadow?.destroy();
+      }
       this.sprites.delete(e);
-      this.shadows.get(e)?.destroy();
       this.shadows.delete(e);
       this.routes.delete(e);
       this.facing.delete(e);
@@ -716,7 +907,11 @@ export class Renderer {
       this.trails.delete(e);
       // Forget what was seen: an entity that comes back (or an id that is reused) starts afresh.
       this.lastHp.delete(e);
-      if (!dying.has(e)) this.blastRadius.delete(e);
+      if (!dying.has(e) || crashed) {
+        this.blastRadius.delete(e);
+        this.blastKind.delete(e);
+        this.blastCharge.delete(e);
+      }
     }
 
     // Last tick's target becomes this tick's interpolation origin.
@@ -750,7 +945,11 @@ export class Renderer {
       this.ensureSprite(e, this.skin(e));
       const st = this.state.stats(e);
       this.blastRadius.set(e, st?.structure ? st.footprint * 0.75 : 0.9);
+      this.blastKind.set(e, st?.structure ? (this.holdsBattery(unit.f.blueprint[e]) ? 'energy' : 'structure') : 'fire');
     }
+    // A battery building remembers how full it was, so its last blast can be as big as the charge it held.
+    const charges = world.store(EnergyView);
+    for (const e of charges.changed) if (this.blastKind.get(e) === 'energy' && charges.has(e)) this.blastCharge.set(e, charges.f.pct[e] / 100);
     if (this.wallVersion !== this.state.structureVersion) this.joinWalls();
 
     const missiles = world.store(Missile);
@@ -758,9 +957,20 @@ export class Renderer {
       if (!missiles.has(e)) continue;
       this.flying.add(e);
       this.blastRadius.set(e, missiles.f.blast[e] / 10);
+      this.blastKind.set(e, 'missile');
+    }
+    const shells = world.store(Shell);
+    for (const e of shells.changed) if (shells.has(e)) this.flying.add(e); // interpolated like missiles
+    const flames = world.store(Flame);
+    for (const e of flames.changed) {
+      if (!flames.has(e)) continue;
+      this.flying.add(e);
+      // The lob's progress is replicated once a tick: keep the last two so it can be eased between them.
+      this.flameArcPrev[e] = this.flameArcCur[e] > flames.f.arc[e] ? flames.f.arc[e] : this.flameArcCur[e];
+      this.flameArcCur[e] = flames.f.arc[e];
     }
     for (const e of this.flying) {
-      if (!pos.has(e)) continue;
+      if (!pos.has(e) || !missiles.has(e)) continue;
       let trail = this.trails.get(e);
       if (!trail) this.trails.set(e, (trail = []));
       trail.push(this.curX[e], this.curY[e]);
@@ -769,13 +979,28 @@ export class Renderer {
 
     const res = world.store(Resource);
     const patches = world.store(ResourcePatch);
-    for (const e of [...res.changed, ...patches.changed]) {
+    const debris = world.store(Debris);
+    for (const e of [...res.changed, ...patches.changed, ...debris.changed]) {
       if (!res.has(e)) continue;
+      if (debris.has(e)) {
+        // Wreckage: scrap that thins out as it is used up.
+        const stage = debrisStage(res.f.amount[e], debris.f.maximum[e]);
+        const look = debris.f.look[e];
+        this.ensureSprite(e, this.texture(`debris.${look}.${stage}.${e % DEBRIS_VARIANTS}`, (g) => drawDebris(g, look, stage, e % DEBRIS_VARIANTS, TEX)), this.groundLayer);
+        continue;
+      }
       // Shards drop away as the node is mined: five looks, from full down to a bare patch.
       const amount = res.f.amount[e];
       const full = Math.max(amount, patches.has(e) ? patches.f.maximum[e] : RESOURCE_PATCH_AMOUNT);
       const stage = amount <= 0 ? -1 : Math.min(4, Math.floor((amount / full) * 5));
       this.ensureSprite(e, this.resourceTexture(stage), this.groundLayer);
+    }
+
+    const features = world.store(Feature);
+    for (const e of features.changed) {
+      if (!features.has(e)) continue;
+      const kind = features.f.kind[e];
+      this.ensureSprite(e, this.featureTexture(kind, e % SCENERY_VARIANTS), kind === FeatureKind.Vent ? this.groundLayer : this.layer);
     }
 
     const health = world.store(Health);
@@ -814,10 +1039,36 @@ export class Renderer {
       const f = this.state.footprint(e);
       this.buildSparks.push(makeBuildSparks(f.x, f.y, f.size, now));
     }
+    // Shield hits first: a beam that one stopped is drawn only as far as the arc (the Shot event comes before it in the list).
+    let shieldEnds: Map<number, { x: number; y: number }> | undefined;
+    for (let i = 0; i < info.events.length; i += 3) {
+      if (info.events[i] === SimEvent.ShieldHit) {
+        const end = this.shieldImpact(info.events[i + 1], info.events[i + 2], now);
+        if (end) (shieldEnds ??= new Map()).set(info.events[i + 1], end);
+      } else if (info.events[i] === SimEvent.ShieldBurst) {
+        this.shieldBurst(info.events[i + 1], now);
+      }
+    }
     for (let i = 0; i < info.events.length; i += 3) {
       if (info.events[i] === SimEvent.Charge) {
         const a = info.events[i + 1];
         this.chargePulses.push({ e: a, born: now, colour: CHARGE_PULSE_COLOUR });
+        continue;
+      }
+      if (info.events[i] === SimEvent.Lightning) {
+        // Lightning struck something we can see: a bolt onto it, and the ring of sparks of a tesla stun round it.
+        const a = info.events[i + 1];
+        if (!this.sprites.has(a)) continue;
+        const at = this.tileToScreen(this.curX[a] / TILE, this.curY[a] / TILE);
+        this.precipitation.strikeAt(at.x, at.y, now);
+        // The bolt always lands; the ring of sparks round the point of impact only shows on some strikes.
+        if (Math.random() < LIGHTNING_RING_CHANCE) {
+          const bolts = Array.from({ length: TESLA_BOLTS }, (_, i) => ({
+            angle: ((i + Math.random() * 0.8) / TESLA_BOLTS) * Math.PI * 2,
+            seed: Math.floor(Math.random() * 100000),
+          }));
+          this.pulses.push({ e: a, born: now, colour: 0xdfe9ff, bolts, spot: { x: this.curX[a] / TILE, y: this.curY[a] / TILE, radius: LIGHTNING_RADIUS / TILE } });
+        }
         continue;
       }
       if (info.events[i] === SimEvent.Pulse) {
@@ -834,9 +1085,18 @@ export class Renderer {
         // No blast radius means this client never saw the entity (out of sight), so its position is unset (0,0) or stale.
         const radius = this.blastRadius.get(a);
         if (radius === undefined) continue;
-        this.explosions.push(makeExplosion(this.curX[a], this.curY[a], radius, now));
+        const kind = this.blastKind.get(a) ?? 'fire';
+        if (kind === 'energy') {
+          // A battery bank lets go of what it holds: the fuller it was, the bigger the discharge.
+          const power = this.blastCharge.get(a) ?? 0.5;
+          this.explosions.push(makeBlast('energy', this.curX[a], this.curY[a], energyRadius(radius / 0.75, power), now, { power }));
+        } else {
+          this.explosions.push(makeBlast(kind, this.curX[a], this.curY[a], radius, now));
+        }
         if (!reduceMotion()) throwShrapnel(this.shrapnel, this.curX[a], this.curY[a], radius, now);
         this.blastRadius.delete(a);
+        this.blastKind.delete(a);
+        this.blastCharge.delete(a);
         continue;
       }
       if (info.events[i] === SimEvent.Build) {
@@ -884,18 +1144,307 @@ export class Renderer {
         }
         continue;
       }
+      if (info.events[i] === SimEvent.ShellHit || info.events[i] === SimEvent.ShellBounce || info.events[i] === SimEvent.ShellLand) {
+        this.shellImpact(info.events[i], info.events[i + 1], now);
+        continue;
+      }
+      if (info.events[i] === SimEvent.FlameLand) {
+        const f = info.events[i + 1];
+        if (!reduceMotion() && this.state.world.store(Flame).has(f)) burstSparks(this.sparks, this.curX[f], this.curY[f], 6, now, { colour: FIRE_YELLOW, reach: [0.2, 0.6], ms: [200, 420] });
+        continue;
+      }
       if (info.events[i] !== SimEvent.Shot) continue;
       const a = info.events[i + 1];
       this.aimAt.set(a, { target: info.events[i + 2], until: now + AIM_LINGER_MS });
+      if (this.state.stats(a)?.weapon?.kind === 'flame') {
+        // The fireball is the shot: a puff of flame at the muzzle.
+        this.launches.push({ e: a, born: now });
+        continue;
+      }
+      if (this.state.stats(a)?.weapon?.kind === 'cannon' && !world.store(Missile).has(info.events[i + 2])) {
+        // No instant line: the shell itself is the shot. A flash and a few sparks at the muzzle.
+        this.launches.push({ e: a, born: now });
+        if (this.sprites.has(a) && !reduceMotion()) {
+          const heading = Math.atan2(this.curY[info.events[i + 2]] - this.curY[a], this.curX[info.events[i + 2]] - this.curX[a]);
+          burstSparks(this.sparks, this.curX[a], this.curY[a], 3, now, { colour: SHELL_SPARK_COLOURS[0], heading, spread: 0.5, reach: [0.2, 0.5], ms: [120, 240] });
+        }
+        continue;
+      }
       if (this.state.stats(a)?.weapon?.kind === 'missile') {
         // No instant line: the missile itself is the shot (see drawMissiles).
         this.launches.push({ e: a, born: now });
         continue;
       }
-      this.shots.push({ a, b: info.events[i + 2], born: now, colour: ownerColour(unit.f.owner[a]) });
+      const weapon = this.state.stats(a)?.weapon;
+      this.fireShot(shotKindOf(weapon?.kind), weapon?.damage ?? 5, a, info.events[i + 2], undefined, undefined, ownerColour(unit.f.owner[a]), now, shieldEnds?.get(info.events[i + 2]));
     }
     for (const a of info.alerts) this.showBubble(a.e, a.text, now + a.ticks * (1000 / TICK_RATE));
     this.lastTickAt = now;
+  }
+
+  /**
+   * An instant shot (gun, laser or flak): the beam or tracer itself is drawn each frame (beams.ts); here the effects that
+   * happen once are added: sparks where it lands (none when a shield stopped it, which has its own) and the air-burst of a flak shot.
+   * `from`/`to` (tiles) give a shot with fixed ends, used by the dev Effects panel.
+   */
+  private fireShot(kind: ShotKind, damage: number, a: number, b: number, from: { x: number; y: number } | undefined, to: { x: number; y: number } | undefined, colour: number, now: number, end?: { x: number; y: number }): void {
+    const ms = SHOT_LIFE_MS[kind];
+    this.shots.push({ a, b, from, to, born: now, kind, damage, ms, seed: Math.floor(Math.random() * 1000), colour, end });
+    const sx = from ? from.x : this.curX[a], sy = from ? from.y : this.curY[a];
+    const tx = end ? end.x : to ? to.x : this.curX[b], ty = end ? end.y : to ? to.y : this.curY[b];
+    if (kind === 'flak') {
+      // The shell is a string of puffs that takes most of the shot's life to arrive, then bursts.
+      if (this.explosions.length < MAX_EXPLOSIONS) this.explosions.push(makeBlast('flak', tx, ty, 0.7, now + ms * 0.55));
+      return;
+    }
+    if (end || reduceMotion()) return;
+    const back = Math.atan2(sy - ty, sx - tx);
+    if (kind === 'laser') {
+      burstSparks(this.sparks, tx, ty, 6, now, { colour: SHIELD_SPARK_COLOURS[1], heading: back, spread: 1.2, reach: [0.15, 0.55], ms: [180, 380] });
+    } else {
+      // A tracer takes about a third of the shot to arrive; the sparks wait for it.
+      burstSparks(this.sparks, tx, ty, 3, now + ms * 0.3, { colour: SHELL_SPARK_COLOURS[0], heading: back, spread: 1.1, reach: [0.12, 0.4], ms: [120, 260] });
+    }
+  }
+
+  /** A shell struck an enemy (small blast and sparks), glanced off (sparks), or landed (a few sparks). Reuses the spark and explosion effects. */
+  private shellImpact(type: number, e: number, now: number): void {
+    const shells = this.state.world.store(Shell);
+    if (!shells.has(e)) return;
+    const x = this.curX[e], y = this.curY[e];
+    const colour = () => SHELL_SPARK_COLOURS[Math.floor(Math.random() * SHELL_SPARK_COLOURS.length)];
+    if (type === SimEvent.ShellHit) {
+      this.explosions.push(makeBlast('shell', x, y, 0.3 + 0.004 * shells.f.size[e], now));
+      burstSparks(this.sparks, x, y, 8, now, { colour: colour(), reach: [0.3, 0.8], ms: [200, 420] });
+    } else if (type === SimEvent.ShellBounce) {
+      // Sparks fly off the way the shell now travels.
+      const heading = (shells.f.heading[e] / 256) * Math.PI * 2;
+      burstSparks(this.sparks, x, y, 7, now, { colour: colour(), heading, spread: 0.9, reach: [0.3, 0.9], ms: [180, 380], width: 2 });
+    } else {
+      burstSparks(this.sparks, x, y, 3, now, { colour: colour(), reach: [0.15, 0.4], ms: [150, 300] });
+    }
+  }
+
+  /**
+   * A shield stopped a hit: sparks fly off the arc where it landed and the struck part of the arc lights up (the event carries the
+   * direction of the hit and the damage stopped). Returns the tile it landed on, or undefined if the shield is not known here.
+   */
+  private shieldImpact(e: number, packed: number, now: number): { x: number; y: number } | undefined {
+    const shields = this.state.world.store(Shield);
+    if (!shields.has(e) || !this.sprites.has(e)) return undefined;
+    const angle = ((packed & 255) / 256) * Math.PI * 2;
+    const power = Math.min(1, (packed >> 8) / 60);
+    const reach = shields.f.range[e] / 10;
+    const x = this.curX[e] + Math.cos(angle) * reach;
+    const y = this.curY[e] + Math.sin(angle) * reach;
+    if (this.shieldFlashes.length < MAX_FLASHES) this.shieldFlashes.push({ e, angle, born: now, power });
+    const owner = this.state.world.store(Unit).f.owner[e];
+    burstSparks(this.sparks, x, y, 4 + Math.round(power * 8), now, {
+      colour: SHIELD_SPARK_COLOURS[Math.floor(Math.random() * SHIELD_SPARK_COLOURS.length)] ?? ownerColour(owner),
+      heading: angle,
+      spread: 1.3,
+      reach: [0.2, 0.7],
+      ms: [160, 360],
+      width: 1.8,
+    });
+    return { x, y };
+  }
+
+  /** A shield ran its owner flat and blew: a blast as big as the energy it held, sparks, and fragments. */
+  private shieldBurst(e: number, now: number): void {
+    if (!this.sprites.has(e)) return;
+    const capacity = this.state.stats(e)?.energyCapacity ?? 600;
+    const radius = shieldRadius(capacity);
+    const colour = ownerColour(this.state.world.store(Unit).f.owner[e]);
+    if (this.explosions.length < MAX_EXPLOSIONS) this.explosions.push(makeBlast('shield', this.curX[e], this.curY[e], radius, now, { colour }));
+    burstSparks(this.sparks, this.curX[e], this.curY[e], 24, now, { colour: SHIELD_SPARK_COLOURS[0], reach: [0.5, radius + 0.5], ms: [300, 700], width: 2 });
+    if (!reduceMotion()) throwShrapnel(this.shrapnel, this.curX[e], this.curY[e], radius * 0.6, now);
+  }
+
+  /** Every shield that is up and in sight: the translucent arc, hit flashes, and a crackle where two arcs cross. */
+  private drawShields(now: number): void {
+    const g = this.shieldLayer.clear();
+    this.shieldFlashes = this.shieldFlashes.filter((f) => now - f.born < FLASH_MS && this.sprites.has(f.e));
+    const store = this.state.world.store(Shield);
+    if (store.dense.length === 0) return;
+    const reduce = reduceMotion();
+    const energy = this.state.world.store(EnergyView);
+    const unit = this.state.world.store(Unit);
+    const thickness = Math.max(1.5, Math.min(3, this.scale * 0.07)); // a thin border: a few pixels at any zoom
+    const { width, height } = this.app.screen;
+    const k = easeBy((now - (this.lastShieldFrame || now)) / 1000);
+    this.lastShieldFrame = now;
+    const seen = this.shieldSeen;
+    seen.clear();
+    const drawn = this.shieldsDrawn; // reused objects: only the first `count` are live this frame
+    let count = 0;
+    for (const e of store.dense) {
+      if (store.f.active[e] === 0 || !this.sprites.has(e)) continue;
+      const p = this.screenOf(e);
+      const view = this.easedShield(e, store.f.heading[e], store.f.arc[e], store.f.range[e], k);
+      seen.add(e);
+      const r = view.r * this.scale;
+      if (p.x + r < 0 || p.y + r < 0 || p.x - r > width || p.y - r > height) continue;
+      const d = (drawn[count] ??= { e: 0, x: 0, y: 0, r: 0, head: 0, arc: 0, colour: 0, level: 1, seed: 0 });
+      count++;
+      d.e = e;
+      d.x = p.x;
+      d.y = p.y;
+      d.r = r;
+      d.head = view.head;
+      d.arc = view.arc;
+      d.colour = ownerColour(unit.f.owner[e]);
+      d.seed = (e * 0.6180339887) % 1;
+      d.level = shieldLevel(energy.has(e) ? energy.f.pct[e] : 100, now, d.seed, reduce);
+      drawShield(g, d, this.shieldFlashes, now, thickness, reduce);
+    }
+    for (const e of this.shieldView.keys()) if (!seen.has(e)) this.shieldView.delete(e);
+    // Load: sparks where two arcs cross (each crossing also drains both shields' power) and from each emitter under strain.
+    const due = now >= this.nextShieldSparks;
+    if (due) {
+      this.nextShieldSparks = now + SHIELD_STRAIN_MS;
+      this.crossBlooms.length = 0;
+      this.crossBloomAt = now;
+    }
+    if (due && count >= 2 && count <= MAX_INTERFERING) {
+      for (let i = 0; i < count; i++) {
+        for (let j = i + 1; j < count; j++) {
+          const n = arcIntersections(drawn[i], drawn[j], this.crossings);
+          for (let c = 0; c < n; c++) {
+            const x = (this.crossings[c * 2] - this.offX) / this.scale;
+            const y = (this.crossings[c * 2 + 1] - this.offY) / this.scale;
+            if (this.crossBlooms.length < MAX_CROSSING_BLOOMS * 4) this.crossBlooms.push(x, y, drawn[i].colour, drawn[j].colour);
+            const burst = reduce ? 2 : CROSSING_SPARKS;
+            burstSparks(this.sparks, x, y, burst, now, { colour: drawn[i].colour, reach: [0.2, 0.7], ms: [150, 340], width: 1.8 });
+            burstSparks(this.sparks, x, y, burst, now, { colour: drawn[j].colour, reach: [0.2, 0.7], ms: [150, 340], width: 1.8 });
+            burstSparks(this.sparks, x, y, burst, now, { colour: SHIELD_SPARK_COLOURS[1], reach: [0.1, 0.45], ms: [110, 260], width: 2.2 });
+          }
+        }
+      }
+    }
+    // Where two arcs cross the energy piles up: a bloom in both colours that flares with each refresh and flickers between them.
+    const bl = this.crossBlooms;
+    if (bl.length > 0) {
+      const fresh = Math.max(0, 1 - (now - this.crossBloomAt) / (SHIELD_STRAIN_MS * 1.5));
+      const radius = thickness * 12;
+      for (let c = 0; c < bl.length; c += 4) {
+        const px = bl[c] * this.scale + this.offX;
+        const py = bl[c + 1] * this.scale + this.offY;
+        const a = (reduce ? 0.7 : 1.1) + (reduce ? 0 : 0.5 * fresh);
+        drawBloom(g, px, py, radius * (1 + 0.3 * fresh), bl[c + 2], a);
+        drawBloom(g, px, py, radius * (1 + 0.3 * fresh), bl[c + 3], a);
+        drawBloom(g, px, py, radius * 0.4, 0xffffff, a * 0.8);
+      }
+    }
+    if (due && !reduce) {
+      for (let i = 0; i < count; i++) {
+        const d = drawn[i];
+        const strain = store.f.strain[d.e];
+        if (strain === 0) continue;
+        // From the emitter out along the arc it is holding: the more crossings, the more sparks.
+        burstSparks(this.sparks, this.curX[d.e], this.curY[d.e], Math.min(12, strain * EMITTER_SPARKS_PER_CROSSING), now, {
+          colour: SHIELD_SPARK_COLOURS[Math.floor(Math.random() * SHIELD_SPARK_COLOURS.length)],
+          heading: d.head,
+          spread: d.arc / 2,
+          reach: [0.3, Math.max(0.5, d.r / this.scale)],
+          ms: [180, 420],
+          width: 1.6,
+        });
+      }
+    }
+  }
+
+  /** The shield on `e` as drawn now: its replicated heading, arc and radius, eased so they glide between ticks (a new shield starts where it is). */
+  private easedShield(e: number, heading: number, arc: number, range: number, k: number): { head: number; arc: number; r: number } {
+    const wantHead = (heading / 256) * Math.PI * 2;
+    const wantArc = (arc / 256) * Math.PI * 2;
+    const wantR = range / 10;
+    let v = this.shieldView.get(e);
+    if (!v) {
+      v = { head: wantHead, arc: wantArc, r: wantR };
+      this.shieldView.set(e, v);
+      return v;
+    }
+    v.head = easeAngle(v.head, wantHead, k);
+    v.arc += (wantArc - v.arc) * k;
+    v.r += (wantR - v.r) * k;
+    return v;
+  }
+
+  /** Fireballs on their lob and the fires they left; each is drawn from the clock alone (see flames.ts). */
+  private drawFlames(g: Graphics, now: number, still: boolean): void {
+    const store = this.state.world.store(Flame);
+    this.softsUsed = 0;
+    // The more fires a jet has laid, the fewer flames each gets, and only some give off smoke, so a stream stays cheap to draw.
+    const fires = store.dense.length;
+    const tongues = Math.max(3, Math.min(MAX_TONGUES, Math.round(MAX_TONGUES * 40 / Math.max(40, fires))));
+    const smokeEvery = Math.max(1, Math.ceil(fires / 50));
+    for (const e of this.flying) {
+      if (!store.has(e)) continue;
+      const p = this.screenOf(e);
+      if (p.x < -this.scale * 3 || p.y < -this.scale * 4 || p.x > this.app.screen.width + this.scale * 3 || p.y > this.app.screen.height + this.scale * 3) continue;
+      if (store.f.state[e] === 1) {
+        drawFire(g, this.softBlob, p.x, p.y, this.scale, store.f.life[e] / FLAME_LIFE_STEPS, now, e, still, tongues, e % smokeEvery === 0);
+      } else {
+        const dir = this.flameDirection(e);
+        drawFireball(g, this.softBlob, p.x, p.y, this.scale, this.flameProgress(e), dir.x, dir.y, now, e, still);
+      }
+    }
+    this.embers = this.embers.filter((m) => now - m.born < m.ms);
+    for (const m of this.embers) {
+      if (now >= m.nextFrag) {
+        // A big wreck cooks off now and then: a few fragments fly from the fire.
+        m.nextFrag = now + BIG_FRAGMENT_MS[0] + Math.random() * (BIG_FRAGMENT_MS[1] - BIG_FRAGMENT_MS[0]);
+        if (Math.random() < 0.6) throwShrapnel(this.shrapnel, m.x, m.y, 0.6, now);
+      }
+      const age = (now - m.born) / m.ms;
+      drawFire(g, this.softBlob, this.offX + m.x * this.scale, this.offY + m.y * this.scale, this.scale * m.size, 1 - age, now, m.seed, still);
+    }
+    this.hideSofts();
+  }
+
+  /** Which way a fireball is moving on screen (tiles per tick): along the ground, and up or down as the lob rises and falls. It keeps its last direction while it is momentarily still. */
+  private flameDirection(e: number): { x: number; y: number } {
+    const p = this.flameArcCur[e] / 255;
+    const dp = (this.flameArcCur[e] - this.flameArcPrev[e]) / 255;
+    const rise = lobHeight(p + dp * 0.5) - lobHeight(p - dp * 0.5);
+    const x = this.curX[e] - this.prevX[e];
+    const y = this.curY[e] - this.prevY[e] - rise;
+    if (Math.abs(x) + Math.abs(y) > 1e-5) {
+      this.flameDirX[e] = x;
+      this.flameDirY[e] = y;
+    }
+    flameDirOut.x = this.flameDirX[e];
+    flameDirOut.y = this.flameDirY[e] || (this.flameDirX[e] === 0 ? 0.001 : 0);
+    return flameDirOut;
+  }
+
+  /** Hides the soft blobs this frame did not use. */
+  private hideSofts(): void {
+    for (let i = this.softsUsed; i < this.softs.length; i++) this.softs[i].visible = false;
+  }
+
+  /** How far along its lob a fireball is, 0..1, eased between the last two ticks so it rises and falls smoothly. */
+  private flameProgress(e: number): number {
+    const a = this.flameArcPrev[e] + (this.flameArcCur[e] - this.flameArcPrev[e]) * this.alpha;
+    return a / 255;
+  }
+
+  /** Cannon shells in flight: a bright dot with a short streak behind it, above a small shadow. */
+  private drawShells(g: Graphics): void {
+    const store = this.state.world.store(Shell);
+    const lift = this.scale * 0.3;
+    for (const e of this.flying) {
+      if (!store.has(e) || store.f.state[e] !== 0) continue;
+      const p = this.screenOf(e);
+      const angle = (store.f.heading[e] / 256) * Math.PI * 2;
+      const r = Math.max(1.8, this.scale * 0.06);
+      const len = this.scale * 0.55;
+      g.circle(p.x, p.y, r * 0.8).fill({ color: 0x000000, alpha: 0.3 });
+      const y = p.y - lift;
+      g.moveTo(p.x - Math.cos(angle) * len, y - Math.sin(angle) * len).lineTo(p.x, y).stroke({ width: Math.max(1.5, r), color: ownerColour(store.f.owner[e]), alpha: 0.5 });
+      g.circle(p.x, y, r).fill(SHELL_COLOUR);
+    }
   }
 
   /** Puts (or replaces) a text-only speech bubble over a unit until the time given. */
@@ -1033,7 +1582,13 @@ export class Renderer {
       s.addChild(dish);
       this.dishes.set(e, dish);
     }
-    dish.rotation = (now / 1000) * 2.4;
+    if (this.powered(e)) dish.rotation = (now / 1000) * 2.4; // without power it stops where it is
+  }
+
+  /** Whether an entity has power to move and shine: some energy left (as replicated) and a CPU that is not reporting no power. */
+  private powered(e: number): boolean {
+    const { world } = this.state;
+    return world.store(EnergyView).f.pct[e] > 0 && world.store(CpuStatus).f.state[e] !== CpuState.NoPower;
   }
 
   /**
@@ -1100,10 +1655,16 @@ export class Renderer {
       });
       this.turrets.set(e, ts);
     }
+    if (!this.powered(e)) return; // dead turrets stay as they are: no tracking, no watch sweep
     let want = 0;
     let tracking = false;
+    const aims = this.state.world.store(Aim);
     const aim = this.aimAt.get(e);
-    if (aim) {
+    if (aims.has(e)) {
+      // A long-range weapon points where the engine says (its owner sees a wedge along it), not at random.
+      want = (aims.f.heading[e] / 256) * Math.PI * 2 + Math.PI / 2 - s.rotation;
+      tracking = true;
+    } else if (aim) {
       if (now >= aim.until || !(this.sprites.has(aim.target) || this.flying.has(aim.target))) this.aimAt.delete(e);
       else {
         want = Math.atan2(this.tileX(aim.target) - this.tileX(e), this.tileY(e) - this.tileY(aim.target)) - s.rotation;
@@ -1152,9 +1713,51 @@ export class Renderer {
     rotor.rotation = (rotor.rotation + step) % (Math.PI * 2);
   }
 
+  /** Whether a shot-down unit crashes on instead of exploding where it was hit: some fliers, some of the time, in sight. */
+  private crashes(e: number, sprite: Sprite): boolean {
+    return !reduceMotion() && sprite.visible && this.wrecks.length < MAX_WRECKS && !!this.state.stats(e)?.flying && (this.alwaysCrash || shouldCrash());
+  }
+
+  /** Moves each tumbling wreck along its fall, trailing fire, and sets it off where it comes down. */
+  private drawWrecks(now: number, k: number): void {
+    for (const w of this.wrecks) {
+      const t = wreckProgress(w, now);
+      const ground = wreckGround(w, now);
+      const gx = this.offX + ground.x * this.scale;
+      const gy = this.offY + ground.y * this.scale;
+      const up = wreckHeight(t) * this.scale;
+      w.sprite.position.set(gx, gy - up);
+      w.sprite.rotation = wreckRotation(w, t);
+      w.sprite.scale.set(k * (1 - 0.2 * t));
+      const char = Math.round(255 * (1 - 0.65 * t));
+      w.sprite.tint = (char << 16) | (char << 8) | char;
+      // The shadow stays on the ground and closes in on the wreck as it drops.
+      w.shadow.position.set(gx, gy);
+      w.shadow.rotation = w.sprite.rotation;
+      w.shadow.scale.set(k * (1 - 0.1 * t));
+      if (now >= w.nextSmoke) {
+        w.nextSmoke = now + SMOKE_EVERY_MS;
+        const at = { x: ground.x, y: ground.y - wreckHeight(t) };
+        burstSparks(this.sparks, at.x, at.y, 2, now, { colour: WRECK_SPARK_COLOURS[Math.floor(Math.random() * WRECK_SPARK_COLOURS.length)], heading: Math.atan2(-w.vy, -w.vx), spread: 0.7, reach: [0.2, 0.5], ms: [180, 320] });
+      }
+    }
+    landWrecks(this.wrecks, now, (w) => {
+      const x = w.x + w.vx * w.ms;
+      const y = w.y + w.vy * w.ms;
+      w.sprite.destroy();
+      w.shadow.destroy();
+      this.explosions.push(makeBlast('fire', x, y, w.radius, now));
+      throwShrapnel(this.shrapnel, x, y, w.radius, now);
+      // Now and then the wreck is left burning where it came down (looks only; rain makes it rarer and shorter).
+      const burn = this.embers.length < MAX_EMBERS && !reduceMotion() ? wreckFireMs((this.state.weather.mix[Sky.Rain] + this.state.weather.mix[Sky.Storm]) / 100, Math.random(), w.size) : 0;
+      if (burn > 0) this.embers.push({ x, y, born: now, ms: burn, seed: Math.floor(Math.random() * 100000), size: wreckFlameSize(w.size), nextFrag: wreckThrowsFragments(w.size) ? now + BIG_FRAGMENT_MS[0] + Math.random() * (BIG_FRAGMENT_MS[1] - BIG_FRAGMENT_MS[0]) : Infinity });
+    });
+  }
+
   /** Keeps the drop shadow under a sprite: the same art in black, nudged away from the light; bigger things cast longer shadows. */
   private updateShadow(e: number, s: Sprite, k: number, dt: number): void {
     if (this.state.world.store(Resource).has(e)) return; // ore lies flat on the ground
+    if (this.state.world.store(Feature).has(e) && this.state.world.store(Feature).f.kind[e] === FeatureKind.Vent) return; // and so does a vent
     let sh = this.shadows.get(e);
     if (!sh) {
       sh = new Sprite(s.texture);
@@ -1193,6 +1796,42 @@ export class Renderer {
       if (unit.has(e)) s.texture = this.skin(e);
     }
     this.joinWalls();
+  }
+
+  /** A shot's two ends in screen pixels (reused array: read it before the next call). */
+  private readonly shotPoints = [0, 0, 0, 0];
+  private shotEnds(s: Shot): number[] {
+    const p = this.shotPoints;
+    const sc = this.scale;
+    if (s.from && s.to) {
+      p[0] = this.offX + s.from.x * sc;
+      p[1] = this.offY + s.from.y * sc;
+      p[2] = this.offX + s.to.x * sc;
+      p[3] = this.offY + s.to.y * sc;
+      return p;
+    }
+    const a = this.screenOf(s.a);
+    p[0] = a.x;
+    p[1] = a.y;
+    if (s.end) {
+      p[2] = this.offX + s.end.x * sc;
+      p[3] = this.offY + s.end.y * sc;
+    } else {
+      const b = this.screenOf(s.b);
+      p[2] = b.x;
+      p[3] = b.y;
+    }
+    return p;
+  }
+
+  /** Does this design hold a battery? (Cached per design: its building bursts as a discharge.) */
+  private holdsBattery(bpId: number): boolean {
+    let v = this.batteryDesign.get(bpId);
+    if (v === undefined) {
+      v = hasBatteryPart(this.state.blueprints.get(bpId)?.parts ?? []);
+      this.batteryDesign.set(bpId, v);
+    }
+    return v;
   }
 
   /** The texture of a unit or building: walls pick the variant that matches the neighbours they join. */
@@ -1276,10 +1915,17 @@ export class Renderer {
       }
       this.updateShadow(e, s, k, dt);
     }
+    this.drawWrecks(now, k);
+    this.drawLiquidFx(now);
+    this.halosUsed = 0;
     this.glowsUsed = 0; // drawNight (spotlights) and drawGlows (fire) both add to the pool
     this.drawNight(now, k);
+    this.drawMist(now);
+    this.precipitation.update(this.state, this.skyProbe, now, this.app.screen.width, this.app.screen.height, reduceMotion(), flashesAllowed(), weatherDetail() === 'fancy');
+    this.drawSteam(now);
     this.drawChargeZones();
     this.drawLinks();
+    this.drawShields(now);
     this.drawFog();
     this.drawRadar();
     this.drawOverlay(now);
@@ -1351,10 +1997,9 @@ export class Renderer {
    * trailing jagged lightning arcs that crackle (re-rolled every TESLA_FLICKER_MS) and shed sparks.
    */
   private drawTesla(g: Graphics, p: Pulse, now: number): void {
-    const range = this.state.stats(p.e)?.weapon?.range ?? 0;
-    const c = this.screenOf(p.e);
+    const c = p.spot ? this.tileToScreen(p.spot.x, p.spot.y) : this.screenOf(p.e);
     const age = (now - p.born) / PULSE_MS;
-    const reach = (range / TILE) * this.scale;
+    const reach = (p.spot ? p.spot.radius : (this.state.stats(p.e)?.weapon?.range ?? 0) / TILE) * this.scale;
     const front = reach * (1 - (1 - Math.min(1, age * 1.6)) ** 2); // the ring eases out and arrives at ~60% of the time
     const fade = 1 - age;
     const frame = Math.floor((now - p.born) / TESLA_FLICKER_MS);
@@ -1531,13 +2176,15 @@ export class Renderer {
    * get two headlight beams, flying ones red/green nav lights and a white strobe.
    */
   private drawNight(now: number, k: number): void {
-    const sun = this.state.daylight;
-    const dark = 1 - sun / 100;
+    this.updateLamps(now);
+    const sun = this.lightDaylight(); // for the lamps; the night dimming below follows the real daylight
+    const dark = 1 - this.state.daylight / 100;
+    const spill = Math.min(1, this.state.haze / HAZE_FULL_SPILL);
     const night = this.nightLayer;
     night.visible = dark > 0.01;
     const g = this.lightLayer.clear();
     this.spotsUsed = 0;
-    if (!night.visible) {
+    if (!night.visible && sun >= LIGHTS_ON_BELOW) {
       for (let i = 0; i < this.beams.length; i++) this.beams[i].visible = false;
       this.hideSpots();
       return;
@@ -1550,7 +2197,8 @@ export class Renderer {
     night.height = this.app.screen.height;
     // Headlights are drawn under the vehicles, so the night multiply dims them too: pre-brighten each channel to cancel it.
     const lift = (beam: number, night: number) => Math.min(255, Math.round((beam * 255) / Math.max(night, 1)));
-    this.beamTint = (lift((BEAM_COLOUR >> 16) & 255, nr) << 16) | (lift((BEAM_COLOUR >> 8) & 255, ng) << 8) | lift(BEAM_COLOUR & 255, nb);
+    const beamColour = mixColour(BEAM_COLOUR, BEAM_HAZE_COLOUR, spill);
+    this.beamTint = (lift((beamColour >> 16) & 255, nr) << 16) | (lift((beamColour >> 8) & 255, ng) << 8) | lift(beamColour & 255, nb);
     this.spotTint = (lift((SPOT_COLOUR >> 16) & 255, nr) << 16) | (lift((SPOT_COLOUR >> 8) & 255, ng) << 8) | lift(SPOT_COLOUR & 255, nb);
     const beamScale = (this.scale * BEAM_LENGTH) / BEAM_LAMP_Y;
     let used = 0;
@@ -1569,6 +2217,8 @@ export class Renderer {
       const stats = this.state.stats(e);
       if (!stats) continue;
       if (s.x < -80 || s.y < -80 || s.x > w + 80 || s.y > h + 80) continue;
+      const lit = glow * this.lampBrightness(e, now);
+      if (lit < 0.005) continue; // out of power, or dark in a flicker
       const half = (Math.max(s.texture.width, s.texture.height) * k) / 2;
       // A lamp on each gun, turning with it (also on turret buildings).
       const guns = this.turrets.get(e);
@@ -1582,13 +2232,13 @@ export class Renderer {
           b.position.set(s.x + (t.x * cs - t.y * sn) * k, s.y + (t.x * sn + t.y * cs) * k);
           b.rotation = a;
           b.scale.set(beamScale * GUN_LAMP_LENGTH);
-          b.alpha = glow * GUN_LAMP_ALPHA;
+          b.alpha = lit * GUN_LAMP_ALPHA;
         }
       }
       if (stats.structure) {
         // Interior light spilling out: soft warm rings round the footprint, fainter outwards. Not while still being built.
         if (construction.has(e) || this.wallMasks.has(e)) continue; // a wall has no windows
-        this.buildingLight(g, s.x, s.y, stats, glow);
+        this.buildingLight(g, s.x, s.y, stats, lit);
         continue;
       }
       // The art's nose points up at rotation 0.
@@ -1597,9 +2247,9 @@ export class Renderer {
       if (stats.flying) {
         const wing = half * 0.8;
         const dot = Math.max(1.5, this.scale * 0.07);
-        this.navLight(g, s.x - rx * wing, s.y - ry * wing, NAV_PORT, dot, glow);
-        this.navLight(g, s.x + rx * wing, s.y + ry * wing, NAV_STARBOARD, dot, glow);
-        if (strobe) this.navLight(g, s.x - fx * half * 0.8, s.y - fy * half * 0.8, 0xffffff, dot, glow);
+        this.navLight(g, s.x - rx * wing, s.y - ry * wing, NAV_PORT, dot, lit);
+        this.navLight(g, s.x + rx * wing, s.y + ry * wing, NAV_STARBOARD, dot, lit);
+        if (strobe) this.navLight(g, s.x - fx * half * 0.8, s.y - fy * half * 0.8, 0xffffff, dot, lit);
         // A spotlight shining down: a few overlapping glows from the craft to the ground (where its shadow falls),
         // each wider and fainter than the last, so the light spreads and thins with altitude.
         const off = half * 2 * (SHADOW_OFFSET + AIR_SHADOW_LIFT * this.shadowLift[e]);
@@ -1607,7 +2257,7 @@ export class Renderer {
         const far = this.scale * (SPOT_MIN_RADIUS + (SPOT_MAX_RADIUS - SPOT_MIN_RADIUS) * flying), near = far * 0.3;
         for (let i = 0; i < SPOT_STEPS; i++) {
           const t = i / (SPOT_STEPS - 1);
-          this.spot(s.x + off * t, s.y + off * t, near + (far - near) * t, SPOT_ALPHA * glow * (1 - 0.75 * t));
+          this.spot(s.x + off * t, s.y + off * t, near + (far - near) * t, SPOT_ALPHA * lit * (1 - 0.75 * t));
         }
         continue;
       }
@@ -1617,12 +2267,93 @@ export class Renderer {
         const b = this.beamSprite(used++);
         b.position.set(s.x + fx * half * 0.75 + rx * half * lamp.side, s.y + fy * half * 0.75 + ry * half * lamp.side);
         b.rotation = s.rotation;
-        b.scale.set(beamScale * (0.7 + 0.3 * lamp.power));
-        b.alpha = glow * lamp.power;
+        const along = beamScale * (0.7 + 0.3 * lamp.power);
+        b.scale.set(along * (1 + HAZE_BEAM_WIDEN * spill), along);
+        b.alpha = Math.min(1, lit * lamp.power * (1 + HAZE_BEAM_BRIGHTEN * spill));
       }
+      // Light scattered by the haze: a pale pool round the vehicle, a little ahead of it.
+      if (spill > 0.02 && lamps.length > 0) this.spot(s.x + fx * half * 0.9, s.y + fy * half * 0.9, this.scale * HAZE_POOL_RADIUS * (0.8 + 0.4 * lamps.length / 2), HAZE_POOL_ALPHA * lit * spill);
     }
     for (let i = used; i < this.beams.length; i++) this.beams[i].visible = false;
     this.hideSpots();
+  }
+
+  /**
+   * Decides which lamps are on: after dark, a unit or building with energy left (and a working CPU, if it has one)
+   * has its lights on; with none they go out. Every switch starts a flicker (see `lampLevel`), staggered a little from
+   * lamp to lamp so a whole base does not blink in step. First sight of something is not a switch. Runs in daylight too,
+   * so everything is known to be off when dusk comes.
+   */
+  private updateLamps(now: number): void {
+    const dark = this.lightDaylight() < LAMPS_SWITCH_BELOW;
+    const { world } = this.state;
+    const sites = world.store(Construction);
+    const unit = world.store(Unit);
+    for (const e of this.sprites.keys()) {
+      if (!unit.has(e)) continue;
+      const want = dark && this.powered(e) && !sites.has(e) ? 2 : 1;
+      const have = this.lampState[e];
+      if (have === want) continue;
+      this.lampState[e] = want;
+      this.lampSince[e] = have === 0 ? -1e9 : now + ((Math.imul(e, 2654435761) >>> 0) % 150);
+    }
+  }
+
+  /**
+   * Mist: soft, wide wisps of pale haze that belong to the ground. Each has a place on the map and drifts slowly across
+   * it with the wind, so it moves with the world when the camera does, not with the screen. They are drawn over the
+   * units, buildings and effects, have no hard edge, and are only a faint tint; lights halo through them (`glow`). The fog of war turns pale and
+   * soft in mist as well (`drawFog`). Still with Reduce motion; left out entirely with the weather set to Simple.
+   */
+  private drawMist(now: number): void {
+    const mist = this.state.weather.mix[Sky.Mist] / 100;
+    const layer = this.mistLayer;
+    this.mistAmount = mist < 0.01 || weatherDetail() !== 'fancy' ? 0 : mist;
+    if (this.mistAmount === 0) {
+      layer.visible = false;
+      return;
+    }
+    layer.visible = true;
+    const { width, height } = this.state.terrain;
+    const t = reduceMotion() ? 0 : now / 1000;
+    const drift = MIST_WISP_DRIFT + (this.state.wind / 100) * 0.3;
+    const sc = this.scale;
+    const screenW = this.app.screen.width, screenH = this.app.screen.height;
+    for (let i = 0; i < MIST_WISPS; i++) {
+      let sp = this.mistWisps[i];
+      if (!sp) {
+        sp = new Sprite(this.mistTexture);
+        sp.anchor.set(0.5);
+        sp.tint = MIST_WISP_COLOUR;
+        layer.addChild(sp);
+        this.mistWisps[i] = sp;
+      }
+      const radius = MIST_WISP_RADIUS * (0.7 + 0.8 * hash01(i, 2));
+      const span = width + 2 * radius * MIST_WISP_STRETCH;
+      const x = ((hash01(i, 1) * span + t * drift * (0.5 + hash01(i, 3))) % span) - radius * MIST_WISP_STRETCH;
+      const y = hash01(i, 4) * height + Math.sin(t * 0.2 + i) * 0.6;
+      const sx = this.offX + x * sc, sy = this.offY + y * sc;
+      const rx = radius * MIST_WISP_STRETCH * sc, ry = radius * sc;
+      if (sx + rx < 0 || sy + ry < 0 || sx - rx > screenW || sy - ry > screenH) {
+        sp.visible = false;
+        continue;
+      }
+      sp.visible = true;
+      sp.position.set(sx, sy);
+      sp.scale.set((rx * 2) / GLOW_SIZE, (ry * 2) / GLOW_SIZE);
+      sp.alpha = MIST_WISP_ALPHA * mist * (0.6 + 0.4 * hash01(i, 5));
+    }
+  }
+
+  /** The daylight that decides when lamps are on: the sun, cut by haze, so mist and dust bring the headlights on by day. */
+  private lightDaylight(): number {
+    return lampDaylight(this.state.daylight, this.state.haze);
+  }
+
+  /** Brightness (0..1) of an entity's lamps now: settled on or off, or mid-flicker. */
+  private lampBrightness(e: number, now: number): number {
+    const on = this.lampState[e] === 2;
+    return flickerAllowed() ? lampLevel(now - this.lampSince[e], on, e) : on ? 1 : 0;
   }
 
   /** Adds one soft round spotlight glow (radius in pixels) under the units for this frame. */
@@ -1752,6 +2483,27 @@ export class Renderer {
     s.scale.set((radius * 2) / GLOW_SIZE);
     s.tint = colour;
     s.alpha = Math.min(1, alpha);
+    if (this.mistAmount > 0.02) this.halo(x, y, radius * HALO_RADIUS, colour, Math.min(HALO_MAX_ALPHA, alpha * HALO_ALPHA * this.mistAmount));
+  }
+
+  /** The light a source throws on the mist over it: a wide, very soft additive puff in the light's colour. */
+  private halo(x: number, y: number, radius: number, colour: number, alpha: number): void {
+    if (alpha < 0.01 || this.halosUsed >= HALO_CAP) return;
+    if (x + radius < 0 || y + radius < 0 || x - radius > this.app.screen.width || y - radius > this.app.screen.height) return;
+    let s = this.halos[this.halosUsed];
+    if (!s) {
+      s = new Sprite(this.mistTexture);
+      s.anchor.set(0.5);
+      s.blendMode = 'add';
+      this.haloLayer.addChild(s);
+      this.halos[this.halosUsed] = s;
+    }
+    this.halosUsed++;
+    s.visible = true;
+    s.position.set(x, y);
+    s.scale.set((radius * 2) / GLOW_SIZE);
+    s.tint = colour;
+    s.alpha = alpha;
   }
 
   /**
@@ -1764,20 +2516,35 @@ export class Renderer {
     const sc = this.scale;
     for (const x of this.explosions) {
       const t = (now - x.born) / x.ms;
+      if (t < 0) continue; // not gone off yet (a flak burst waits for its shell)
       const cx = this.offX + x.x * sc, cy = this.offY + x.y * sc;
       const r = Math.max(1, x.radius) * sc;
-      this.glow(cx, cy, r * (3.4 - 0.8 * t), EXPLOSION_LIGHT, 0.9 * level * (1 - t) ** 1.6);
+      this.glow(cx, cy, r * (x.lightScale - 0.8 * t), x.palette.light, 0.9 * level * (1 - t) ** 1.6);
       const flash = Math.max(0, 1 - t / 0.25);
       this.glow(cx, cy, r * 1.6, 0xffffff, 0.8 * level * flash);
     }
+    // Lava lights the night: a faint orange pool over every few cells of it.
+    const lava = this.liquids?.lava;
+    if (lava && lava.length > 0 && this.state.daylight < 85) {
+      const flicker = reduceMotion() ? 1 : 0.85 + 0.15 * Math.sin(now / 500);
+      for (let i = 0; i < lava.length; i += 2) this.glow(this.offX + lava[i] * sc, this.offY + lava[i + 1] * sc, sc * 2.4, 0xff7a1f, 0.3 * level * flicker * (i % 3 ? 1 : 0.8));
+    }
+    if (this.devGlows.length > 0) {
+      this.devGlows = this.devGlows.filter((d) => now - d.born < d.ms);
+      for (const d of this.devGlows) {
+        const t = Math.max(0, (now - d.born) / d.ms);
+        this.glow(this.offX + d.x * sc, this.offY + d.y * sc, d.radius * sc, d.colour, 0.9 * level * (1 - t) ** 1.6);
+      }
+    }
     for (const s of this.shots) {
-      const age = (now - s.born) / SHOT_MS;
-      const w = this.state.stats(s.a)?.weapon;
-      const size = Math.min(1.6, 0.35 + 0.07 * Math.sqrt(w?.damage ?? 4));
-      const colour = w?.kind === 'laser' ? s.colour : MUZZLE_LIGHT;
-      const a = this.screenOf(s.a), b = this.screenOf(s.b);
-      this.glow(a.x, a.y, size * sc, colour, 0.8 * level * (1 - age) ** 2);
-      this.glow(b.x, b.y, size * 0.7 * sc, colour, 0.6 * level * (1 - age));
+      const age = (now - s.born) / s.ms;
+      const size = Math.min(1.6, 0.35 + 0.07 * Math.sqrt(s.damage));
+      const colour = s.kind === 'laser' ? s.colour : MUZZLE_LIGHT;
+      const [ax, ay, bx, by] = this.shotEnds(s);
+      this.glow(ax, ay, size * sc, colour, 0.8 * level * (1 - age) ** 2);
+      this.glow(bx, by, size * 0.7 * sc, colour, 0.6 * level * (1 - age));
+      // A laser lights the ground along its length, not only at its ends.
+      if (s.kind === 'laser') this.glow((ax + bx) / 2, (ay + by) / 2, size * 0.9 * sc + Math.hypot(bx - ax, by - ay) * 0.25, colour, 0.35 * level * (1 - age));
     }
     for (const l of this.launches) {
       const age = (now - l.born) / LAUNCH_MS;
@@ -1796,40 +2563,65 @@ export class Renderer {
     }
     for (const p of this.pulses) {
       const age = (now - p.born) / PULSE_MS;
-      const range = this.state.stats(p.e)?.weapon?.range ?? 0;
-      const c = this.screenOf(p.e);
+      const range = p.spot ? p.spot.radius * TILE : this.state.stats(p.e)?.weapon?.range ?? 0;
+      const c = p.spot ? this.tileToScreen(p.spot.x, p.spot.y) : this.screenOf(p.e);
       this.glow(c.x, c.y, Math.min(3, Math.max(1, (range / TILE) * 0.3)) * sc, p.colour, 0.8 * level * (1 - age) ** 2);
     }
+    const flames = this.state.world.store(Flame);
+    // A jet lays many fires: only some give light, a little wider each, so the pool is not used up.
+    const glowEvery = Math.max(1, Math.ceil(flames.dense.length / 40));
+    for (const e of this.flying) {
+      if (!flames.has(e)) continue;
+      const p = this.screenOf(e);
+      const f = flicker(now, e, reduceMotion());
+      if (flames.f.state[e] === 1) {
+        if (e % glowEvery !== 0) continue;
+        const s = fireStrength(flames.f.life[e] / FLAME_LIFE_STEPS);
+        this.glow(p.x, p.y - sc * 0.2, sc * 2.4 * f * (0.5 + 0.5 * s) * (1 + 0.25 * Math.sqrt(glowEvery - 1)), FIRE_LIGHT, 0.8 * level * s);
+      } else {
+        this.glow(p.x, p.y - lobHeight(this.flameProgress(e)) * sc, sc * 1.2 * f, FIRE_LIGHT, 0.85 * level);
+      }
+    }
     for (let i = this.glowsUsed; i < this.glows.length; i++) this.glows[i].visible = false;
+    for (let i = this.halosUsed; i < this.halos.length; i++) this.halos[i].visible = false;
   }
 
-  /** Darkens tiles out of view: lightly where seen before, heavily where never seen. */
+  /**
+   * Darkens tiles out of view: lightly where seen before, heavily where never seen. The fog is a picture one pixel per
+   * tile (`fogImage`), redrawn when vision changes and stretched over the map with smoothing, so the edge of what you
+   * can see fades over a couple of tiles instead of stepping tile by tile.
+   */
   private drawFog(): void {
-    const key = `${this.laidOutFor}|${this.state.fog}|${this.state.visionVersion}`;
-    if (key === this.fogDrawnFor) return;
-    this.fogDrawnFor = key;
-    const g = this.fogLayer.clear();
     const v = this.state.vision;
     const { width, height } = this.state.terrain;
-    if (!this.state.fog || v.length !== width * height) return;
-    for (const [level, alpha] of [[1, 0.35], [0, 0.65]] as const) {
-      for (let y = 0; y < height; y++) {
-        let x = 0;
-        while (x < width) {
-          if (v[y * width + x] !== level) {
-            x++;
-            continue;
-          }
-          const start = x;
-          while (x < width && v[y * width + x] === level) x++;
-          // Pixel-snapped edges: neighbouring rows meet exactly, since an overlap would double the translucent fill into a visible seam.
-          const left = Math.round(this.offX + start * this.scale);
-          const top = Math.round(this.offY + y * this.scale);
-          g.rect(left, top, Math.round(this.offX + x * this.scale) - left, Math.round(this.offY + (y + 1) * this.scale) - top);
-        }
-      }
-      g.fill({ color: 0x05070a, alpha });
+    const view = this.fogView;
+    if (!this.state.fog || v.length !== width * height) {
+      view.visible = false;
+      return;
     }
+    // In mist the fog turns pale and its edge widens; the amount is rounded so the picture is redrawn in steps while mist comes and goes.
+    const mist = Math.round(this.state.weather.mix[Sky.Mist] / 5) / 20;
+    const key = `${this.state.visionVersion}|${width}x${height}|${mist}`;
+    if (key !== this.fogDrawnFor) {
+      this.fogDrawnFor = key;
+      if (!this.fogCanvas || this.fogCanvas.width !== width || this.fogCanvas.height !== height) {
+        this.fogCanvas = document.createElement('canvas');
+        this.fogCanvas.width = width;
+        this.fogCanvas.height = height;
+        this.fogTexture?.destroy(true);
+        this.fogTexture = Texture.from(this.fogCanvas);
+        this.fogTexture.source.scaleMode = 'linear';
+        view.texture = this.fogTexture;
+      }
+      const ctx = this.fogCanvas.getContext('2d')!;
+      const img = ctx.createImageData(width, height);
+      fogImage(v, width, height, img.data, mist);
+      ctx.putImageData(img, 0, 0);
+      this.fogTexture!.source.update();
+    }
+    view.visible = true;
+    view.position.set(this.offX, this.offY);
+    view.scale.set(this.scale);
   }
 
   /** Redraw links (e.g. when network reports arrive). */
@@ -2012,7 +2804,7 @@ export class Renderer {
       }
     }
 
-    this.pulses = this.pulses.filter((p) => now - p.born < PULSE_MS && this.sprites.has(p.e));
+    this.pulses = this.pulses.filter((p) => now - p.born < PULSE_MS && (p.spot !== undefined || this.sprites.has(p.e)));
     for (const p of this.pulses) this.drawTesla(g, p, now);
 
     this.chargePulses = this.chargePulses.filter((p) => now - p.born < CHARGE_PULSE_MS && this.sprites.has(p.e));
@@ -2031,19 +2823,21 @@ export class Renderer {
     for (const x of this.buildSparks) drawBuildSparks(g, x, now, this.offX, this.offY, this.scale);
 
     this.explosions = this.explosions.filter((x) => now - x.born < x.ms);
-    for (const x of this.explosions) this.drawExplosion(g, x, now);
+    const still = reduceMotion();
+    for (const x of this.explosions) drawBlast(g, x, now, this.offX, this.offY, this.scale, still);
     landShrapnel(this.shrapnel, now, this.landFragment);
     drawShrapnel(g, this.shrapnel, now, this.offX, this.offY, this.scale);
     expireSparks(this.sparks, now);
     drawSparks(g, this.sparks, now, this.offX, this.offY, this.scale);
 
     this.drawMissiles(g, now);
+    this.drawShells(g);
+    this.drawFlames(g, now, still);
 
-    this.shots = this.shots.filter((s) => now - s.born < SHOT_MS && this.sprites.has(s.a) && this.sprites.has(s.b));
+    this.shots = this.shots.filter((s) => now - s.born < s.ms && (s.from !== undefined || (this.sprites.has(s.a) && this.sprites.has(s.b))));
     for (const s of this.shots) {
-      const a = this.screenOf(s.a);
-      const b = this.screenOf(s.b);
-      g.moveTo(a.x, a.y).lineTo(b.x, b.y).stroke({ width: 2, color: s.colour, alpha: 1 - (now - s.born) / SHOT_MS });
+      const [ax, ay, bx, by] = this.shotEnds(s);
+      drawShot(g, s.kind, ax, ay, bx, by, (now - s.born) / s.ms, s.colour, shotPower(s.damage), this.scale, s.seed, still);
     }
 
     this.drawRepairs(g, now);
@@ -2114,74 +2908,18 @@ export class Renderer {
   /** A thrown fragment comes down: a small blast, usually, and always a few sparks. */
   private landFragment = (s: Shrapnel): void => {
     const now = performance.now();
-    if (this.explosions.length < MAX_EXPLOSIONS && Math.random() < 0.6) this.explosions.push(makeExplosion(s.tx, s.ty, SHRAPNEL_BLAST_RADIUS, now));
+    // A fragment that bounced now and then leaves a small fire where it comes to rest (looks only: it does no damage). Rain smothers it.
+    const wet = (this.state.weather.mix[Sky.Rain] + this.state.weather.mix[Sky.Storm]) / 100;
+    if (this.embers.length < MAX_EMBERS && !reduceMotion() && Math.random() < emberChance(s, wet)) {
+      this.embers.push({ x: s.tx, y: s.ty, born: now, ms: emberLife(wet), seed: Math.floor(Math.random() * 100000), size: 0.45, nextFrag: Infinity });
+    }
+    if (this.explosions.length < MAX_EXPLOSIONS && Math.random() < 0.6) this.explosions.push(makeBlast('shell', s.tx, s.ty, SHRAPNEL_BLAST_RADIUS, now));
     burstSparks(this.sparks, s.tx, s.ty, 4 + Math.floor(Math.random() * 5), now, {
       colour: SHRAPNEL_SPARK_COLOURS[Math.floor(Math.random() * SHRAPNEL_SPARK_COLOURS.length)],
       reach: [0.15, 0.5],
       ms: [200, 420],
     });
   };
-
-  /** Flash, fireball, shockwaves, sparks, debris and smoke; every motion eases out. */
-  private drawExplosion(g: Graphics, x: Explosion, now: number): void {
-    const t = (now - x.born) / x.ms;
-    const out = 1 - (1 - t) ** 3;
-    const cx = this.offX + x.x * this.scale;
-    const cy = this.offY + x.y * this.scale;
-    const R = x.radius * this.scale;
-
-    // Light: a bright flash in the first moments, then a warm glow that fades with the fireball.
-    const flash = Math.max(0, 1 - t / 0.2);
-    if (flash > 0) {
-      g.circle(cx, cy, R * 2.6).fill({ color: 0xffd27a, alpha: 0.14 * flash });
-      g.circle(cx, cy, R * 1.7).fill({ color: 0xffe9a8, alpha: 0.3 * flash });
-      g.circle(cx, cy, R * 0.9).fill({ color: 0xffffff, alpha: 0.85 * flash });
-    }
-    const glow = (1 - t) ** 2;
-    g.circle(cx, cy, R * 2.2).fill({ color: 0xff7a1a, alpha: 0.1 * glow });
-    g.circle(cx, cy, R * 1.4).fill({ color: 0xff9a2e, alpha: 0.14 * glow });
-
-    // Smoke: dark puffs that drift up and swell once the fireball dies back.
-    const smokeT = Math.max(0, (t - 0.15) / 0.85);
-    if (smokeT > 0) {
-      const ease = 1 - (1 - smokeT) ** 2;
-      for (const f of x.smoke) {
-        const d = R * f.reach * ease;
-        const px = cx + Math.cos(f.angle) * d;
-        const py = cy + Math.sin(f.angle) * d - R * 0.6 * ease;
-        g.circle(px, py, R * f.size * (0.5 + ease)).fill({ color: 0x2a2d33, alpha: 0.4 * (1 - smokeT) });
-      }
-    }
-
-    // Fireball: hot core inside an orange body, shrinking in brightness as it grows.
-    const body = R * (0.25 + 0.55 * out);
-    g.circle(cx, cy, body).fill({ color: 0xff8a1f, alpha: 0.55 * (1 - t) });
-    g.circle(cx, cy, body * 0.6).fill({ color: 0xffd36a, alpha: 0.7 * (1 - t) ** 1.5 });
-
-    // Shockwaves: the original red ring, plus a thin fast white one ahead of it.
-    g.circle(cx, cy, R * (0.2 + 0.8 * out)).fill({ color: EXPLOSION_COLOUR, alpha: 0.2 * (1 - t) });
-    g.circle(cx, cy, R * (0.2 + 0.8 * out)).stroke({ width: 3, color: EXPLOSION_COLOUR, alpha: 1 - t });
-    g.circle(cx, cy, R * (0.3 + 1.2 * out)).stroke({ width: 1.5, color: 0xffffff, alpha: 0.6 * (1 - t) ** 2 });
-
-    // Sparks: bright streaks flung outwards, cooling from yellow to orange.
-    for (const f of x.sparks) {
-      const head = R * f.reach * out;
-      const tail = R * f.reach * Math.max(0, out - 0.18);
-      const cos = Math.cos(f.angle);
-      const sin = Math.sin(f.angle);
-      g.moveTo(cx + cos * tail, cy + sin * tail)
-        .lineTo(cx + cos * head, cy + sin * head)
-        .stroke({ width: f.size, color: t < 0.4 ? 0xfff2a0 : 0xff9a2e, alpha: (1 - t) ** 1.5 });
-    }
-
-    // Debris: dark chunks that arc outwards and fall back under gravity.
-    for (const f of x.debris) {
-      const d = R * f.reach * out;
-      const px = cx + Math.cos(f.angle) * d;
-      const py = cy + Math.sin(f.angle) * d + R * 0.5 * t * t;
-      g.circle(px, py, f.size).fill({ color: t < 0.3 ? 0xffb347 : 0x3b3f47, alpha: 1 - t * t });
-    }
-  }
 
   /**
    * Build beams are a continuous laser, unlike shots (instant lines) and repair (dots):
@@ -2317,11 +3055,23 @@ export class Renderer {
       g.moveTo(this.offX, this.offY + y * this.scale).lineTo(this.offX + t.width * this.scale, this.offY + y * this.scale);
     }
     g.stroke({ width: 1, color: 0x222a35, alpha: 0.6 });
+    // Faint contour lines on the open ground (cached per map; rock is painted over them below).
+    const contourKey = `${t.width}x${t.height}:${this.state.seed}:${t.version}`;
+    if (contourKey !== this.contourFor) {
+      this.contourFor = contourKey;
+      this.contours = contourSegments(t.width, t.height, this.state.seed, (x, y) => t.isPassable(x, y));
+    }
+    const cs = this.contours;
+    for (let i = 0; i < cs.length; i += 4) {
+      g.moveTo(this.offX + cs[i] * this.scale, this.offY + cs[i + 1] * this.scale).lineTo(this.offX + cs[i + 2] * this.scale, this.offY + cs[i + 3] * this.scale);
+    }
+    g.stroke({ width: 1, color: 0x34425a, alpha: 0.45 });
     // Rock is painted over the grid so the lines only show on open ground. Outer (convex) corners are
     // rounded: a corner is rounded where both of its sides face tiles outside the shape being filled.
     const rad = this.scale * 0.23;
     const PI = Math.PI;
-    const open = (x: number, y: number) => t.isPassable(x, y);
+    const open = (x: number, y: number) => !t.isRock(x, y); // liquid is open to the eye: only rock is drawn solid
+    this.drawLiquids(g, t);
     const fillShape = (inShape: (x: number, y: number) => boolean) => {
       for (let y = 0; y < t.height; y++) {
         for (let x = 0; x < t.width; x++) {
@@ -2409,6 +3159,193 @@ export class Renderer {
     g.stroke({ width: Math.max(2, s * 0.2), color: 0xc8b48c, alpha: 0.85, cap: 'square' });
   }
 
+  /**
+   * Water, lava and voids, under the rock. Straight shores follow the cell edges and corners are rounded (`liquids.ts`). Each tier
+   * is drawn over the one above it, so the colour deepens step by step; the steps are feathered with a soft stroke on their edge.
+   * The dry side of every shore gets a few widening, fading bands (wet ground, a lava glow, a dark lip), and the shore itself foam,
+   * a cooled crust with a hot inner line, or a crumbling pale rim.
+   */
+  private drawLiquids(g: Graphics, t: Terrain): void {
+    const key = `${t.width}x${t.height}:${t.shape}`;
+    if (key !== this.liquidsFor) {
+      this.liquidsFor = key;
+      this.liquids = t.hasLiquid ? buildLiquids(t) : null;
+    }
+    const foam = this.foamG.clear();
+    const hot = this.lavaG.clear();
+    const L = this.liquids;
+    if (!L || L.tiers.length === 0) return;
+    const s = this.scale;
+    const ox = this.offX;
+    const oy = this.offY;
+    const trace = (gg: Graphics, loop: Loop) => {
+      gg.moveTo(ox + loop[0] * s, oy + loop[1] * s);
+      for (let i = 2; i < loop.length; i += 2) gg.lineTo(ox + loop[i] * s, oy + loop[i + 1] * s);
+      gg.closePath();
+    };
+    const fill = (loops: Loop[], nest: { parent: number[]; depth: number[] }, colour: number, alpha: number) => {
+      for (let i = 0; i < loops.length; i++) {
+        if (nest.depth[i] % 2) continue; // an island is cut out of its lake below
+        trace(g, loops[i]);
+        g.fill({ color: colour, alpha });
+        for (let j = 0; j < loops.length; j++) {
+          if (nest.parent[j] === i && nest.depth[j] % 2) {
+            trace(g, loops[j]);
+            g.cut();
+          }
+        }
+      }
+    };
+    const strokeAll = (gg: Graphics, loops: Loop[], width: number, colour: number, alpha: number) => {
+      for (const l of loops) trace(gg, l);
+      gg.stroke({ width, color: colour, alpha, join: 'round' });
+    };
+    // Dry-side bands first, so the fills cover their inner halves.
+    for (const o of L.tiers) {
+      if (o.tier.index !== 0) continue;
+      if (o.tier.kind === 'water') for (const [w, a] of [[0.95, 0.07], [0.6, 0.1], [0.3, 0.14]]) strokeAll(g, o.shore, s * w, 0x0d1a22, a);
+      else if (o.tier.kind === 'lava') for (const [w, a] of [[1.5, 0.05], [0.95, 0.08], [0.5, 0.13]]) strokeAll(g, o.shore, s * w, 0xb8400f, a);
+      else for (const [w, a] of [[0.9, 0.1], [0.5, 0.18], [0.25, 0.28]]) strokeAll(g, o.shore, s * w, 0x000000, a);
+    }
+    for (const o of L.tiers) {
+      const { kind, index } = o.tier;
+      if (kind === 'water') {
+        const [colour, alpha] = WATER_TIERS[index];
+        fill(o.fill, o.nest, colour, alpha);
+        if (index > 0) strokeAll(g, o.fill, s * 0.4, colour, alpha * 0.5); // feather: the outer half softens the step above
+      } else if (kind === 'lava') {
+        const [colour, alpha] = LAVA_TIERS[index];
+        fill(o.fill, o.nest, colour, alpha);
+        if (index > 0) strokeAll(g, o.fill, s * 0.3, colour, alpha * 0.5);
+        if (index === 1) strokeAll(hot, o.fill, Math.max(1, s * 0.07), 0xffa347, 0.6);
+        if (index === 2) strokeAll(hot, o.fill, Math.max(1, s * 0.1), 0xffe29a, 0.5);
+      } else {
+        fill(o.fill, o.nest, 0x06080c, 1);
+        strokeAll(g, o.fill, s * 0.35, 0x06080c, 0.5);
+      }
+    }
+    // Cooler, darker patches in the lava: overlapping blotches on interior cells (so none spill past a shore), plus a few big, faint
+    // ones every other cell for the broad variation. Drawn once with the terrain, not per frame.
+    const isLava = (x: number, y: number) => { const d = t.depthAt(x, y); return d >= 6 && d <= 8; };
+    for (let y = 0; y < t.height; y++) {
+      for (let x = 0; x < t.width; x++) {
+        if (!isLava(x, y) || !isLava(x - 1, y) || !isLava(x + 1, y) || !isLava(x, y - 1) || !isLava(x, y + 1)) continue;
+        const h = cellHash(x * 7919 + 3, y * 104729 + 11);
+        const broad = cellHash(x >> 1, y >> 1) % 100 < 40; // 2x2 clumps share a roll, so the dark comes in patches
+        if (broad) {
+          g.circle(ox + (x + 0.5 + ((h >>> 4) % 50) / 250 - 0.1) * s, oy + (y + 0.5 + ((h >>> 12) % 50) / 250 - 0.1) * s, s * (0.38 + ((h >>> 20) % 25) / 100))
+            .fill({ color: 0x1c0803, alpha: 0.22 + ((h >>> 8) % 20) / 100 });
+        }
+        if (h % 100 < 22) {
+          g.circle(ox + (x + 0.5 + ((h >>> 6) % 50) / 160 - 0.15) * s, oy + (y + 0.5 + ((h >>> 14) % 50) / 160 - 0.15) * s, s * (0.15 + ((h >>> 22) % 20) / 100))
+            .fill({ color: 0x2a0d04, alpha: 0.35 });
+        }
+      }
+    }
+    // Shores.
+    for (const o of L.tiers) {
+      if (o.tier.index !== 0) continue;
+      if (o.tier.kind === 'water') {
+        strokeAll(foam, o.shore, s * 0.24, 0x8fd0de, 0.22);
+        strokeAll(foam, o.shore, Math.max(1, s * 0.06), 0xe3f6fa, 0.65);
+      } else if (o.tier.kind === 'lava') {
+        strokeAll(g, o.shore, Math.max(1.5, s * 0.16), 0x24100a, 0.85); // cooled crust
+        strokeAll(hot, o.shore, Math.max(1, s * 0.05), 0xff8a2a, 0.45);
+      } else {
+        strokeAll(g, o.shore, Math.max(1.5, s * 0.22), 0x4a586e, 0.3); // crumbling lip
+        strokeAll(g, o.shore, Math.max(1, s * 0.07), 0x9fb0c8, 0.3);
+      }
+    }
+  }
+
+  /**
+   * Life on the liquids, all cheap and capped: the shore foam and lava glow breathe (an alpha each), pale glints drift over water on the
+   * wind, bubbles swell and pop on lava, and ground units wading leave a ring behind them. None of it with Reduce motion; the glints,
+   * bubbles and wakes only with Fancy weather effects.
+   */
+  private drawLiquidFx(now: number): void {
+    const gl = this.glintG.clear();
+    const t = this.state.terrain;
+    if (!this.liquids || this.liquids.tiers.length === 0) return;
+    const still = reduceMotion();
+    this.foamG.alpha = still ? 0.85 : 0.7 + 0.2 * Math.sin(now / 900);
+    this.lavaG.alpha = still ? 0.85 : 0.65 + 0.35 * Math.sin(now / 650 + 1);
+    if (still || weatherDetail() !== 'fancy') return;
+    const s = this.scale;
+    const X = (tx: number) => this.offX + tx * s;
+    const Y = (ty: number) => this.offY + ty * s;
+    const x0 = Math.max(0, Math.floor(-this.offX / s));
+    const y0 = Math.max(0, Math.floor(-this.offY / s));
+    const x1 = Math.min(t.width - 1, Math.ceil((this.app.screen.width - this.offX) / s));
+    const y1 = Math.min(t.height - 1, Math.ceil((this.app.screen.height - this.offY) / s));
+    if (x1 < x0 || y1 < y0) return;
+    const cols = x1 - x0 + 1;
+    const rows = y1 - y0 + 1;
+    const wind = this.state.wind / 100;
+    for (let k = 0; k < GLINT_CAP; k++) {
+      const period = 1600 + (k % 7) * 230;
+      const cycle = Math.floor(now / period + k * 0.37);
+      const phase = (now / period + k * 0.37) % 1;
+      const h = cellHash(k, cycle);
+      const cx = x0 + (h % cols);
+      const cy = y0 + (Math.floor(h / cols) % rows);
+      const d = t.depthAt(cx, cy);
+      if (d >= 1 && d <= 5) {
+        // A short pale streak sliding with the wind and fading in and out.
+        const x = X(cx + 0.5 + ((h >>> 8) % 100) / 200 - 0.25 + wind * phase * 0.6);
+        const y = Y(cy + 0.5 + ((h >>> 16) % 100) / 200 - 0.25);
+        const a = Math.sin(phase * Math.PI) * (0.18 + 0.05 * d);
+        gl.moveTo(x - s * 0.18, y).lineTo(x + s * 0.18, y).stroke({ width: Math.max(1, s * 0.05), color: 0xd6f1f7, alpha: a });
+      } else if (d >= 6 && d <= 8 && k < BUBBLE_CAP) {
+        // A bubble swells, then pops into a bright fleck.
+        const x = X(cx + 0.5 + ((h >>> 8) % 100) / 220 - 0.22);
+        const y = Y(cy + 0.5 + ((h >>> 16) % 100) / 220 - 0.22);
+        if (phase < 0.8) gl.circle(x, y, s * (0.04 + 0.1 * phase)).stroke({ width: Math.max(1, s * 0.03), color: 0xffc25a, alpha: 0.6 * (1 - phase) });
+        else gl.circle(x, y, s * 0.06 * (phase - 0.7) * 6).fill({ color: 0xfff0b0, alpha: 0.5 * (1 - phase) * 5 });
+      }
+    }
+    // Spat fragments, very occasionally: a few slots, each firing on roughly one cycle in four and only if its cell is lava. A glowing
+    // fleck lobs up and over, cooling from orange to dark as it falls.
+    for (let k = 0; k < SPIT_SLOTS; k++) {
+      const period = 7000 + k * 2300;
+      const u = now / period + k * 0.29;
+      const phase = u % 1;
+      const flight = SPIT_MS / period;
+      if (phase >= flight) continue;
+      const h = cellHash(k + 91, Math.floor(u));
+      if (h % 4 !== 0) continue;
+      const lamps = this.liquids.lava;
+      if (lamps.length === 0) continue;
+      const li = ((h >>> 4) % (lamps.length / 2)) * 2; // one of the sparse lava cells kept for lighting
+      const cx = Math.floor(lamps[li]);
+      const cy = Math.floor(lamps[li + 1]);
+      if (cx < x0 || cx > x1 || cy < y0 || cy > y1) continue;
+      const p = phase / flight;
+      const ang = ((h >>> 9) % 628) / 100;
+      const reach = 0.7 + ((h >>> 19) % 100) / 100;
+      const x = X(cx + 0.5 + Math.cos(ang) * reach * p);
+      const y = Y(cy + 0.5 + Math.sin(ang) * reach * p) - s * 1.1 * 4 * p * (1 - p);
+      const hot = 1 - p;
+      const colour = hot > 0.55 ? 0xffd27a : hot > 0.25 ? 0xf47a1e : 0x6a2208;
+      gl.circle(x, y, s * 0.09).fill({ color: 0xff8a2a, alpha: 0.25 * hot });
+      gl.circle(x, y, s * 0.045).fill({ color: colour, alpha: 0.95 });
+    }
+    // Wakes: a ring spreading behind each ground unit that is moving through water.
+    for (const e of this.sprites.keys()) {
+      const st = this.state.stats(e);
+      if (!st || st.structure || st.flying) continue;
+      const px = this.curX[e];
+      const py = this.curY[e];
+      if (px < x0 - 1 || px > x1 + 1 || py < y0 - 1 || py > y1 + 1) continue;
+      if (Math.abs(px - this.prevX[e]) + Math.abs(py - this.prevY[e]) < 0.002) continue;
+      const d = t.depthAt(Math.floor(px), Math.floor(py));
+      if (d < 1 || d > 8) continue;
+      const phase = (now / 700 + e * 0.13) % 1;
+      const lava = d >= 6;
+      gl.circle(X(px), Y(py), s * (st.hover ? 0.3 + 0.5 * phase : 0.25 + 0.35 * phase)).stroke({ width: Math.max(1, s * 0.05), color: lava ? 0xffb066 : 0xe3f6fa, alpha: (1 - phase) * (lava ? 0.5 : 0.4) });
+    }
+  }
+
   private ensureSprite(e: number, tex: Texture, parent: Container = this.layer): Sprite {
     let s = this.sprites.get(e);
     if (!s) {
@@ -2420,6 +3357,29 @@ export class Renderer {
       s.texture = tex;
     }
     return s;
+  }
+
+  /** A vent or a piece of scenery: one texture per kind and variant, shared by every sprite of it. */
+  private featureTexture(kind: number, variant: number): Texture {
+    if (kind === FeatureKind.Vent) return this.texture('feature.vent', (g) => drawVent(g, TEX));
+    return this.texture(`feature.${kind}.${variant}`, (g) => drawScenery(g, kind, variant, TEX));
+  }
+
+  /** Steam over the vents that are on screen: open, capped by a site or a building, or worked by a steam turbine. */
+  private drawSteam(now: number): void {
+    const g = this.steamLayer.clear();
+    const features = this.state.world.store(Feature);
+    if (features.dense.length === 0) return;
+    const pos = this.state.world.store(Position);
+    const reduced = reduceMotion();
+    const w = this.app.screen.width, h = this.app.screen.height;
+    const reach = this.scale * 2;
+    for (const e of features.dense) {
+      if (features.f.kind[e] !== FeatureKind.Vent) continue;
+      const p = this.screenOf(e);
+      if (p.x < -reach || p.y < -reach || p.x > w + reach || p.y > h + reach) continue;
+      drawVentSteam(g, p.x, p.y, this.scale, this.state.ventCover.get(e) ?? 0, now, e, reduced);
+    }
   }
 
   /** One texture per blueprint, shared by every sprite of that class. */
@@ -2550,5 +3510,15 @@ export class Renderer {
     this.curX = grow(this.curX);
     this.curY = grow(this.curY);
     this.shadowLift = grow(this.shadowLift);
+    this.flameArcPrev = grow(this.flameArcPrev);
+    this.flameDirX = grow(this.flameDirX);
+    this.flameDirY = grow(this.flameDirY);
+    this.flameArcCur = grow(this.flameArcCur);
+    const state = new Uint8Array(n);
+    state.set(this.lampState);
+    this.lampState = state;
+    const since = new Float64Array(n);
+    since.set(this.lampSince);
+    this.lampSince = since;
   }
 }

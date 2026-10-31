@@ -1,8 +1,9 @@
 import { checkBlocks } from './blocks';
 import { buttonName, checkDoc, type MemoryUse } from './check';
-import { COST, STATEMENT_COST, VARIABLE_READ_COST, WIRED_NODE_COST, LOCAL_READ_COST } from './cost';
+import { COST, STATEMENT_COST, VARIABLE_READ_COST, WIRED_NODE_COST, LOCAL_READ_COST, LIST_ELEMENT_COST } from './cost';
 import { CUSTOM_EVENT_BASE, customEventDef, customEventNames, EVENT_BY_NAME, EventId, type EventDef } from './events';
 import type { FlowHost } from './host';
+import { ListTerm } from './lists';
 import { expandBlocks } from './text';
 import { FlowError, isBoolExpr, isTextExpr, parseDoc, textParts, type ConfigValue, type Expr, type FlowDoc, type Handler, type Stmt } from './ir';
 
@@ -49,6 +50,30 @@ export const Op = {
   Emit: 29,
   /** Joins text and numbers: pops the template's number slots, pushes the text's handle. The arg is the template index. */
   Concat: 30,
+  /** Starts a chain: calls the list source (arg: api index) with the arguments on the stack and fills the shared list. */
+  ListSrc: 31,
+  /** Starts a pass over the list (a step with a function). */
+  LBegin: 32,
+  /** Next entry of the pass: pushes it, or jumps to arg when there are none left. */
+  LNext: 33,
+  /** filter: pops the function's result and keeps the entry if it is not 0. */
+  LKeep: 34,
+  /** map: pops the function's result and stores it in place of the entry. */
+  LPut: 35,
+  /** sortBy, minBy, maxBy: pops the function's result and stores it as the entry's key. */
+  LKey: 36,
+  /** Ends a filter pass: the list is what was kept. */
+  LEnd: 37,
+  /** Orders the list by the keys (arg 0 ascending, 1 descending). */
+  LSort: 38,
+  /** take: pops n and cuts the list to its first n entries. */
+  LTake: 39,
+  /** Pushes the entry with the smallest (arg 0) or largest (arg 1) key, or -1. */
+  LArg: 40,
+  /** Ends a chain: pushes one number from the list (arg: `ListTerm` code; At pops the position first). */
+  LTerm: 41,
+  /** reduce: moves on to the next entry (the other passes do it as they store their result). */
+  LStep: 42,
 } as const;
 
 export const OP_STRIDE = 3;
@@ -137,6 +162,8 @@ function stackNeed(e: Expr): number {
       return Math.max(stackNeed(e.c), stackNeed(e.a), stackNeed(e.b));
     case 'call':
       return argsNeed(e.args);
+    case 'chain':
+      return Math.max(argsNeed(e.args), ...e.steps.map((st) => argsNeed(st.args)));
     default:
       return 1;
   }
@@ -283,7 +310,70 @@ export function compileDoc(written: FlowDoc, host: FlowHost, source: string, res
           for (const a of e.args) expr(a);
           emit(Op.Call, apiIndex.get(e.fn)!, WIRED_NODE_COST);
           break;
+        case 'chain':
+          for (const a of e.args) expr(a);
+          emit(Op.ListSrc, apiIndex.get(e.fn)!, WIRED_NODE_COST);
+          for (const st of e.steps) chainStep(st);
+          break;
       }
+    };
+
+    /** One step of a chain. A step with a function becomes a loop over the shared list, with the function inline. */
+    const chainStep = (st: Extract<Expr, { k: 'chain' }>['steps'][number]): void => {
+      const body = st.args[st.args.length - 1];
+      /** Compiles `for each entry: param = entry; <body>; each(result)`. */
+      const pass = (each: number): void => {
+        emit(Op.LBegin, 0, WIRED_NODE_COST);
+        const top = here();
+        const exit = emit(Op.LNext, 0, LIST_ELEMENT_COST);
+        emit(Op.StoreL, slots.get(st.params[st.params.length - 1])!);
+        expr(body);
+        if (each >= 0) emit(each);
+        emit(Op.Jmp, top);
+        patch(exit, here());
+      };
+      const mark = live.length;
+      for (const p of st.params) declare(p);
+      switch (st.op) {
+        case 'filter': pass(Op.LKeep); emit(Op.LEnd); break;
+        case 'map': pass(Op.LPut); break;
+        case 'sortBy': pass(Op.LKey); emit(Op.LSort, 0, WIRED_NODE_COST); break;
+        case 'sortByDesc': pass(Op.LKey); emit(Op.LSort, 1, WIRED_NODE_COST); break;
+        case 'minBy': pass(Op.LKey); emit(Op.LArg, 0, WIRED_NODE_COST); break;
+        case 'maxBy': pass(Op.LKey); emit(Op.LArg, 1, WIRED_NODE_COST); break;
+        case 'reduce': {
+          // reduce(start, (acc, r) => body): the first parameter is the running value, kept in its local.
+          const acc = slots.get(st.params[0])!;
+          expr(st.args[0]);
+          emit(Op.StoreL, acc);
+          emit(Op.LBegin, 0, WIRED_NODE_COST);
+          const top = here();
+          const exit = emit(Op.LNext, 0, LIST_ELEMENT_COST);
+          emit(Op.StoreL, slots.get(st.params[1])!);
+          expr(body);
+          emit(Op.StoreL, acc);
+          emit(Op.LStep);
+          emit(Op.Jmp, top);
+          patch(exit, here());
+          emit(Op.LoadL, acc, LOCAL_READ_COST);
+          break;
+        }
+        case 'take': expr(st.args[0]); emit(Op.LTake, 0, WIRED_NODE_COST); break;
+        case 'first': emit(Op.LTerm, ListTerm.First, WIRED_NODE_COST); break;
+        case 'last': emit(Op.LTerm, ListTerm.Last, WIRED_NODE_COST); break;
+        case 'count': emit(Op.LTerm, ListTerm.Count, WIRED_NODE_COST); break;
+        case 'sum': emit(Op.LTerm, ListTerm.Sum, WIRED_NODE_COST); break;
+        case 'min': emit(Op.LTerm, ListTerm.Min, WIRED_NODE_COST); break;
+        case 'max': emit(Op.LTerm, ListTerm.Max, WIRED_NODE_COST); break;
+        case 'at': expr(st.args[0]); emit(Op.LTerm, ListTerm.At, WIRED_NODE_COST); break;
+        case 'random':
+          // A random position in 0..count-1 from the unit's own deterministic rand(), then that entry.
+          emit(Op.LTerm, ListTerm.Count, WIRED_NODE_COST);
+          emit(Op.Call, apiIndex.get('rand')!, WIRED_NODE_COST);
+          emit(Op.LTerm, ListTerm.At);
+          break;
+      }
+      while (live.length > mark) slots.delete(live.pop()!);
     };
 
     const entry = here();

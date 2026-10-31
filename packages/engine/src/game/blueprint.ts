@@ -1,6 +1,6 @@
 import type { FlowProgram } from '../flow/compile';
 import { PARTS, SLOT_CODES, SWITCHABLE, TIER_NAMES, type PartDef, type WeaponKind } from './parts';
-import { ANTENNA_THROUGHPUT_PER_TILE, BASE_LINK_RANGE, BASE_STACK, MAX_CLASSES_EVER_PER_PLAYER, MOBILE_SOLAR_INTEGRITY_PERCENT, MOBILE_SOLAR_MASS_FACTOR, MODULE_HP_BASE, MODULE_HP_PER_MASS, BUILD_TIME_BASE, BUILD_TIME_PER_MASS, COST_PER_MASS, CYCLE_COST, factoryTierBit, PRODUCTION_ENERGY_BY_SLOT, PRODUCTION_ENERGY_PER_MODULE, REPAIR_ARMOR_MULTIPLIER, REPAIR_MATTER_PER_HP, sizeCostMultiplier, SPEED_FACTOR, TILE } from './rules';
+import { DEFAULT_WADE, ANTENNA_THROUGHPUT_PER_TILE, BASE_LINK_RANGE, BASE_STACK, MAX_CLASSES_EVER_PER_PLAYER, MOBILE_SOLAR_INTEGRITY_PERCENT, MOBILE_SOLAR_MASS_FACTOR, MODULE_HP_BASE, MODULE_HP_PER_MASS, BUILD_TIME_BASE, BUILD_TIME_PER_MASS, COST_PER_MASS, CYCLE_COST, factoryTierBit, PRODUCTION_ENERGY_BY_SLOT, PRODUCTION_ENERGY_PER_MODULE, REPAIR_ARMOR_MULTIPLIER, REPAIR_MATTER_PER_HP, sizeCostMultiplier, SPEED_FACTOR, TILE } from './rules';
 import { TESLA_COOLDOWN, TESLA_RANGE, type MissileTuning } from './rules';
 
 /** Converts total thrust / mass into sub-tile units per tick. */
@@ -25,6 +25,7 @@ export const Caps = {
   Repair: 4096,
   Radio: 8192,
   Laser: 16384,
+  Shield: 32768,
 } as const;
 
 export class BlueprintError extends Error {
@@ -86,6 +87,9 @@ export interface BlueprintStats {
   /** Peak generation per tick. */
   readonly solar: number;
   readonly wind: number;
+  /** Peak steam generation per tick (only while over a vent), and the number of steam turbines that make it. */
+  readonly steam: number;
+  readonly steamTurbines: number;
   /** Tiles a power link reaches from this building's edge. */
   readonly linkRange: number;
   /** Energy per tick a long (antenna) link from this building can carry; 0 without an antenna. */
@@ -110,6 +114,14 @@ export interface BlueprintStats {
   /** Matter it costs to mend one hit point of this class (armour plating costs more). */
   readonly repairMatterPerHp: number;
   readonly repairUse: number;
+  /** A working shield emitter: starting and largest arc (radians) and radius (sub-tile units), and the energy per tick at the starting size; null without one. */
+  readonly shield: {
+    readonly arc: number;
+    readonly maxArc: number;
+    readonly range: number;
+    readonly maxRange: number;
+    readonly use: number;
+  } | null;
   readonly caps: number;
   /** Credits to produce one. */
   readonly cost: number;
@@ -125,6 +137,10 @@ export interface BlueprintStats {
   readonly climb: number;
   /** Cells it needs clear on each side of its centre to fit (0 = squeezes through any one-tile gap). */
   readonly clearance: number;
+  /** The deepest liquid it can enter: shallow water for every ground drive, deep water amphibious, lava hover. */
+  readonly wade: number;
+  /** Skims over liquid at full speed. */
+  readonly hover: boolean;
   /** Walks on legs. */
   readonly legs: boolean;
 }
@@ -189,6 +205,7 @@ function validate(defs: PartDef[]): PartDef {
   const slots = frame.slots ?? 0;
   if (defs.length - 1 > slots) throw new BlueprintError(`${frame.name} holds ${slots} modules, got ${defs.length - 1}`);
   if (defs.filter((d) => d.weapon).length > 1) throw new BlueprintError('Only one weapon per class (for now)');
+  if (defs.filter((d) => d.shield).length > 1) throw new BlueprintError('Only one shield emitter per class');
   const structure = frame.structure === true;
   for (const d of defs) {
     if (structure && d.mobileOnly) throw new BlueprintError(`${d.name} only fits mobile units`);
@@ -225,11 +242,12 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
   const structure = frame.structure === true;
 
   let hp = 0, mass = 0, memory = 0, stack = BASE_STACK, energy = 0, fullCycles = 0;
-  let cycles = 0, cpuUse = 0, thrust = 0, motorUse = 0, flying = false, climb = 0, legs = false;
+  let cycles = 0, cpuUse = 0, thrust = 0, motorUse = 0, flying = false, climb = 0, legs = false, wade = DEFAULT_WADE, hover = false;
   let sensor = 0, sensorUse = 0, sensorTier = 0, cargo = 0, rate = 0, cargoUse = 0;
-  let factory = false, factoryModules = 0, factoryTiers = 0, factoryUse = 0, silo = 0, charge = 0, solar = 0, wind = 0, antenna = 0, antennas = 0, banks = 0;
+  let factory = false, factoryModules = 0, factoryTiers = 0, factoryUse = 0, silo = 0, charge = 0, solar = 0, wind = 0, steam = 0, steamTurbines = 0, antenna = 0, antennas = 0, banks = 0;
   let radioRange = 0, radioUse = 0, laserRange = 0, laserUse = 0, buildRate = 0, builderUse = 0, radarMax = 0, buildEnergy = 0, repairRate = 0, repairUse = 0, armorHp = 0;
   let weapon: BlueprintStats['weapon'] = null;
+  let shield: BlueprintStats['shield'] = null;
 
   defs.forEach((d, i) => {
     // Passive properties: always present.
@@ -258,6 +276,8 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
           legs = true;
           climb = Math.max(climb, d.climb);
         }
+        wade = Math.max(wade, d.wade ?? 0);
+        hover ||= d.hover === true;
         break;
       case 'sensor':
         if ((d.sensorRange ?? 0) > sensor) {
@@ -293,7 +313,10 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
         break;
       case 'generator':
         if (d.generator === 'solar') solar += d.output ?? 0;
-        else wind += d.output ?? 0;
+        else if (d.generator === 'steam') {
+          steam += d.output ?? 0;
+          steamTurbines++;
+        } else wind += d.output ?? 0;
         break;
       case 'antenna':
         antenna = Math.max(antenna, d.antennaRange ?? 0);
@@ -319,6 +342,15 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
         buildRate += d.buildRate ?? 0;
         builderUse += d.use ?? 0;
         break;
+      case 'shield':
+        shield = Object.freeze({
+          arc: (d.shield!.arc * Math.PI) / 180,
+          maxArc: (d.shield!.maxArc * Math.PI) / 180,
+          range: d.shield!.range * TILE,
+          maxRange: d.shield!.maxRange * TILE,
+          use: d.use ?? 0,
+        });
+        break;
     }
   });
 
@@ -333,13 +365,14 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
     (depot ? Caps.Depot : 0) |
     (flying && speed > 0 ? Caps.Fly : 0) |
     (charge > 0 ? Caps.Charger : 0) |
-    (solar + wind > 0 ? Caps.Generator : 0) |
+    (solar + wind + steam > 0 ? Caps.Generator : 0) |
     (banks > 0 ? Caps.Storage : 0) |
     (buildRate > 0 ? Caps.Build : 0) |
     (radarMax > 0 ? Caps.Radar : 0) |
     (repairRate > 0 ? Caps.Repair : 0) |
     (radioRange > 0 ? Caps.Radio : 0) |
-    (laserRange > 0 ? Caps.Laser : 0);
+    (laserRange > 0 ? Caps.Laser : 0) |
+    (shield ? Caps.Shield : 0);
 
   // Big hulls (heavy and up) cost exponentially more matter and production energy; buildings are not scaled.
   const sizeScale = structure ? 1 : sizeCostMultiplier(frame.size ?? 0);
@@ -371,6 +404,8 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
     buildRate,
     solar,
     wind,
+    steam,
+    steamTurbines,
     linkRange: Math.max(BASE_LINK_RANGE, antenna),
     linkThroughput: antennas * (structure ? (frame.shape ? Math.round(Math.sqrt(frame.shape.join('').split('X').length - 1)) : (frame.footprint ?? 1)) : 0) * ANTENNA_THROUGHPUT_PER_TILE,
     energyCapacity: energy,
@@ -387,6 +422,7 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
     builderUse,
     repairRate,
     repairUse,
+    shield,
     repairMatterPerHp: hp > 0 ? (REPAIR_MATTER_PER_HP * (hp - armorHp + armorHp * REPAIR_ARMOR_MULTIPLIER)) / hp : 0,
     caps,
     cost: Math.round((COST_PER_MASS * mass + CYCLE_COST * fullCycles) * sizeScale),
@@ -396,6 +432,8 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
     radius: structure ? 0 : Math.round((frame.radius ?? 0.3) * TILE),
     climb: structure ? 0 : climb,
     clearance: structure ? 0 : clearanceFor(frame.radius ?? 0.3),
+    wade: structure ? 0 : wade,
+    hover: !structure && hover,
     legs,
   });
 }

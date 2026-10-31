@@ -1,5 +1,6 @@
 import { MAX_TEXT } from './check';
-import { COST } from './cost';
+import { COST, LIST_MAX } from './cost';
+import { ListTerm } from './lists';
 import { EventId } from './events';
 import { configInt, configInts, handlerLabel, OP_STRIDE, Op, STACK_SIZE, handles, type FlowProgram } from './compile';
 import { MAX_ARGS, type HostApi } from './host';
@@ -275,6 +276,14 @@ export function hasWork(fs: FlowState, tick: number): boolean {
 // Shared scratch buffer for builtin arguments. The interpreter is not re-entrant.
 const ARGS = new Int32Array(MAX_ARGS);
 
+// Shared scratch for list chains: the entries, their sort keys, how many there are, and where a pass has got to. A chain
+// always runs to its end inside one statement (a handler only pauses between statements), so every unit can share these.
+const LIST = new Int32Array(LIST_MAX);
+const KEYS = new Int32Array(LIST_MAX);
+let listLen = 0;
+let listCur = 0;
+let listOut = 0;
+
 export interface RunHooks {
   /** A handler is about to start (`handler` is its index, `args` the event arguments). */
   start?(handler: number, args: Int32Array): void;
@@ -504,6 +513,111 @@ export function runFlow<Ctx>(fs: FlowState, api: HostApi<Ctx>, ctx: Ctx, cyclesP
           sp -= numbers;
           if (sp >= STACK_SIZE) { fault = Fault.StackOverflow; break run; }
           stack[sp++] = p.strings.length + running.dynamic.push(text.slice(0, MAX_TEXT)) - 1;
+          break;
+        }
+        case Op.ListSrc: {
+          const b = api[arg];
+          if (!b || !b.fill) { fault = Fault.BadOpcode; break run; }
+          const n = b.argc;
+          if (sp < n) { fault = Fault.StackUnderflow; break run; }
+          sp -= n;
+          for (let k = 0; k < n; k++) ARGS[k] = stack[sp + k];
+          listLen = Math.max(0, Math.min(LIST_MAX, b.fill(ctx, ARGS, LIST) | 0));
+          if (b.cost) {
+            fs.balance -= b.cost;
+            used += b.cost;
+            fs.handlerCycles += b.cost;
+          }
+          break;
+        }
+        case Op.LBegin:
+          listCur = 0;
+          listOut = 0;
+          break;
+        case Op.LNext:
+          if (listCur >= listLen) {
+            pc = arg;
+            break;
+          }
+          if (sp >= STACK_SIZE) { fault = Fault.StackOverflow; break run; }
+          stack[sp++] = LIST[listCur];
+          break;
+        case Op.LKeep:
+          if (sp < 1) { fault = Fault.StackUnderflow; break run; }
+          if (stack[--sp] !== 0) LIST[listOut++] = LIST[listCur];
+          listCur++;
+          break;
+        case Op.LPut:
+          if (sp < 1) { fault = Fault.StackUnderflow; break run; }
+          LIST[listCur++] = stack[--sp];
+          break;
+        case Op.LKey:
+          if (sp < 1) { fault = Fault.StackUnderflow; break run; }
+          KEYS[listCur++] = stack[--sp];
+          break;
+        case Op.LEnd:
+          listLen = listOut;
+          break;
+        case Op.LStep:
+          listCur++;
+          break;
+        case Op.LSort: {
+          // Stable insertion sort on the keys: at most LIST_MAX entries. It costs what it does: one cycle per entry.
+          for (let a = 1; a < listLen; a++) {
+            const key = KEYS[a];
+            const value = LIST[a];
+            let b = a - 1;
+            while (b >= 0 && (arg === 0 ? KEYS[b] > key : KEYS[b] < key)) {
+              KEYS[b + 1] = KEYS[b];
+              LIST[b + 1] = LIST[b];
+              b--;
+            }
+            KEYS[b + 1] = key;
+            LIST[b + 1] = value;
+          }
+          fs.balance -= listLen;
+          used += listLen;
+          fs.handlerCycles += listLen;
+          break;
+        }
+        case Op.LTake:
+          if (sp < 1) { fault = Fault.StackUnderflow; break run; }
+          listLen = Math.min(listLen, Math.max(0, stack[--sp]));
+          break;
+        case Op.LArg: {
+          let best = -1;
+          for (let a = 0; a < listLen; a++) if (best < 0 || (arg === 0 ? KEYS[a] < KEYS[best] : KEYS[a] > KEYS[best])) best = a;
+          if (sp >= STACK_SIZE) { fault = Fault.StackOverflow; break run; }
+          stack[sp++] = best < 0 ? -1 : LIST[best];
+          break;
+        }
+        case Op.LTerm: {
+          let r = 0;
+          switch (arg) {
+            case ListTerm.First: r = listLen ? LIST[0] : -1; break;
+            case ListTerm.Last: r = listLen ? LIST[listLen - 1] : -1; break;
+            case ListTerm.Count: r = listLen; break;
+            case ListTerm.At: {
+              if (sp < 1) { fault = Fault.StackUnderflow; break run; }
+              const at = stack[--sp];
+              r = at >= 0 && at < listLen ? LIST[at] : -1;
+              break;
+            }
+            case ListTerm.Sum:
+              for (let a = 0; a < listLen; a++) r = (r + LIST[a]) | 0;
+              break;
+            case ListTerm.Min:
+              if (listLen) { r = LIST[0]; for (let a = 1; a < listLen; a++) if (LIST[a] < r) r = LIST[a]; }
+              break;
+            case ListTerm.Max:
+              if (listLen) { r = LIST[0]; for (let a = 1; a < listLen; a++) if (LIST[a] > r) r = LIST[a]; }
+              break;
+            default:
+              fault = Fault.BadOpcode;
+              break run;
+          }
+          if (sp >= STACK_SIZE) { fault = Fault.StackOverflow; break run; }
+          stack[sp++] = r;
           break;
         }
         case Op.Emit: {

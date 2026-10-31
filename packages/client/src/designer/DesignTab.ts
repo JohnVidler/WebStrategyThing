@@ -1,4 +1,4 @@
-import { GENERATION_SCALE, PART_LIST, PARTS, TIER_NAMES, TILE, type PartDef, type PartSlot } from '@wst/engine';
+import { GENERATION_SCALE, STEAM_GENERATION_MULTIPLIER, PART_LIST, PARTS, TIER_NAMES, TILE, type PartDef, type PartSlot } from '@wst/engine';
 import { esc, type DesignerModel } from './shared';
 
 /** Module palette groups, in display order. Chassis are split into unit bodies and building frames. */
@@ -7,7 +7,7 @@ const CATEGORIES: { title: string; match: (p: PartDef) => boolean }[] = [
   { title: 'Building frames', match: (p) => p.slot === 'chassis' && p.structure === true },
   { title: 'Compute', match: (p) => p.slot === 'cpu' || p.slot === 'memory' },
   { title: 'Movement', match: (p) => p.slot === 'motor' },
-  { title: 'Weapons & armour', match: (p) => p.slot === 'weapon' || p.slot === 'armor' },
+  { title: 'Weapons & armour', match: (p) => p.slot === 'weapon' || p.slot === 'armor' || p.slot === 'shield' },
   { title: 'Sensors & radar', match: (p) => p.slot === 'sensor' || p.slot === 'radar' },
   { title: 'Radio & laser links', match: (p) => p.slot === 'comms' },
   { title: 'Industry', match: (p) => (['cargo', 'builder', 'repair', 'factory', 'depot'] as PartSlot[]).includes(p.slot) },
@@ -138,9 +138,14 @@ export class DesignTab {
       ['CPU', s.cyclesPerTick ? `${s.cyclesPerTick} cycles/tick · ${s.cpuUse} per 100 cycles` : 'none'],
       ['Memory', `program ${this.m.programMemory()}/${s.memorySlots} slots · queue ${s.stackDepth}`],
     ];
+    if (s.shield) {
+      const deg = (r: number) => Math.round((r * 180) / Math.PI);
+      rows.push(['Shield', `${deg(s.shield.arc)}° arc (up to ${deg(s.shield.maxArc)}°) · ${s.shield.range / TILE} tiles out (up to ${s.shield.maxRange / TILE}) · ${s.shield.use} energy/t`]);
+    }
     if (s.structure) {
       rows.push(['Footprint', s.shape ? `${s.area} tiles in a ${s.footprint}×${s.footprint} box` : `${s.footprint}×${s.footprint} tiles`], ['Link reach', `${s.linkRange} tiles`]);
       if (s.solar || s.wind) rows.push(['Generation', `☀ ${s.solar / GENERATION_SCALE}/t  ≋ ${s.wind / GENERATION_SCALE}/t (peak)`]);
+      if (s.steam) rows.push(['Steam', `♨ ${(s.steam * STEAM_GENERATION_MULTIPLIER) / GENERATION_SCALE}/t on a vent (${s.steamTurbines} turbine${s.steamTurbines === 1 ? '' : 's'}, one vent each)`]);
       if (s.chargeRate) rows.push(['Charging', `${s.chargeRate}/t per unit`]);
       if (s.resourceCapacity) rows.push(['Silos', String(s.resourceCapacity)]);
       if (s.factory) rows.push(['Factory', `${s.factoryUse} energy/t while producing`]);
@@ -148,6 +153,10 @@ export class DesignTab {
       rows.push(['Speed', s.speed ? `${((s.speed / TILE) * 10).toFixed(1)} tiles/s${s.flying ? ' (flying)' : ''} · ${s.motorUse}/t` : 'immobile']);
       rows.push(['Size', `${TIER_NAMES[s.size]}${s.clearance ? ` · needs a ${2 * s.clearance + 1}-tile-wide way` : ''}`]);
       if (s.legs) rows.push(['Legs', s.climb >= 9 ? 'stride over any rock (half speed on rock)' : `climb ${s.climb} level${s.climb === 1 ? '' : 's'} into rock (half speed on rock)`]);
+      if (s.speed && !s.flying) {
+        const liquid = s.hover ? 'skims over water and lava (lava scorches it)' : s.wade >= 5 ? 'wades shallow and deep water (slowly)' : s.wade > 0 ? 'wades shallow water (slowly)' : '';
+        if (liquid) rows.push(['Liquids', liquid]);
+      }
       if (s.sensorRange) rows.push(['Sensor', `${s.sensorRange / TILE} tiles · ${s.sensorUse}/scan`]);
       if (s.weapon) rows.push(['Weapon', `${s.weapon.damage} dmg · range ${s.weapon.range / TILE} · ${s.weapon.use}/shot`]);
       if (s.cargo) rows.push(['Cargo', `${s.cargo} · ${s.harvestRate}/t harvesting`]);
@@ -228,6 +237,7 @@ export class DesignTab {
           isFrame && !p.structure ? TIER_NAMES[p.size ?? 0] : '',
           `mass ${p.mass}`,
           p.climb ? `climbs ${p.climb >= 9 ? 'anything' : p.climb}` : '',
+          p.hover ? 'hovers over water and lava' : p.wade ? 'wades deep water' : '',
           p.minSize && !isFrame ? `${TIER_NAMES[p.minSize]}+` : '',
           p.use ? `uses ${p.use}` : '',
           p.slots ? `${p.slots} slots` : '',

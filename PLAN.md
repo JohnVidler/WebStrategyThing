@@ -8,7 +8,8 @@ Planned work and decisions. Compacted 2026-10-27: finished milestones are summar
 2. **Power bug (decision needed).** `powerSystem` (`systems.ts`) floors each generator's output a second time when transmission loss is applied (`gen[i] = Math.floor(gen[i] * efficiency)`). Any link gap makes efficiency just under 1, so a generator making 2 to 3 per tick loses 1 (two wind turbines one tile apart make about half). Expected failure in `engine/test/known-bugs.test.ts`. Fix: apply the efficiency to the exact total before the carry/floor step. It raises generation on every map with gapped links, so recheck the energy balance of starter bases and bots.
 3. **Big-unit balance (decision needed).** Super-heavy and colossus cost x6.25 and x15.6 (`SIZE_COST_FACTOR`, `rules.ts`) but are no stronger, so per matter they lose to many cheap units. Buff hp/damage, shorten build time, or leave as expensive status units; then retune the Colossus-vs-scouts test in `tiers.test.ts`. Part of P3.
 4. **Security and consistency leftovers** (details in `REVIEW.md`): S7 a Content-Security-Policy and CORS on the room list; S8 reconnect token out of the URL; S9 pin `tsx`/`ws`; S10 workflow permissions; S11 one name rule; S12 manifest cache; S13 to S17 consistency. Open question: add a process-level `uncaughtException` handler? Prefer fixing causes and keeping per-match isolation (`Match.crash`).
-5. **Engine follow-ups**: one shared path search per command batch and `freeMoveTile`'s taken set once per batch (22 ms to issue 256 orders); script-system hot-path allocations (parked: median tick ~0.5 ms, revisit only with a profile); the player-like AI (`ai.ts`) fields light and medium units, missiles and flak but not heavy or super-heavy tiers or legs, and uses neither `config.aim` nor repair drones: teach it those, long-march energy (see `PROGRESS.md`) and a difficulty setting; unit-cap weight per tier if micro swarms hurt.
+5. **Engine follow-ups**: one shared path search per command batch and `freeMoveTile`'s taken set once per batch (22 ms to issue 256 orders); script-system hot-path allocations (parked: median tick ~0.5 ms, revisit only with a profile); the player-like AI (`ai.ts`) fields light and medium units, missiles and flak but not heavy or super-heavy tiers or legs, and uses neither `config.aim` nor repair drones: teach it those and long-march energy (see `PROGRESS.md`); difficulty levels exist (`difficulty.ts`, 2026-10-30) with pickers on every mode that has bots; unit-cap weight per tier if micro swarms hurt.
+5a. **Shield follow-ups** (see `PROGRESS.md`, 2026-10-29): pathfinding that plans round an enemy shield instead of waiting at it (the arc is a dynamic wall: needs a per-tick obstacle test in `findPath`, or a re-plan when a unit is blocked); bots and the player-like AI do not field shields or use `config.shieldAngle`; a missile's splash just outside the arc still hurts; maybe a second, heavier emitter tier (bigger arc and radius, `minSize` 3) and an "overload" the player can trigger; tesla and flak ignore shields by design (revisit if a counter is wanted).
 6. **Module damage follow-ups**: starter programs and bots do not use `config.aim` or `brokenOf` yet; integrity numbers (25 + 6 per mass, legs 12/30/100) are a first guess; only the broken bit is networked; a broken factory or silo should be clear in the UI; flying units ignore height by design.
 7. **Art follow-ups**: spinning helicopter rotors, scrolling tracks, role hints on the hull, turrets that track a lock before the first shot (needs a `Lock` event or the target networked), a broken-module look, antenna/sensor/CPU/wind glyphs and shaped buildings that do not yet grow with modules (the 2026-10-28 module pass covered batteries, factories, solar, silos, chargers), a browser check of the 2026-10-28 night lighting, crystal deposits and spark effects (see `TODO.md`), sounds for `Break` and `Harvest`, height shown only as shading plus a cliff rim.
 8. **Sound**: hook the missile burst, `combat.shot.missile` (tag exists, no files), `SimEvent.Build` and `Charge` in `gameSounds.ts`; give any new combat/explosion tag `cooldownMs`/`maxVoices`; a global voice cap (~32) only if big fights still sound muddy; first-play drops (await decode for important tags); a `play()` test needs an `AudioContext` stub.
@@ -17,6 +18,130 @@ Planned work and decisions. Compacted 2026-10-27: finished milestones are summar
 11. **Single Player scenarios** (below): playtest and tune Horde and Surrounded, show Horde progress, then more scenarios.
 12. **Campaigns** (below): triggers, victory conditions, scripted starts, Tiled object layer.
 13. **`REVIEW.md` architecture items** that need a design decision: explicit match/player state machine, per-tick elimination check, one per-entity renderer record, `SimEvent.Damage`, per-bridge flow in `NetworkInfo`, a `DesignStore` "designs synced" marker, `showPowerLabels` off `ClientState`.
+
+14. **Steam vents and scenery follow-ups** (added 2026-10-28): bots do not build steam plants on vents (teach `ai.ts`: they already pick generators by count), and bot expansion should weigh scenery blocking a field. More scenery kinds and per-map clusters (made-by-hand layouts for the scenario maps), vents that sputter or cool down, a night glow for vents, `Wreck`-style destructible scenery, a sound for an open vent, and a minimap mark for vents.
+
+15. **Water, lava and void** (W1 to W5 built 2026-10-30, as-built notes and follow-ups in the section below).
+
+## Water, lava and void (planned and built 2026-10-30)
+
+**As built (2026-10-30), where it differs from the plan below:**
+
+- All five phases landed in one go, so there was no interim "liquids blocked for everyone": shallow water is wadable by every ground drive from the start (`DEFAULT_WADE` 2), amphibious reaches 5, hover 8.
+- Path cost was measured first (`PROGRESS.md`): a corner-to-corner search on the river map costs 2716 cells against 2527 for a dry map of the same size, so no extra mitigation was needed. `perf.test.ts` has a budget for it.
+- Generator: `LiquidSpec` has `lakes`, `lava`, `chasms`, `rivers`, `bridges` and `free`. `free` scatters bodies over the whole map instead of mirroring them (the user asked for asymmetric maps; what matters is that bases are joined). Rivers are never mirrored and are crossed by dry bridge strips, not shallow fords. Connectivity is checked from the first base, not the map centre (the centre can be a river), and only carves a dry corridor where a base is cut off. Four maps: Lakeland, Twin Rivers, Cinder Fields (free-form) and The Rift (mirrored chasms and lava).
+- Scripts: `depthAt`, `wade`, `escapeX`/`escapeY` calls, a `LeaveLava` block, and starter classes Skimmer (hover), Amphibian and Wader (amphibious). Bots and the horde add a hover Skimmer on a map with liquid; dry maps are unchanged (checked against the old generator on 88 map and seed pairs).
+- Dev tools: a `terrain` command (paint radius 0 to 20 at the target) and a `terrainPatch` server message (cells as index and signed elevation, at most 4096 a message), on a new Terrain tab.
+- Not built: rain ripples on water, flames not burning on water, hover spray, a minimap mark. Old routes of units already walking do not re-plan after a dev paint until they get stuck.
+
+**Open follow-ups:** bridges are only dry strips (no bridge art, and nothing a player can build or destroy: a buildable or breakable bridge would be a gameplay feature of its own); the Tiled campaign editor's tile palette (`editor/make-assets.mjs`, `terrain.tsx`) has no liquid tiles yet (the level JSON and `Terrain.decode` already take the letters `a` to `i`); hover and amphibious unit art is a plain larger hull (`art.ts`), and the numbers (costs, speeds `WADE_SPEED_PERMILLE`, lava damage, the 5 per tier heat) are first guesses to tune by playing; bots field Skimmers but do not use Waders or Amphibians for harvesting or assault; the player-like AI (`ai.ts`) does not know liquids; a sound for wading or lava; `Terrain.roomFor` is keyed by climb and wade, so a hover or amphibious big hull adds one more full-map pass whenever buildings change (no such unit exists yet; watch it if one does).
+
+Why: the map is rock or open ground. Liquids add terrain that slows or blocks ground units without blocking sight or shells, and gives hover and amphibious motors a reason to exist. Performance analysis (2026-10-30): per-tick and per-frame cost is negligible (one byte read per moving ground unit, as the legs slowdown already does in `movementSystem`; the bed is drawn once per map). The real costs are (a) pathfinding once some cells are slow rather than blocked, and (b) the many places that read `passable === 1` as "open ground at height 0" (82 uses in 23 files).
+
+**Decisions (agreed 2026-10-30):**
+
+- **Elevation is one signed scale per cell**: 1..9 rock (unchanged), 0 dry ground, below 0 liquid, with the kind fixed by depth band:
+  - -1, -2 **shallow water**: ground units may enter, slowed (W4; blocked until then). Hover at full speed.
+  - -3 to -5 **deep water**: blocked for ground units unless amphibious or hover.
+  - -6 to -8 **lava**: blocked for every ground unit; hover may cross but burns (W5).
+  - -9 **void**: flying units only.
+  - Tradeoff accepted: no shallow lava or shallow void. If that is ever wanted, add a separate liquid-kind byte layer (about 25 KB on the largest map; no speed cost) instead of stretching the scale.
+- **In memory**: a new `Terrain.depth: Uint8Array` (0 dry, 1..9 = the bands above) beside `heights`, rather than turning `heights` into an `Int8Array`, so rock code is untouched. `elevationAt(x, y)` returns the signed value.
+- **`passable` keeps meaning "dry open ground"** (1 only at height 0, depth 0). So every existing check that does not know about liquids is conservative: it treats liquid like rock, i.e. blocked. Only the places that must tell rock from liquid change (the W1 audit below).
+- **Wire form**: still one character per cell, sent once. '0'-'9' as today; depth 1..9 as 'a'-'i'. `Terrain.decode` clamps unknown characters to '0' as it does now. Server and client ship together, so no version flag is needed.
+- **Player programs**: `heightAt(x, y)` keeps its 0..10 contract (liquid reads 0) so existing programs keep working. New `depthAt(x, y)` returns 0..9 (0 dry). Document in `api.ts` and the manual that "height 0" no longer means "you can stand there". Mention it carefully in the changelog when W2 ships.
+- **Gameplay is per cell; drawing is smoothed.** A drawn shoreline may cut a corner by at most about 0.35 tile, but every liquid cell's centre is drawn as liquid and every dry cell's centre as dry (tested).
+
+**W1. Encoding, drawing, liquids blocked** (no new parts; nothing slower yet)
+
+1. `Terrain.depth`, `elevationAt`, `encode`/`decode`, a `MAX_LIQUID_DEPTH` and band constants in `rules.ts`.
+2. **The `passable` audit**:
+   - `heightAt` must return 0 (not `max(1, heights)`) on a liquid cell.
+   - `enterable` (legs) must refuse liquid.
+   - Vision opacity (`vision.ts`, `!passable || occupied`) becomes rock-or-building, so lakes do not block sight.
+   - The renderer's rock fill (`fillShape((x, y) => !open(x, y))`) and wall outline must use "rock", not "not passable".
+   - `features.ts`, `simulation.ts` spawning/landing and `footprintFree` stay correct by the conservative rule, but get a test each.
+   - Shells (`shell.ts`) need no change: liquid is below every shell.
+3. **Dev tools**: a `terrain` `DevCommand` that paints an elevation (dry, a rock height, a water depth, lava, void) over a radius at the target, on a new **Terrain** tab in Dev Options, covered in `server/test/dev.test.ts`. It bumps `terrain.version` (path and room caches already key on it).
+   - This needs the first **terrain change message**: `TerrainPatch { cells: [index, char][] }`, size-capped (e.g. 4096 cells a message) and rate-limited. It is sent to every player only when cells change, never per tick. It is also the hook for any future terraforming.
+4. **Rendering**: see "Rendering liquids" below. W1 ships the static bed, shoreline and depth shading; animation can follow in W2.
+5. **Perf**: bake time of the liquid layer on a 160x160 map with large lakes (measure; set a budget about 5x measured in a client test), and the existing perf tests unchanged.
+
+**W2. Liquids on maps**
+
+1. **Generator**: lakes, rivers, lava pools and void chasms as new `TerrainLayout` options or a `liquids` field on `MapDef`. They are drawn after rock and after every existing random draw, so existing maps and their RNG order are unchanged (test: encode every existing map before and after).
+   - Mirrored like rock.
+   - The connectivity step (`flood`) treats anything a wheeled unit cannot cross as a wall, so every base still reaches the centre on wheels.
+   - Depth follows distance from the shore (the `computeHeights` BFS, run inward over liquid).
+2. Two or three new maps that use them. Campaign maps: extend `tiled-to-level.mjs` and the editor palette with the new characters.
+3. `depthAt` in the API, the manual and `docs/game.md`; changelog entry.
+4. Bots (`ai.ts`, `bot.ts`): base and expansion placement already go through `footprintFree`; check that harvest fields across water do not strand harvesters (the path ends at the nearest reachable cell).
+
+**W3. Hover and amphibious motors**
+
+1. New motor parts, for example `motor.hover` (shallow and deep water at full speed; can cross lava, see W5; light hulls only, high `use`) and `tracks.amphibious` (deep water slowed, heavier).
+   - New stat `wade` in `deriveStats` (`blueprint.ts`), the deepest band the unit may enter.
+   - Mixing rules like legs (`blueprint.ts:214`).
+   - Designer stats row (`DesignTab.ts`).
+2. `Mobility` gains `wade`. `fits`/`enterable` take it into account. The room cache (`Terrain.roomFor`, keyed by climb today) is keyed by `(climb, wade)`. Watch the number of keys: each is a full-map pass whenever `version` moves, and every building placed moves it. If that shows in the perf tests, rebuild only the dirty region instead.
+3. A unit cannot both climb and wade (legs are not waterproof) unless a later part says so: one less key combination.
+4. Flying units never land on liquid (`ensureLanded` already needs walkable; test it).
+
+**W4. Slowdowns** (shallow water for every ground unit, deep water for amphibious)
+
+1. **Measure first**: add a perf case for a corner-to-corner path on a lake map, and a 256-unit order across a river, with `searchWork()` counts before and after. Path planning is already an open item (`REVIEW.md`, Open work 5); do not make it worse unchecked.
+2. **Weighted A*** in `findPath`: per-band step-cost multipliers (keep them low and few, e.g. 2x shallow, 3x deep), with the octile heuristic still at open-ground cost so it stays admissible. Searches that touch no liquid cost the same as now.
+3. **Smoothing guard**: `smooth`/`lineWalkable` must refuse a shortcut that enters slower ground than the cells it replaces. Otherwise string-pulling turns a planned detour back into a straight wade.
+4. **Movement**: one depth read per moving ground unit per tick, as with `CLIMB_SPEED_PERMILLE`. Per-band, per-motor speed permille constants in `rules.ts`.
+5. Rebalance check: harvester round trips on maps with shallow fords.
+
+**W5. Lava and void extras**
+
+- Hover units over lava take heat damage (one `sim.damage` per hover unit on lava every few ticks; cap and cost like the flame burn).
+- A unit pushed or stranded on lava by a dev paint or terraforming dies.
+- Lava glows at night through the shared glow pool.
+- Flames do not burn on water and burn longer on lava edges (optional).
+- Rain feeds shallow water visuals only (no gameplay).
+
+### Rendering liquids
+
+Follows `STYLE.md` (add a "Liquids" section there when W1 lands). Everything static is baked once per map (and re-baked only for a `TerrainPatch`, just the patched region if a full re-bake is too slow). Nothing is rebuilt per frame.
+
+**Smooth edges (the waterline and lavaline)**:
+
+- Treat each cell centre as a sample of a liquid field (1 inside a liquid of that band or deeper, 0 outside). Run marching squares on the dual grid (corners at cell centres) at threshold 0.5, with linear interpolation. Straight shores then fall exactly on the cell boundary, and diagonal shores cut corners instead of stair-stepping.
+- Then 2 iterations of Chaikin corner-cutting on each closed outline, so shores read as curves. A single-cell pool becomes a small round pond, not a diamond.
+- `contours.ts` already does marching squares; reuse its approach and keep the new code in a client-only `liquids.ts` that Node tests can drive (outlines are plain number arrays; Pixi only in the renderer).
+- Test: every liquid cell centre is inside its outline, every dry cell centre outside, and outlines are closed and do not self-cross on the generator's maps.
+
+**Depth shading**:
+
+- One outline set per depth level, drawn shallowest first as translucent fills, so water darkens step by step towards the middle (-1 pale teal over sand, down to deep blue at -5) and the steps blend rather than band.
+- Each deeper level's outline is pulled in a fraction of a tile by the smoothing, so the tiers do not share edges.
+- Lava runs dark crust at -6, through orange, to a bright yellow-white core at -8.
+- Void is near-black with a cold gradient into the drop.
+
+**Soft shore**:
+
+- On the dry side, a wet-ground band: 2 or 3 strokes of the shoreline at falling alpha and growing width, like the soft flame sprites rather than one hard line.
+- On the liquid side, a pale foam line for water, a dark cooled-crust rim with a hot inner line for lava, and a crumbling light rim for void.
+- Where rock meets liquid, the rock's wall outline is kept, so cliffs over water still read as walls.
+- Open-ground grid lines and `contours.ts` lines skip liquid cells.
+
+**Animation** (cheap, capped, off with Reduce motion, extras behind the Fancy weather setting):
+
+- Water: pooled soft highlight sprites drifting with `state.wind`, spawned only over visible water cells (cap about 60, like `SOFT_CAP`), and a slow alpha "breathing" of the foam line (one alpha write per frame).
+- Lava: a slow pulse of the core layer's alpha, plus pooled bubbles that swell and pop (cap about 30).
+- Rain: ripple rings on water instead of splashes (`precipitation.ts`).
+- Units in shallow water: a pooled wake ring under moving ground units; hover units a spray.
+- Under Reduce motion everything is static: no drift, pulse, bubbles or wakes.
+- Liquids sit in the ground layer, under units, the night tint and fog, like rock.
+
+**Option if the CPU outlines show artefacts at high zoom**: a single fragment shader over a cell-resolution depth texture with linear filtering and a `smoothstep` at the shore. It gives resolution-free edges, depth ramp and animation in one draw call, but it would be the project's first custom shader (check the WebGL and WebGPU renderers both). Not the first choice; only with a measured reason.
+
+## Lists and chains: follow-ups (added 2026-10-29)
+
+Done: find calls, chains and the harvester rewrite (see `PROGRESS.md`). Open: (1) graph editing of chains (steps are text-only in the graph today: add step nodes or an inspector); (2) lists you can keep in a variable (needs a bounded per-unit list heap; today a list lives only inside a chain so the VM needs no per-unit memory); (3) more sources (`findUnits(kind)`, `findHarvesters()`) and per-thing queries once a program needs them; (4) the player-like AI (`ai.ts` `assignHarvesters`) could use the same depot/field choice; (5) the other starter blocks (`BuildJobs`, `RepairJobs`, `MaintainNearby`) still use `nearestSite()` / `nearestDamaged()` and could spread builders over sites with `findSites().minBy(s => dist(s) + 8 * crowd(s, 2))`; (6) harvesters whose silos are all full could say so with `notify`.
 
 ## Single Player scenarios (started 2026-10-27)
 

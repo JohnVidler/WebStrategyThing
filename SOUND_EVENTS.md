@@ -90,7 +90,12 @@ Naming: `group.event`. Falling back to a parent tag is automatic (see below), so
 | `build.menu_open` / `build.menu_close` | Build bar opens/closes | ui |
 | `build.choose` | Building blueprint picked from the bar | ui |
 | `build.place` | Site placed (`place` sent) | ui |
-| `build.place_invalid` | Placement refused (fog, blocked, no funds) | ui |
+| `build.place_invalid` | Placement refused for a reason not listed below (also shown as an alert) | ui |
+| `build.invalid_bounds` | Placement refused: off the edge of the map (alert shown) | ui |
+| `build.invalid_blocked` | Placement refused: a building or site is in the way (alert shown) | ui |
+| `build.invalid_terrain` | Placement refused: rock, water, lava or a chasm (alert shown) | ui |
+| `build.invalid_vision` | Placement refused: no vision there (alert shown) | ui |
+| `build.invalid_limit` | Placement refused: too many construction sites (alert shown) | ui |
 | `build.cancel_placement` | Placement ghost cancelled | ui |
 | `build.demolish` | Demolish / cancel site confirmed | ui |
 | `produce.queue` | Unit queued at a factory | ui |
@@ -181,6 +186,8 @@ Naming: `group.event`. Falling back to a parent tag is automatic (see below), so
 | `ambient.battlefield` | Looping bed in a match | ui |
 | `ambient.wind` | Optional, wind is seeded in the world | sim |
 | `ambient.combat` | Fades in when music context becomes `combat` | ui (`music.ts`) |
+| `ambient.rain` | Loops while it rains or storms; volume runs from the entry's `volume.min` (dry) to `volume.max` (fully wet) with the weather's wetness (give it `"loop": true`) | sim |
+| `ambient.thunder` | Each lightning strike (not positional) | sim |
 | `sting.victory` / `sting.defeat` | Short music stings accompanying `match.victory`/`match.defeat` | msg |
 
 Background music stays with the existing `music.ts` track list and is not part of this manifest.

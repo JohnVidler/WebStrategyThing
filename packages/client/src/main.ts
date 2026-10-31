@@ -1,5 +1,5 @@
 import './style.css';
-import { applyTick, DEFAULT_MAP_ID, MAX_UNITS_PER_PLAYER, messageAllowed, NOTICE_KINDS, parseGameMode, parseScenario, Terrain, type ClientMessage, type ServerMessage } from '@wst/engine';
+import { applyTick, DEFAULT_MAP_ID, MAX_TERRAIN_PATCH_CELLS, MAX_UNITS_PER_PLAYER, messageAllowed, NOTICE_KINDS, parseGameMode, parseScenario, Terrain, type ClientMessage, type ServerMessage } from '@wst/engine';
 import { Connection } from './connection';
 import { ConnectingScreen, STAGE } from './connecting';
 import { DesignStore } from './designs';
@@ -19,6 +19,7 @@ import { Ui } from './ui';
 import { briefingUrl, campaignUrl, fetchCampaigns } from './campaignMenu';
 import { completeLevel } from './campaignProgress';
 import { initSettings } from './settings';
+import { optionsMenuUrl, showFlashingWarning } from './flashingWarning';
 import { installUiSounds } from './uiSounds';
 
 /** Combat music lingers this long (seconds) after the last damage seen. */
@@ -26,6 +27,10 @@ const COMBAT_MUSIC_SECONDS = 15;
 
 async function main(): Promise<void> {
   initSettings();
+  // The first time any part of the game loads, nothing flashes until the player has read this (it asks only once). Arriving
+  // from "Go to Options Menu" skips it, so the settings can be changed in peace.
+  const warned = new URLSearchParams(location.search).has('options') ? Promise.resolve('continue' as const) : showFlashingWarning();
+  const toOptions = () => location.replace(optionsMenuUrl());
   const apiBase = `${location.origin}/api/v1`;
   const socketProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const socketBase = import.meta.env.VITE_SERVER_URL ?? `${socketProtocol}//${location.host}/api/v1/ws`;
@@ -37,6 +42,9 @@ async function main(): Promise<void> {
   const mode = parseGameMode(new URLSearchParams(location.search).get('mode'));
   // Single Player scenario (horde, surrounded); the server ignores it in other modes.
   const scenario = parseScenario(new URLSearchParams(location.search).get('scenario'));
+  // The opponents' skill for a new room, passed on as the lobby wrote it (the server reads it only when it opens the room).
+  const botsParam = new URLSearchParams(location.search).get('bots');
+  const difficultyParam = new URLSearchParams(location.search).get('difficulty');
   // Campaign levels: which campaign and level (by file name), and its position in the campaign.
   const campaignId = new URLSearchParams(location.search).get('campaign') ?? '';
   const levelId = new URLSearchParams(location.search).get('level') ?? '';
@@ -51,6 +59,12 @@ async function main(): Promise<void> {
     sound.setAmbient('bed', 'ambient.menu');
     playSound('menu.enter');
     showLobby(apiBase, room || undefined, mapId, mode);
+    void warned.then((choice) => choice === 'options' && toOptions());
+    return;
+  }
+  // Joining: nothing connects (or loads further) until the warning is answered; the Options choice stops here.
+  if ((await warned) === 'options') {
+    toOptions();
     return;
   }
 
@@ -93,6 +107,9 @@ async function main(): Promise<void> {
     recallGroup: (n) => input.recallGroup(n),
     selectClass: (blueprint, add) => input.selectClass(blueprint, add),
     startGame: () => send({ t: 'startGame' }),
+    addBot: (name, level) => send({ t: 'addBot', name, level }),
+    editBot: (id, name, level) => send({ t: 'editBot', id, name, level }),
+    removeBot: (id) => send({ t: 'removeBot', id }),
     spectate: () => spectate(),
     leave: () => leave(),
     requestCpuProfile: (unit) => send({ t: 'cpuProfile', unit }),
@@ -210,7 +227,7 @@ async function main(): Promise<void> {
   let devTools: DevTools | undefined;
   if (__WST_DEV_TOOLS__) {
     void import('./devTools').then(({ DevTools }) => {
-      devTools = new DevTools(document.getElementById('map')!, state, { send, view: () => renderer.listener(), drop: () => conn.drop() });
+      devTools = new DevTools(document.getElementById('map')!, state, { send, view: () => renderer.listener(), drop: () => conn.drop(), canvas: () => renderer.canvas, screenToTile: (sx, sy) => renderer.screenToTile(sx, sy), tileToScreen: (x, y) => renderer.tileToScreen(x, y), effects: () => renderer.devSinks(), selection: () => [...input.selection] });
     });
   }
 
@@ -308,7 +325,21 @@ async function main(): Promise<void> {
       case 'weather':
         state.devSun = msg.sun;
         state.devWind = msg.wind;
+        state.setSky(msg.sky, msg.intensity, msg.change);
         break;
+      case 'terrainPatch': {
+        // Cells the server changed (a developer command paints them): apply them exactly and redraw the ground.
+        const t = state.terrain;
+        if (msg.cells.length % 2 === 0 && msg.cells.length <= 2 * MAX_TERRAIN_PATCH_CELLS) {
+          for (let i = 0; i < msg.cells.length; i += 2) {
+            const cell = msg.cells[i];
+            if (Number.isInteger(cell) && cell >= 0 && cell < t.width * t.height) t.setElevation(cell % t.width, Math.floor(cell / t.width), msg.cells[i + 1]);
+          }
+          t.version++;
+          renderer.terrainChanged();
+        }
+        break;
+      }
       case 'devNote':
         devTools?.note(msg.text, msg.ok);
         break;
@@ -332,7 +363,7 @@ async function main(): Promise<void> {
   } catch {
     token = randomHex();
   }
-  const url = `${socketBase}${socketBase.includes('?') ? '&' : '?'}room=${encodeURIComponent(room)}&token=${token}&map=${encodeURIComponent(mapId)}&mode=${mode}${scenario !== 'standard' ? `&scenario=${scenario}` : ''}${roomTitle ? `&title=${encodeURIComponent(roomTitle)}` : ''}${mode === 'campaign' ? `&campaign=${encodeURIComponent(campaignId)}&level=${encodeURIComponent(levelId)}` : ''}`;
+  const url = `${socketBase}${socketBase.includes('?') ? '&' : '?'}room=${encodeURIComponent(room)}&token=${token}&map=${encodeURIComponent(mapId)}&mode=${mode}${scenario !== 'standard' ? `&scenario=${scenario}` : ''}${botsParam ? `&bots=${encodeURIComponent(botsParam)}` : ''}${difficultyParam ? `&difficulty=${encodeURIComponent(difficultyParam)}` : ''}${roomTitle ? `&title=${encodeURIComponent(roomTitle)}` : ''}${mode === 'campaign' ? `&campaign=${encodeURIComponent(campaignId)}&level=${encodeURIComponent(levelId)}` : ''}`;
   const conn = new Connection(url, {
     open: () => {
       ui.setStatus('connected');

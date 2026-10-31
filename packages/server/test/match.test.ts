@@ -26,6 +26,9 @@ function ticks(match: Match, n: number): void {
 /** The host (first to join) starts the match. */
 const begin = (match: Match, host: FakeSocket) => match.receive(asSocket(host), { t: 'startGame' });
 
+/** The computer players of a Single Player or Co-op match (team 2). */
+const botIdsOf = (match: Match) => [...match.sim.teams].filter(([, team]) => team === 2).map(([id]) => id);
+
 const ownedBy = (match: Match, id: number) => match.sim.unit.dense.filter((e) => match.sim.unit.f.owner[e] === id);
 
 describe('match', () => {
@@ -42,7 +45,7 @@ describe('match', () => {
   });
 
   describe('co-op mode', () => {
-    it('runs with one human, gives each human a bot and holds two humans at most', () => {
+    it('runs with one human against a bot and holds two humans at most', () => {
       const match = new Match({ mode: 'coop', mapId: 'small-basin' });
       expect(match.capacity).toBe(2);
       const a = new FakeSocket();
@@ -50,10 +53,9 @@ describe('match', () => {
       begin(match, a);
       ticks(match, 3);
       expect(match.pauseReasons).toHaveLength(0); // one human is enough
-      const id = a.messages.find((m) => m.t === 'welcome')!.playerId as number;
       const roster = match.roster();
       expect(roster.map((r) => r.name)).toContain('Bot 1');
-      const botId = id + 1;
+      const botId = botIdsOf(match)[0];
       expect(ownedBy(match, botId).length).toBeGreaterThan(0);
       expect(match.sim.cheaters.has(botId)).toBe(false); // it plays by the same rules: it mines and pays for everything
       ticks(match, 600);
@@ -62,7 +64,7 @@ describe('match', () => {
       const b = new FakeSocket();
       match.join(asSocket(b));
       ticks(match, 3);
-      expect(match.roster()).toHaveLength(4);
+      expect(match.roster()).toHaveLength(3); // two humans and the one bot
       const c = new FakeSocket();
       match.join(asSocket(c));
       expect(c.readyState).toBe(3); // full
@@ -79,8 +81,8 @@ describe('match', () => {
       expect(a.messages.some((m) => m.t === 'matchOver')).toBe(false);
       const ids = [a, b].map((s) => s.messages.find((m) => m.t === 'welcome')!.playerId as number);
       expect(match.sim.allied(ids[0], ids[1])).toBe(true);
-      expect(match.sim.allied(ids[0], ids[0] + 1)).toBe(false);
-      for (const id of ids) for (const e of ownedBy(match, id + 1)) match.sim.destroyEntity(e);
+      expect(match.sim.allied(ids[0], botIdsOf(match)[0])).toBe(false);
+      for (const id of botIdsOf(match)) for (const e of ownedBy(match, id)) match.sim.destroyEntity(e);
       ticks(match, 10);
       const over = a.messages.find((m) => m.t === 'matchOver')!;
       expect(over.winners).toEqual(ids);
@@ -99,24 +101,38 @@ describe('match', () => {
       match.join(asSocket(b));
       expect(b.readyState).toBe(3); // full
       const id = a.messages.find((m) => m.t === 'welcome')!.playerId as number;
-      for (const e of ownedBy(match, id + 1)) match.sim.destroyEntity(e);
+      for (const e of ownedBy(match, botIdsOf(match)[0])) match.sim.destroyEntity(e);
       ticks(match, 10);
       expect(a.messages.find((m) => m.t === 'matchOver')!.winners).toEqual([id]);
     });
 
-    it('removes the bot along with its human', () => {
+    it('takes the human away and empties the room when the last human leaves', () => {
       const match = new Match({ mode: 'coop' });
       const a = new FakeSocket();
       match.join(asSocket(a));
       begin(match, a);
       ticks(match, 3);
       const id = a.messages.find((m) => m.t === 'welcome')!.playerId as number;
-      expect(ownedBy(match, id + 1).length).toBeGreaterThan(0);
+      expect(ownedBy(match, botIdsOf(match)[0]).length).toBeGreaterThan(0);
       match.leave(asSocket(a));
       ticks(match, 3);
       expect(ownedBy(match, id)).toHaveLength(0);
-      expect(ownedBy(match, id + 1)).toHaveLength(0);
-      expect(match.roster()).toHaveLength(0);
+      expect(match.empty).toBe(true);
+    });
+
+    it('takes the opponents from the room options: names and levels, and a global difficulty for Surrounded', () => {
+      const solo = new Match({ mode: 'solo', mapId: 'small-basin', bots: [{ name: 'Ann', level: 0 }, { name: 'Bo', level: 5 }] });
+      const a = new FakeSocket();
+      solo.join(asSocket(a));
+      ticks(solo, 3);
+      expect(solo.roster().map((r) => r.name)).toEqual(expect.arrayContaining(['Ann', 'Bo']));
+      expect(botIdsOf(solo).every((id) => ownedBy(solo, id).length > 0)).toBe(true);
+
+      const ring = new Match({ mode: 'solo', scenario: 'surrounded', mapId: 'small-basin', difficulty: 5 });
+      const b = new FakeSocket();
+      ring.join(asSocket(b));
+      ticks(ring, 3);
+      expect(ring.roster()).toHaveLength(5); // the human and four corner bots
     });
   });
 
@@ -220,7 +236,89 @@ describe('match', () => {
       expect(match.inLobby).toBe(false);
       const idB = b.messages.find((m) => m.t === 'welcome')!.playerId as number;
       expect(ownedBy(match, idB).length).toBeGreaterThan(0);
-      expect(ownedBy(match, 1)).toHaveLength(0);
+      expect(ownedBy(match, a.messages.find((m) => m.t === 'welcome')!.playerId as number)).toHaveLength(0);
+    });
+
+    describe('computer players', () => {
+      const lobbyOf = (s: FakeSocket) => s.messages.filter((m) => m.t === 'lobby').at(-1)! as unknown as {
+        bots: { id: number; name: string; level: number }[];
+        capacity: number;
+        minPlayers: number;
+      };
+      const send = (m: Match, s: FakeSocket, msg: Parameters<Match['receive']>[1]) => {
+        m.receive(asSocket(s), msg);
+        ticks(m, 2);
+      };
+
+      it('lets the host add, rename, re-level and remove bots, up to the seats of the map', () => {
+        const match = new Match({ mapId: 'small-basin' });
+        const host = new FakeSocket();
+        match.join(asSocket(host));
+        ticks(match, 2);
+        expect(lobbyOf(host).minPlayers).toBe(2);
+        send(match, host, { t: 'addBot', name: '', level: 0 });
+        expect(lobbyOf(host).bots).toMatchObject([{ name: 'Bot 1', level: 0 }]);
+        expect(lobbyOf(host).minPlayers).toBe(1); // a bot is the second side
+        expect(match.capacity).toBe(3); // humans that can still join
+        const id = lobbyOf(host).bots[0].id;
+        send(match, host, { t: 'editBot', id, name: '<b>Ace</b>', level: 5 });
+        expect(lobbyOf(host).bots).toMatchObject([{ name: 'bAce/b', level: 5 }]);
+        send(match, host, { t: 'editBot', id, name: 'Ace', level: 99 }); // an unknown level is ignored
+        expect(lobbyOf(host).bots).toMatchObject([{ name: 'Ace', level: 5 }]);
+        for (let i = 0; i < 5; i++) send(match, host, { t: 'addBot', name: '', level: 2 });
+        expect(lobbyOf(host).bots).toHaveLength(3); // four corners, one is the host's
+        send(match, host, { t: 'removeBot', id });
+        expect(lobbyOf(host).bots).toHaveLength(2);
+        send(match, host, { t: 'addBot', name: '', level: 2 });
+        expect(lobbyOf(host).bots).toHaveLength(3);
+      });
+
+      it('ignores anyone but the host, and a bot cannot be added once the match is on', () => {
+        const match = new Match();
+        const a = new FakeSocket();
+        const b = new FakeSocket();
+        match.join(asSocket(a));
+        match.join(asSocket(b));
+        send(match, b, { t: 'addBot', name: 'Nope', level: 1 });
+        expect(lobbyOf(a).bots).toHaveLength(0);
+        send(match, a, { t: 'addBot', name: 'Yes', level: 1 });
+        expect(lobbyOf(a).bots).toHaveLength(1);
+        send(match, a, { t: 'startGame' });
+        send(match, a, { t: 'addBot', name: 'Late', level: 1 });
+        expect(match.roster().filter((r) => r.name === 'Late')).toHaveLength(0);
+      });
+
+      it('lets one human start against a bot, and the bot builds a base', () => {
+        const match = new Match({ mapId: 'small-basin' });
+        const host = new FakeSocket();
+        match.join(asSocket(host));
+        send(match, host, { t: 'addBot', name: 'Rival', level: 3 });
+        send(match, host, { t: 'startGame' });
+        expect(match.inLobby).toBe(false);
+        expect(match.pauseReasons).toHaveLength(0);
+        const bot = lobbyOf(host).bots[0];
+        expect(ownedBy(match, bot.id).length).toBeGreaterThan(0);
+        expect(match.roster().map((r) => r.name)).toEqual(expect.arrayContaining(['Rival']));
+        ticks(match, 600);
+        expect(ownedBy(match, bot.id).filter((e) => match.sim.motion.has(e)).length).toBeGreaterThanOrEqual(5);
+      });
+
+      it('offers co-op the same list: one bot to start, none removable past the last, a seat kept for the second human', () => {
+        const match = new Match({ mode: 'coop', mapId: 'small-basin' });
+        const host = new FakeSocket();
+        match.join(asSocket(host));
+        ticks(match, 2);
+        expect(lobbyOf(host).bots).toHaveLength(1);
+        const only = lobbyOf(host).bots[0].id;
+        send(match, host, { t: 'removeBot', id: only });
+        expect(lobbyOf(host).bots).toHaveLength(1); // a co-op match needs an opponent
+        for (let i = 0; i < 4; i++) send(match, host, { t: 'addBot', name: '', level: 1 });
+        expect(lobbyOf(host).bots).toHaveLength(2); // four seats: the host, two bots, and one kept for the second human
+        expect((lobbyOf(host) as unknown as { canAddBot: boolean }).canAddBot).toBe(false);
+        const guest = new FakeSocket();
+        match.join(asSocket(guest));
+        expect(guest.readyState).toBe(1); // the kept seat
+      });
     });
 
     it('lets people join a match that is already under way', () => {

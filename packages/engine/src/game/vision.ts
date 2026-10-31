@@ -1,7 +1,7 @@
 import type { World } from '../ecs/world';
 import type { BlueprintStats } from './blueprint';
-import { Missile, Position, Resource, Unit } from './components';
-import { BUILDING_VISION, NIGHT_VISION_FRACTION, NIGHT_VISION_LOSS, TILE, UNIT_VISION } from './rules';
+import { Aim, Feature, Missile, Position, Resource, Unit } from './components';
+import { BUILDING_VISION, HAZE_MIN_SIGHT, HAZE_VISION_FRACTION, NIGHT_VISION_FRACTION, NIGHT_VISION_LOSS, TILE, UNIT_VISION, WEAPON_CONE_HALF_ANGLE } from './rules';
 import type { Terrain } from './terrain';
 
 /*
@@ -11,7 +11,7 @@ import type { Terrain } from './terrain';
  * only what they can see; the client draws the same vision as fog.
  *
  * Sight is blocked by line of sight when the map's `Terrain` is given: rock and
- * buildings are opaque (you see the face of one, never past it), and a viewer sees
+ * buildings are opaque (liquid is not) (you see the face of one, never past it), and a viewer sees
  * out of its own footprint. Flying units look down over everything. Without a
  * terrain the vision is the plain circle.
  */
@@ -20,13 +20,21 @@ export function visionRange(s: BlueprintStats): number {
   return Math.max(s.sensorRange, s.structure ? BUILDING_VISION : UNIT_VISION);
 }
 
+/** How far a weapon that outranges its owner's sight sees along the way it points (a thin wedge); 0 if it has no such cone. */
+export function coneRange(s: BlueprintStats): number {
+  const w = s.weapon;
+  return w && w.kind !== 'tesla' && w.kind !== 'flak' && w.range > visionRange(s) ? w.range : 0;
+}
+
 /**
- * Sight range at the given sunlight (0..100). By day it is `visionRange`; as it gets dark the fog closes
+ * Sight range at the given sunlight (0..100) and haze (0..100). By day in clear air it is `visionRange`; as it gets dark the fog closes
  * in by up to a quarter of the range, at most three tiles, in proportion to how dark it is.
  */
-export function visionAt(s: BlueprintStats, sun: number): number {
+export function visionAt(s: BlueprintStats, sun: number, haze = 0): number {
   const r = visionRange(s);
-  return r - Math.min(NIGHT_VISION_LOSS, r * NIGHT_VISION_FRACTION) * (1 - Math.min(100, Math.max(0, sun)) / 100);
+  const dim = r - Math.min(NIGHT_VISION_LOSS, r * NIGHT_VISION_FRACTION) * (1 - Math.min(100, Math.max(0, sun)) / 100);
+  // Mist, dust and the like (`haze` 0..100) shrink it further, but never below a couple of tiles (or the range, if that is less).
+  return haze <= 0 ? dim : Math.max(Math.min(dim, HAZE_MIN_SIGHT), dim - r * HAZE_VISION_FRACTION * (Math.min(100, haze) / 100));
 }
 
 export interface Viewer {
@@ -37,7 +45,14 @@ export interface Viewer {
   readonly air?: boolean;
   /** Footprint (tiles) of a building viewer, whose own tiles never block its sight. */
   readonly size?: number;
+  /** A wedge instead of a circle: it points along `heading` (radians, 0 = east, clockwise on screen) and reaches `half` either side. */
+  readonly heading?: number;
+  readonly half?: number;
 }
+
+const TAU = Math.PI * 2;
+/** Smallest angle between two directions. */
+const angleBetween = (a: number, b: number): number => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
 
 /** `owner` is one player, or a team of players who share what they see. */
 const isOwner = (owner: number | ReadonlySet<number>, id: number): boolean => (typeof owner === 'number' ? owner === id : owner.has(id));
@@ -49,21 +64,32 @@ export function viewersOf(
   stats: (e: number) => BlueprintStats | undefined,
   skip?: (e: number) => boolean,
   sun = 100,
+  haze = 0,
 ): Viewer[] {
   const unit = world.store(Unit);
   const pos = world.store(Position);
+  const aim = world.store(Aim);
   const out: Viewer[] = [];
   for (const e of unit.dense) {
     if (!isOwner(owner, unit.f.owner[e]) || !pos.has(e) || skip?.(e)) continue;
     const s = stats(e);
-    if (s) out.push({ x: pos.f.x[e], y: pos.f.y[e], r: visionAt(s, sun), air: s.flying, size: s.structure ? s.footprint : 0 });
+    if (!s) continue;
+    const size = s.structure ? s.footprint : 0;
+    out.push({ x: pos.f.x[e], y: pos.f.y[e], r: visionAt(s, sun, haze), air: s.flying, size });
+    // A long-range weapon also sees a thin wedge along its barrel, out to its range.
+    const reach = aim.has(e) ? coneRange(s) : 0;
+    if (reach > 0) out.push({ x: pos.f.x[e], y: pos.f.y[e], r: reach, air: s.flying, size, heading: (aim.f.heading[e] / 256) * TAU, half: WEAPON_CONE_HALF_ANGLE });
   }
   return out;
 }
 
-/** True if the point (sub-tile units) is inside one of the vision circles. */
+/** True if the point (sub-tile units) is inside one of the vision circles or wedges. */
 export function inVision(viewers: readonly Viewer[], x: number, y: number): boolean {
-  return viewers.some((v) => (x - v.x) ** 2 + (y - v.y) ** 2 <= v.r * v.r);
+  return viewers.some((v) => {
+    const d2 = (x - v.x) ** 2 + (y - v.y) ** 2;
+    if (d2 > v.r * v.r) return false;
+    return v.half === undefined || d2 < TILE * TILE || angleBetween(Math.atan2(y - v.y, x - v.x), v.heading!) <= v.half;
+  });
 }
 
 /**
@@ -86,6 +112,9 @@ export class VisionGrid {
   private oy0 = 0;
   private ox1 = 0;
   private oy1 = 0;
+  /** The wedge being scanned (radians), or `coneHalf` < 0 for a full circle. */
+  private coneHeading = 0;
+  private coneHalf = -1;
 
   constructor(
     readonly width: number,
@@ -125,6 +154,8 @@ export class VisionGrid {
     this.cx = Math.floor(this.fx);
     this.cy = Math.floor(this.fy);
     this.reach = Math.ceil(this.rt) + 1;
+    this.coneHalf = v.half ?? -1;
+    this.coneHeading = v.heading ?? 0;
     if (v.air) {
       for (let y = Math.max(0, this.cy - this.reach); y <= Math.min(this.height - 1, this.cy + this.reach); y++) {
         for (let x = Math.max(0, this.cx - this.reach); x <= Math.min(this.width - 1, this.cx + this.reach); x++) this.mark(x, y);
@@ -138,26 +169,57 @@ export class VisionGrid {
     this.oy1 = this.oy0 + Math.max(size, 1) - 1;
     this.mark(this.cx, this.cy);
     // Eight octants, as (xx, xy, yx, yy) transforms.
-    this.scan(1, 1, 0, 1, 0, 0, 1);
-    this.scan(1, 1, 0, 0, 1, 1, 0);
-    this.scan(1, 1, 0, 0, -1, 1, 0);
-    this.scan(1, 1, 0, -1, 0, 0, 1);
-    this.scan(1, 1, 0, -1, 0, 0, -1);
-    this.scan(1, 1, 0, 0, -1, -1, 0);
-    this.scan(1, 1, 0, 0, 1, -1, 0);
-    this.scan(1, 1, 0, 1, 0, 0, -1);
+    this.octant(1, 0, 0, 1);
+    this.octant(0, 1, 1, 0);
+    this.octant(0, -1, 1, 0);
+    this.octant(-1, 0, 0, 1);
+    this.octant(-1, 0, 0, -1);
+    this.octant(0, -1, -1, 0);
+    this.octant(0, 1, -1, 0);
+    this.octant(1, 0, 0, -1);
+  }
+
+  /**
+   * Scans one octant. A wedge only looks at the slopes it covers (and skips octants it does not touch), so a long
+   * thin cone costs little however far it reaches. Rows run along the octant's axis (-xy, -yy); the slope is the
+   * tangent of the angle from that axis towards the side (-xx, -yx), from 0 (the axis) to 1 (the diagonal).
+   */
+  private octant(xx: number, xy: number, yx: number, yy: number): void {
+    if (this.coneHalf < 0) {
+      this.scan(1, 1, 0, xx, xy, yx, yy);
+      return;
+    }
+    const ux = Math.cos(this.coneHeading);
+    const uy = Math.sin(this.coneHeading);
+    const along = -xy * ux - yy * uy;
+    if (along <= 0) return; // more than 90 degrees off this octant's axis
+    const centre = Math.atan2(-xx * ux - yx * uy, along);
+    const slack = 0.08; // a tile is not a point
+    const lo = Math.max(0, centre - this.coneHalf - slack);
+    const hi = Math.min(Math.PI / 4, centre + this.coneHalf + slack);
+    if (hi < lo || centre - this.coneHalf - slack > Math.PI / 4 || centre + this.coneHalf + slack < 0) return;
+    this.scan(1, Math.tan(hi), Math.tan(lo), xx, xy, yx, yy);
   }
 
   private mark(x: number, y: number): void {
     if (x < 0 || y < 0 || x >= this.width || y >= this.height) return;
-    if ((x + 0.5 - this.fx) ** 2 + (y + 0.5 - this.fy) ** 2 <= this.rt * this.rt) this.stamp[y * this.width + x] = this.gen;
+    const dx = x + 0.5 - this.fx;
+    const dy = y + 0.5 - this.fy;
+    const d2 = dx * dx + dy * dy;
+    if (d2 > this.rt * this.rt) return;
+    if (this.coneHalf >= 0 && d2 > 2) {
+      const diff = Math.abs(Math.atan2(Math.sin(Math.atan2(dy, dx) - this.coneHeading), Math.cos(Math.atan2(dy, dx) - this.coneHeading)));
+      if (diff > this.coneHalf + 0.75 / Math.sqrt(d2)) return; // a tile counts if any part of it is in the wedge
+    }
+    this.stamp[y * this.width + x] = this.gen;
   }
 
   private opaque(x: number, y: number): boolean {
     if (x < 0 || y < 0 || x >= this.width || y >= this.height) return true;
     if (x >= this.ox0 && x <= this.ox1 && y >= this.oy0 && y <= this.oy1) return false;
     const i = y * this.width + x;
-    return this.t.passable[i] !== 1 || this.t.occupied[i] !== 0;
+    // Rock and buildings block sight; liquid (water, lava, a void) is open to the eye.
+    return (this.t.passable[i] !== 1 && this.t.depth[i] === 0) || this.t.occupied[i] !== 0;
   }
 
   /**
@@ -225,12 +287,14 @@ export function visibleTo(
   stats: (e: number) => BlueprintStats | undefined,
   terrain?: Terrain,
   sun = 100,
+  haze = 0,
 ): Set<number> {
   const unit = world.store(Unit);
   const missiles = world.store(Missile);
   const pos = world.store(Position);
-  const viewers = viewersOf(world, owner, stats, undefined, sun);
+  const viewers = viewersOf(world, owner, stats, undefined, sun, haze);
   const seen = new Set<number>(world.store(Resource).dense);
+  for (const f of world.store(Feature).dense) seen.add(f); // the map's vents and scenery are known
   let grid: VisionGrid | undefined;
   if (terrain) {
     grid = VisionGrid.of(terrain);

@@ -50,15 +50,22 @@ describe('developer commands', () => {
 
   it('fix sunlight and wind for everyone, tell clients, and go back to the natural cycle', () => {
     const { match, socket, run, last } = startMatch(true);
-    run({ kind: 'weather', sun: 40, wind: 90 });
+    run({ kind: 'weather', sun: 40, wind: 90, sky: 2, intensity: -1, change: -1 });
+    expect(match.sim.devSky).toBe(2);
+    run({ kind: 'weather', sun: -1, wind: -1, sky: 5, intensity: 40, change: -1 });
+    expect(match.sim.devSky).toBe(5);
+    expect(match.sim.weather.intensity).toBe(40);
+    expect(last('weather')).toMatchObject({ sky: 5, intensity: 40, change: -1 });
+    run({ kind: 'weather', sun: 40, wind: 90, sky: 2, intensity: -1, change: -1 });
     expect(match.sim.sunNow()).toBe(40);
     expect(match.sim.windNow()).toBe(90);
-    expect(last('weather')).toMatchObject({ sun: 40, wind: 90 });
+    expect(last('weather')).toMatchObject({ sun: 40, wind: 90, sky: 2, intensity: 100 });
     expect(socket.messages.some((m) => m.t === 'weather')).toBe(true);
-    run({ kind: 'weather', sun: -1, wind: -1 });
+    run({ kind: 'weather', sun: -1, wind: -1, sky: -1, intensity: -1, change: -1 });
     expect(match.sim.devSun).toBe(-1);
+    expect(match.sim.devSky).toBe(-1);
     expect(match.sim.sunNow()).toBe(match.sim.sunNow());
-    expect(socket.messages.filter((m) => m.t === 'weather')).toHaveLength(2);
+    expect(socket.messages.filter((m) => m.t === 'weather')).toHaveLength(4);
   });
 
   it('tell a player who joins later about fixed sunlight and wind', () => {
@@ -66,11 +73,11 @@ describe('developer commands', () => {
     const host = new FakeSocket();
     match.join(asSocket(host));
     match.receive(asSocket(host), { t: 'startGame' });
-    match.receive(asSocket(host), { t: 'dev', cmd: { kind: 'weather', sun: 10, wind: 20 } });
+    match.receive(asSocket(host), { t: 'dev', cmd: { kind: 'weather', sun: 10, wind: 20, sky: 1, intensity: 60, change: 5 } });
     ticks(match, 2);
     const late = new FakeSocket();
     match.join(asSocket(late));
-    expect(late.messages.find((m) => m.t === 'weather')).toMatchObject({ sun: 10, wind: 20 });
+    expect(late.messages.find((m) => m.t === 'weather')).toMatchObject({ sun: 10, wind: 20, sky: 1, intensity: 60, change: 5 });
   });
 
   it('spawn units and buildings for neutral and other teams, and tell clients about new classes', () => {
@@ -110,6 +117,15 @@ describe('developer commands', () => {
     run({ kind: 'spawn', owner: 0, template: 'Tank', x: 20, y: 20, count: 2 });
     run({ kind: 'clear', owner: 0 });
     expect(entityCount(match, 0)).toBe(0);
+  });
+
+  it('starts fires and flame bursts on the ground', () => {
+    const { match, run, last } = startMatch(true);
+    run({ kind: 'fire', x: 20, y: 20, mode: 'ground', count: 4 });
+    expect(match.sim.flame.dense.length).toBe(4);
+    expect(last('devNote')).toMatchObject({ ok: true });
+    run({ kind: 'fire', x: 20, y: 20, mode: 'burst', count: 12 });
+    expect(match.sim.flame.dense.length).toBe(16);
   });
 
   it('end the match with every outcome, and a defeat prompt, without ending it', () => {
@@ -163,13 +179,78 @@ describe('developer commands', () => {
     expect(match.sim.health.f.hp[e]).toBe(match.sim.stats(e).hp);
   });
 
+  it('damage the listed units, destroying them when it is enough, and ignore ids that are not alive', () => {
+    const { match, id, run } = startMatch(true);
+    const [a, b] = match.sim.unit.dense.filter((u) => match.sim.unit.f.owner[u] === id && !match.sim.stats(u).structure);
+    const hp = match.sim.health.f.hp[a];
+    run({ kind: 'damage', ids: [a, 999_999], amount: 5 });
+    expect(match.sim.health.f.hp[a]).toBe(hp - 5);
+    if (b !== undefined) expect(match.sim.health.f.hp[b]).toBe(match.sim.stats(b).hp);
+    run({ kind: 'damage', ids: [a], amount: 1_000_000 });
+    ticks(match, 2);
+    expect(match.sim.unit.has(a)).toBe(false);
+  });
+
+  it('paint terrain: liquid and rock, sent to clients as a patch, skipping buildings, and applied by a late joiner', () => {
+    const { match, socket, run, last } = startMatch(true);
+    const t = match.sim.terrain;
+    // A spot with clear dry ground all round (the match seed varies, so a fixed tile might hold scenery).
+    let x = 0;
+    let y = 0;
+    search: for (y = 8; y < t.height - 8; y++) {
+      for (x = 8; x < t.width - 8; x++) {
+        let free = true;
+        for (let j = -3; j <= 3 && free; j++) for (let i = -3; i <= 3 && free; i++) free = t.walkable(x + i, y + j);
+        if (free) break search;
+      }
+    }
+    expect(t.walkable(x, y)).toBe(true);
+    expect(t.elevationAt(x, y)).toBe(0);
+    run({ kind: 'terrain', x, y, r: 2, elevation: -4 });
+    expect(t.depthAt(x, y)).toBe(4);
+    expect(t.depthAt(x + 2, y)).toBe(4);
+    expect(t.hasLiquid).toBe(true);
+    const patch = last('terrainPatch') as unknown as { cells: number[] };
+    expect(patch.cells.length).toBeGreaterThan(8);
+    expect(patch.cells[1]).toBe(-4);
+    expect(last('devNote')).toMatchObject({ ok: true });
+    // Painting the same thing again changes nothing and sends nothing new.
+    const before = socket.messages.filter((m) => m.t === 'terrainPatch').length;
+    run({ kind: 'terrain', x, y, r: 2, elevation: -4 });
+    expect(socket.messages.filter((m) => m.t === 'terrainPatch').length).toBe(before);
+    expect(last('devNote')).toMatchObject({ ok: false });
+    // Rock, then dry ground again.
+    run({ kind: 'terrain', x, y, r: 0, elevation: 3 });
+    expect(t.heightAt(x, y)).toBe(3);
+    expect(t.depthAt(x, y)).toBe(0);
+    run({ kind: 'terrain', x, y, r: 0, elevation: 0 });
+    expect(t.isPassable(x, y)).toBe(true);
+    // A building's tiles are left alone.
+    const hq = match.sim.unit.dense.find((u) => match.sim.stats(u).structure)!;
+    const hx = Math.floor(match.sim.pos.f.x[hq] / 32);
+    const hy = Math.floor(match.sim.pos.f.y[hq] / 32);
+    run({ kind: 'terrain', x: hx, y: hy, r: 1, elevation: -6 });
+    for (let i = 0; i < t.occupied.length; i++) if (t.occupied[i]) expect(t.depth[i]).toBe(0);
+    // What a welcome sends (a late joiner, or a rejoin) already holds the painted cells.
+    run({ kind: 'terrain', x, y, r: 0, elevation: -4 });
+    expect(t.encode()[y * t.width + x]).toBe('d');
+  });
+
   it('are validated before they reach the match', () => {
     const bad = [
+      { t: 'dev', cmd: { kind: 'terrain', x: 1, y: 1, r: 21, elevation: 0 } },
+      { t: 'dev', cmd: { kind: 'terrain', x: 1, y: 1, r: 2, elevation: -10 } },
+      { t: 'dev', cmd: { kind: 'terrain', x: 1, y: 1, r: 2, elevation: 1.5 } },
+      { t: 'dev', cmd: { kind: 'terrain', x: -1, y: 1, r: 2, elevation: 0 } },
       { t: 'dev', cmd: { kind: 'spawn', owner: 0, template: 'Tank', x: 1, y: 1, count: 99999 } },
       { t: 'dev', cmd: { kind: 'spawn', owner: -1, template: 'Tank', x: 1, y: 1, count: 1 } },
       { t: 'dev', cmd: { kind: 'end', outcome: 'nonsense' } },
       { t: 'dev', cmd: { kind: 'remove', x: 1, y: 1, r: 0, owner: -1, scope: {} } },
       { t: 'dev', cmd: { kind: 'give', owner: 0, amount: 1e12 } },
+      { t: 'dev', cmd: { kind: 'damage', ids: [1], amount: 0 } },
+      { t: 'dev', cmd: { kind: 'damage', ids: [-1], amount: 5 } },
+      { t: 'dev', cmd: { kind: 'damage', ids: Array(501).fill(1), amount: 5 } },
+      { t: 'dev', cmd: { kind: 'damage', ids: 'all', amount: 5 } },
       { t: 'dev', cmd: null },
       { t: 'dev' },
     ];

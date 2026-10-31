@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { daylight, Simulation, wind } from '@wst/engine';
-import { collapseByClass, generationPerTick, numberedNames } from '../src/energy';
+import { daylight, FeatureKind, Simulation, wind } from '@wst/engine';
+import { collapseByClass, generationPerTick, numberedNames, steamPerTick } from '../src/energy';
 
 describe('generationPerTick', () => {
   it('matches what the simulation really generates, tick by tick, and moves with daylight and wind', () => {
@@ -52,5 +52,19 @@ describe('collapseByClass', () => {
     const few = collapseByClass([b('Bank', 1), b('Bank', 2), b('Bank', 3)]);
     expect(few.map((r) => r.label)).toEqual(['Bank 1', 'Bank 2', 'Bank 3']);
     expect(new Set(few.map((r) => r.key)).size).toBe(3);
+  });
+});
+
+describe('steamPerTick', () => {
+  it('matches the simulation: only as many turbines run as there are vents under the building', () => {
+    const sim = new Simulation({ width: 24, height: 24, seed: 5 });
+    sim.spawnFeature(FeatureKind.Vent, 4, 4);
+    const bp = sim.blueprints.define(1, 'Steam', ['frame.small', 'steam.turbine', 'steam.turbine']);
+    const e = sim.spawnStructure(bp, 4, 4);
+    sim.step();
+    const s = sim.stats(e);
+    expect(sim.networkFor(e)!.supply).toBe(steamPerTick(s.steam, s.steamTurbines, 1));
+    expect(steamPerTick(s.steam, s.steamTurbines, 0)).toBe(0);
+    expect(steamPerTick(s.steam, s.steamTurbines, 5)).toBe(steamPerTick(s.steam, s.steamTurbines, 2));
   });
 });

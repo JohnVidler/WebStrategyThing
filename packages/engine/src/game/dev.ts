@@ -5,6 +5,7 @@ import { defineClass } from './map';
 import { TILE } from './parts';
 import type { Simulation } from './simulation';
 import type { DevRemoveScope } from '../net/dev';
+import { flameBurstAt, lobFlame } from './flame';
 
 /*
  * Developer tools on the simulation: instant spawning, removal, healing and the like, for the Dev Options menu
@@ -125,9 +126,57 @@ export function devHeal(sim: Simulation, owner: number): number {
   return n;
 }
 
+/** Hurts each of these entities that is a live unit or building by `amount`, as an unattributed hit (so enough of it destroys them). Returns how many were hit. */
+export function devDamage(sim: Simulation, ids: readonly number[], amount: number): number {
+  let n = 0;
+  for (const e of ids) {
+    if (!sim.unit.has(e)) continue;
+    sim.damage(e, amount, 0);
+    n++;
+  }
+  return n;
+}
+
 /** Completes every construction site of an owner (-1 = anyone's) for free. */
 export function devFinishSites(sim: Simulation, owner: number): number {
   const sites = sim.unit.dense.filter((e) => sim.isSite(e) && (owner < 0 || sim.unit.f.owner[e] === owner));
   for (const e of sites) sim.investIn(e, Number.MAX_SAFE_INTEGER);
   return sites.length;
+}
+
+/**
+ * Paints the terrain: every cell within `r` tiles of (tx, ty) that has no building gets `elevation` (above 0 rock of that height,
+ * 0 dry ground, below 0 liquid). Returns the cells that changed as flat [index, elevation, ...] pairs (what a `terrainPatch` carries).
+ * The rock heights round the painted area are not recomputed, so the client and server stay identical by sending exact values.
+ */
+export function devPaintTerrain(sim: Simulation, tx: number, ty: number, r: number, elevation: number): number[] {
+  const t = sim.terrain;
+  const changed: number[] = [];
+  for (let y = ty - r; y <= ty + r; y++) {
+    for (let x = tx - r; x <= tx + r; x++) {
+      if (!t.inBounds(x, y) || (x - tx) ** 2 + (y - ty) ** 2 > r * r + r) continue;
+      const i = y * t.width + x;
+      if (t.occupied[i] !== 0 || t.elevationAt(x, y) === elevation) continue;
+      t.setElevation(x, y, elevation);
+      changed.push(i, elevation);
+    }
+  }
+  if (changed.length) t.version++;
+  return changed;
+}
+
+/** Starts fires on the ground (`ground`: `count` of them scattered round the tile) or throws `count` fireballs all round it (`burst`). Returns how many it made. */
+export function devFire(sim: Simulation, tx: number, ty: number, mode: 'ground' | 'burst', count: number): number {
+  const x = tx * TILE + TILE / 2;
+  const y = ty * TILE + TILE / 2;
+  const before = sim.flame.dense.length;
+  if (mode === 'burst') flameBurstAt(sim, x, y, count, 0);
+  else {
+    for (let i = 0; i < count; i++) {
+      const angle = sim.rng.int(1000) * 0.00628;
+      const dist = count > 1 ? (sim.rng.int(1000) / 1000) * 2.5 * TILE : 0;
+      lobFlame(sim, x + Math.cos(angle) * dist, y + Math.sin(angle) * dist, x + Math.cos(angle) * dist, y + Math.sin(angle) * dist, 0);
+    }
+  }
+  return sim.flame.dense.length - before;
 }

@@ -79,6 +79,9 @@ export const SOLAR_CLASS: ClassTemplate = template('Solar Array', ['frame.medium
 
 export const WIND_CLASS: ClassTemplate = template('Wind Turbine', ['frame.small', 'wind.turbine', 'wind.turbine'], '');
 
+/** Steady power, but only when built over a steam vent on the map. */
+export const STEAM_CLASS: ClassTemplate = template('Steam Plant', ['frame.small', 'steam.turbine'], '');
+
 // Energy storage: a pile of battery banks and a small CPU deciding which way the energy flows. Soak up
 // surplus; give it back when generation falls short. Its buttons let the player hold the charge back.
 const STORAGE_PROGRAM = `use(StorageController, { interval: 4 });
@@ -160,6 +163,18 @@ export const HAWK_CLASS: ClassTemplate = template('Hawk', ['chassis.light', 'cpu
 /** One unit for each weapon, so every weapon gets played: cannon, laser, tesla coil and missiles (the gun is the Scout and Hawk). */
 export const TANK_CLASS: ClassTemplate = template('Tank', ['chassis.medium', 'cpu.basic', 'motor.large', 'sensor.short', 'gun.cannon', 'cargo.bay', 'battery.cell'], FIGHTER_PROGRAM_TEXT + resupply(6));
 
+/** The Flamer holds its fire while one of its own stands within 3 tiles of the target, since the flames burn everyone. */
+const FLAMER_PROGRAM_TEXT = `// Flamer: follows MOVE / ATTACK / STOP / CHARGE orders and burns the nearest enemy its sensor finds. Fire burns
+// friend and foe alike, so it will not open fire while another of its own stands within 3 tiles of the target.
+// The fuel tank makes it fragile, and when it dies it throws fire all round: keep it away from your own army.
+${BASICS(25)}
+use(ReviveFlatUnits);
+use(EngageEnemies, { watch: [ENEMY], interval: 5, holdFireKey: 'F', spareAllies: 3 });
+` + resupply(6);
+
+/** The flamethrower unit: expensive and slow, lobs burning fuel at close range. Its fire burns friend and foe, and it goes up in a ring of fire when destroyed, so a tight group can set itself off. */
+export const FLAMER_CLASS: ClassTemplate = template('Flamer', ['chassis.medium', 'cpu.basic', 'motor.large', 'sensor.short', 'flame.projector', 'cargo.bay', 'battery.cell'], FLAMER_PROGRAM_TEXT);
+
 export const LANCER_CLASS: ClassTemplate = template('Lancer', ['chassis.medium', 'cpu.basic', 'motor.small', 'sensor.short', 'laser.beam', 'battery.cell', 'battery.cell'], FIGHTER_PROGRAM_TEXT);
 
 export const STORMER_CLASS: ClassTemplate = template('Stormer', ['chassis.light', 'cpu.basic', 'motor.small', 'sensor.short', 'tesla.coil'], FIGHTER_PROGRAM_TEXT);
@@ -181,6 +196,21 @@ export const FLAK_CLASS: ClassTemplate = template('Flak Truck', ['chassis.medium
 export const FLAK_TURRET_CLASS: ClassTemplate = template('Flak Turret', ['frame.small', 'cpu.basic', 'sensor.short', 'flak.cannon', 'battery.bank'], `// Flak turret: bursts any incoming enemy missile its sensor finds. Each shot costs a little energy,
 // so link it to a power network (or it runs on its battery bank).
 use(EngageEnemies, { watch: [MISSILE], interval: 2, orders: 0, holdFireKey: '' });
+`);
+
+/** The counter to missiles and shells: an arc of energy that swings to face the nearest incoming fire. It costs power every tick, so it wants a grid. */
+export const SHIELD_TOWER_CLASS: ClassTemplate = template('Shield Tower', ['frame.small', 'cpu.basic', 'sensor.long', 'shield.emitter', 'battery.bank', 'battery.bank'], `// Shield tower: points its energy shield at the nearest incoming shell or missile, else at the nearest enemy
+// its sensor finds. The shield costs power every tick, so link it to a power network (or it runs on its battery banks).
+use(ShieldGuard, { interval: 3 });
+`);
+
+/** An escort that carries a shield with it: it has no weapon, so it goes where it is told and soaks up fire for the units beside it. */
+export const AEGIS_CLASS: ClassTemplate = template('Aegis', ['chassis.medium', 'cpu.basic', 'motor.large', 'sensor.short', 'shield.emitter', 'battery.cell', 'battery.cell'], `// Aegis: an escort with an energy shield. ShieldGuard points the shield at the nearest incoming shell or missile,
+// else the nearest enemy; write your own handler with config.shieldAngle(degrees), shieldArc and shieldRange to do it differently.
+// The shield drains the battery every tick, so it recharges when low like any other unit.
+${BASICS(30)}
+use(ReviveFlatUnits);
+use(ShieldGuard, { interval: 3 });
 `);
 
 /** Fast light units: a turbo motor makes a light chassis more than twice as quick as a small one. */
@@ -216,6 +246,24 @@ export const COLOSSUS_CLASS: ClassTemplate = template('Colossus', [
   'chassis.colossus', 'cpu.fast', 'legs.colossus', 'sensor.long', 'gun.rotary', 'armor.heavy', 'armor.heavy', 'battery.large', 'battery.large',
 ], FIGHTER_PROGRAM_TEXT);
 
+// --- Liquids: hover and amphibious drives ---------------------------------------------------------
+// Ground units wade shallow water slowly; an amphibious drive wades deep water too, and a hover skirt skims over water
+// at full speed and can cross lava (which scorches it). Nothing but a flier crosses a void.
+
+/** A fighter that steps off lava when it stops on it. */
+const SKIMMER_PROGRAM_TEXT = FIGHTER_PROGRAM_TEXT + `use(LeaveLava, { interval: 10 });
+`;
+export const SKIMMER_PROGRAM = programFromText('Skimmer', SKIMMER_PROGRAM_TEXT);
+
+/** A light hover scout with a gun: quick over water, and the only ground unit that crosses lava. */
+export const SKIMMER_CLASS: ClassTemplate = template('Skimmer', ['chassis.light', 'cpu.basic', 'motor.hover', 'sensor.short', 'gun.light'], SKIMMER_PROGRAM_TEXT);
+
+/** A cannon carrier on an amphibious drive: wades through deep water (at 45% speed) to reach what wheels cannot. */
+export const AMPHIBIAN_CLASS: ClassTemplate = template('Amphibian', ['chassis.medium', 'cpu.basic', 'motor.amphibious', 'sensor.short', 'gun.cannon', 'cargo.bay', 'battery.cell'], FIGHTER_PROGRAM_TEXT + resupply(6));
+
+/** A harvester that wades deep water, for fields across a lake or river. */
+export const WADER_CLASS: ClassTemplate = template('Wader', ['chassis.light', 'cpu.basic', 'motor.amphibious', 'cargo.bay', 'battery.cell'], HARVESTER_CLASS.text!);
+
 /** Starting points for a new class in the editor: a short name, what it is for, and its program text (all built-in blocks). */
 export const CLASS_TEMPLATES: readonly { readonly name: string; readonly about: string; readonly text: string }[] = [
   { name: 'Blank', about: 'No behaviour at all.', text: '' },
@@ -237,6 +285,7 @@ export const STARTER_CLASSES: readonly ClassTemplate[] = [
   CHARGING_PAD_CLASS,
   SOLAR_CLASS,
   WIND_CLASS,
+  STEAM_CLASS,
   SMALL_STORAGE_CLASS,
   STORAGE_CLASS,
   PYLON_CLASS,
@@ -250,6 +299,7 @@ export const STARTER_CLASSES: readonly ClassTemplate[] = [
   SCOUT_CLASS,
   HAWK_CLASS,
   TANK_CLASS,
+  FLAMER_CLASS,
   LANCER_CLASS,
   STORMER_CLASS,
   ROCKET_CLASS,
@@ -258,11 +308,16 @@ export const STARTER_CLASSES: readonly ClassTemplate[] = [
   PATHFINDER_CLASS,
   FLAK_CLASS,
   FLAK_TURRET_CLASS,
+  SHIELD_TOWER_CLASS,
+  AEGIS_CLASS,
   MITE_CLASS,
   STRIDER_CLASS,
   WALKER_CLASS,
   JUGGERNAUT_CLASS,
   COLOSSUS_CLASS,
+  SKIMMER_CLASS,
+  AMPHIBIAN_CLASS,
+  WADER_CLASS,
 ];
 
 /** Program shown in the editor for a freshly defined class (as stored text). */

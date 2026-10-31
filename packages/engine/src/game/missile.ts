@@ -1,5 +1,6 @@
 import { SimEvent } from './events';
 import { MISSILE_EDGE_DAMAGE, MISSILE_FUSE_RADIUS, MISSILE_LAUNCH_SPREAD, TILE } from './rules';
+import { shieldAbsorb, shieldBlock, shieldHit } from './shield';
 import type { Simulation } from './simulation';
 import type { BlueprintStats } from './blueprint';
 
@@ -126,6 +127,8 @@ export function missileSystem(sim: Simulation): void {
       const diff = Math.atan2(Math.sin(want - f.heading), Math.cos(want - f.heading));
       f.heading += Math.max(-f.turn, Math.min(f.turn, diff));
     }
+    const fromX = f.x;
+    const fromY = f.y;
     f.x += Math.cos(f.heading) * f.speed;
     f.y += Math.sin(f.heading) * f.speed;
     if (f.x < 0 || f.y < 0 || f.x >= sim.widthSub || f.y >= sim.heightSub) {
@@ -135,6 +138,20 @@ export function missileSystem(sim: Simulation): void {
       sim.pos.f.y[e] = Math.round(f.y);
       detonate(sim, e, f);
       continue;
+    }
+    if (sim.shieldList.length > 0) {
+      // An enemy shield across its path takes the whole warhead (no blast beyond it), and the missile is gone.
+      const shield = shieldBlock(sim, f.owner, fromX, fromY, f.x, f.y);
+      if (shield >= 0) {
+        f.x = shieldHit.x;
+        f.y = shieldHit.y;
+        sim.pos.f.x[e] = Math.round(f.x);
+        sim.pos.f.y[e] = Math.round(f.y);
+        shieldAbsorb(sim, shield, f.damage, f.owner, f.x, f.y);
+        sim.emit(SimEvent.Death, e, 0);
+        sim.destroyEntity(e);
+        continue;
+      }
     }
     sim.pos.f.x[e] = Math.round(f.x);
     sim.pos.f.y[e] = Math.round(f.y);

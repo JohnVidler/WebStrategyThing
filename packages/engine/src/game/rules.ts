@@ -101,14 +101,132 @@ export const MISSILE_FUSE_RADIUS = Math.floor(0.45 * TILE);
 /** Damage at the very edge of a blast, as a share of the damage at its centre (linear in between). */
 export const MISSILE_EDGE_DAMAGE = 0.4;
 
+// --- Cannon shells & elevation (see shell.ts) ----------------------------------------
+
+/** Shell speed in tiles per tick (12 tiles/s): fast enough to read as a dot, slow enough that a mover can dodge a long shot. */
+export const SHELL_SPEED = 1.2;
+/** A shell hits a unit whose centre is this close (a building: within its footprint), in sub-tile units. */
+export const SHELL_UNIT_RADIUS = Math.floor(0.35 * TILE);
+/** Spread of the aim, radians either way. */
+export const SHELL_SPREAD = 0.03;
+/** Chance a shell that strikes an enemy glances off instead of exploding, and the same for rock it cannot clear. */
+export const SHELL_BOUNCE_UNIT_CHANCE = 0.1;
+export const SHELL_BOUNCE_ROCK_CHANCE = 0.3;
+/** Most bounces one shell makes; each keeps this share of its remaining flight and speed. */
+export const SHELL_MAX_BOUNCES = 2;
+export const SHELL_BOUNCE_KEEP = 0.6;
+/** Extra range (sub-tile units) per level a shooter stands above its target (rock height 0 to 9; flyers count as FLYER_ELEVATION). */
+export const ELEVATION_RANGE_PER_LEVEL = Math.floor(0.5 * TILE);
+export const FLYER_ELEVATION = 2;
+/** A weapon that outranges its owner's sight sees a thin wedge this wide either way (radians, about 10 degrees) along the way it points, out to its range. */
+export const WEAPON_CONE_HALF_ANGLE = 0.17;
+/** A new unit with a matter-burning weapon (cannon, missiles) starts with this many shots in its cargo bay. */
+export const STARTING_SHOTS = 10;
+
+// --- Flamethrower (see flame.ts) -------------------------------------------------------
+
+/** A lobbed fireball flies at this many tiles per tick (3 tiles/s): slow enough to watch, to dodge, and for a shield to turn it. */
+export const FLAME_SPEED = 0.3;
+/** A fire burns anything whose body reaches within this of its centre (sub-tile units), friend or foe. */
+export const FLAME_RADIUS = Math.floor(0.9 * TILE);
+/**
+ * A fire from a projector's stream burns for this many ticks (5 s) and hurts what is in it every FLAME_BURN_INTERVAL ticks. The projector fires
+ * about every other tick, so many fires overlap on the target: each does little, the jet does a lot. A dying carrier's fire burns longer.
+ */
+export const FLAME_BURN_TICKS = 50;
+export const FLAME_BURST_BURN_TICKS = 80;
+export const FLAME_BURST_DAMAGE = 3;
+export const FLAME_BURN_INTERVAL = 5;
+export const FLAME_BURN_DAMAGE = 1;
+/** The projector pays 1 matter for this many shots, so a stream of fireballs is cheap (it fires about 5 a second). */
+export const FLAME_SHOTS_PER_MATTER = 4;
+/** How far the fireballs of a jet scatter round the aim point, sub-tile units either way, so the stream does not land in one heap. */
+export const FLAME_SPREAD = Math.floor(0.8 * TILE);
+/** Most fireballs and fires alive at once, so a burst of flamers cannot swamp the tick. */
+export const MAX_FLAMES = 600;
+/** A unit or building carrying a flame projector takes this many times the damage: it is full of fuel. */
+export const FLAME_VULNERABILITY = 2;
+/** When one dies it throws this many fireballs in every direction (a building: this many more), each landing up to FLAME_BURST_REACH tiles out. */
+export const FLAME_BURST_COUNT = 16;
+export const FLAME_BURST_STRUCTURE_BONUS = 6;
+export const FLAME_BURST_REACH = 4;
+/** Damage a fireball counts as when it strikes an enemy shield (what the shield's battery pays for). */
+export const FLAME_SHIELD_DAMAGE = 6;
+/** A fireball turned back by a shield flies this share of the way it had come, and is turned at most this many times. */
+export const FLAME_DEFLECT_KEEP = 0.6;
+export const FLAME_MAX_DEFLECTIONS = 3;
+/** Rain puts fires out: at full wetness a fire burns down this many times faster than the 1x of a dry day, in proportion to how wet it is. */
+export const FLAME_RAIN_BURN_FACTOR = 4;
+
+// --- Energy shields (see shield.ts) -------------------------------------------------------
+
+/** Energy a shield drains from its owner's battery for each point of damage it stops. */
+export const SHIELD_ENERGY_PER_DAMAGE = 4;
+/** When a shield runs its owner's battery flat it collapses: the owner takes this share of its energy capacity as damage. */
+export const SHIELD_BURST_DAMAGE_FRACTION = 0.03;
+/** The most a shield turns towards its aim in one tick (radians, about 9 degrees: half a turn takes 2 s). */
+export const SHIELD_TURN_PER_TICK = 0.15;
+/** `incomingBearing()` looks for enemy shells and missiles in flight this far from the caller (sub-tile units). */
+export const SHIELD_INCOMING_RANGE = 10 * TILE;
+/** Arc, radius and heading move this share of the way to what a script asked for, every tick, so changes ease in instead of jumping. */
+export const SHIELD_EASE = 0.2;
+/** Each point where two shields' arcs cross (any owners) multiplies the energy both pay per tick by this much. */
+export const SHIELD_INTERFERENCE_DRAIN = 1.5;
+/** The shield sits at least this far (sub-tile units) outside the hull, so it never has to cut through the unit that casts it. */
+export const SHIELD_CLEARANCE = Math.floor(0.5 * TILE);
+
 // --- World & timing ----------------------------------------------------------------
 
-/** Ticks in one day/night cycle (2 minutes at 10 Hz). Daylight during the first half. */
+/** Ticks in one day/night cycle (2 minutes at 10 Hz). Daylight during the first DAYLIGHT_TICKS, then night. */
 export const DAY_LENGTH = 1200;
+/** Ticks of each cycle with the sun up (84 s); the rest (36 s) is night. */
+export const DAYLIGHT_TICKS = 840;
 /** Light left at night (0..100): starlight and moonlight, so `lightLevel()` never drops to nothing. */
 export const MOONLIGHT = 8;
 /** Ticks between new random wind targets; the wind drifts smoothly between them. */
 export const WIND_CHANGE_TICKS = 100;
+/** Weather: the match is cut into slots of this many ticks (one minute), and each slot is dry or has one kind of weather. */
+export const SKY_SLOT_TICKS = 600;
+/** Chance (percent of slots) of each kind of weather; the rest are dry. All are rare. */
+export const RAIN_PERCENT = 9;
+export const STORM_PERCENT = 4;
+export const HEAT_PERCENT = 3;
+export const DUST_PERCENT = 2;
+export const MIST_PERCENT = 4;
+/**
+ * How fast the weather changes: at the start of each slot the old weather gives way to the new over a time chosen
+ * for that slot between these two lengths (in ticks, 15 s to 45 s), every effect sliding linearly. Most changes
+ * creep in; now and then one is quicker (but still slow). Keep the longest below `SKY_SLOT_TICKS`.
+ */
+export const SKY_RAMP_MIN_TICKS = 150;
+export const SKY_RAMP_MAX_TICKS = 450;
+/** When the dev tools force a different sky the change slides over this many ticks (unless they set the change time). */
+export const SKY_DEV_RAMP_TICKS = 60;
+/** What each kind of weather does at full strength (the dev tools' intensity scales it down). */
+export const RAIN_SOLAR_CAP = 65;
+export const RAIN_WIND_FLOOR = 20;
+export const STORM_SOLAR_CAP = 30;
+export const STORM_WIND_FLOOR = 45;
+/** A heatwave lifts what panels make by this percent and leaves the wind no higher than the ceiling. */
+export const HEAT_SOLAR_GAIN = 125;
+export const HEAT_WIND_CEILING = 35;
+/** Dust: sunlight is capped, the wind is strong, and sight shrinks. */
+export const DUST_SOLAR_CAP = 70;
+export const DUST_WIND_FLOOR = 55;
+/** Mist: a light cut to the sunlight and a big one to sight. */
+export const MIST_SOLAR_CAP = 85;
+/** Haze (0..100) of each kind of weather at full strength: sight shrinks by this percent of `HAZE_VISION_FRACTION` of its range, but never below `HAZE_MIN_SIGHT`. */
+export const RAIN_HAZE = 10;
+export const STORM_HAZE = 20;
+export const DUST_HAZE = 65;
+export const MIST_HAZE = 40;
+export const HAZE_VISION_FRACTION = 0.5;
+export const HAZE_MIN_SIGHT = 2 * TILE;
+/** Mean ticks between lightning strikes in a storm (a strike is chosen from the tick, so every client sees the same ones). */
+export const LIGHTNING_MEAN_TICKS = 40;
+/** Lightning stuns the CPU of everything within this many sub-tile units of where it lands, for this many ticks (a short tesla stun). */
+export const LIGHTNING_RADIUS = Math.floor(1.5 * TILE);
+export const LIGHTNING_STUN_TICKS = 10;
 
 /** How far (sub-tile units) a unit sees with no sensor, and a building. A longer sensor range wins. */
 export const UNIT_VISION = 4 * TILE;
@@ -119,6 +237,16 @@ export const NIGHT_VISION_FRACTION = 0.25;
 
 /** Units closer than this (sub-tile units) push each other apart: the two hull radii plus SEPARATION_GAP. */
 export const SEPARATION_GAP = Math.floor(0.1 * TILE);
+/** Flying units fly in arcs: the tightest turn at full speed has this radius (sub-tile units), and slower flight turns tighter. */
+export const FLY_TURN_RADIUS = Math.floor(1.2 * TILE);
+/** A flying unit starts to circle its goal when this close (sub-tile units); it circles for FLY_LOITER_TICKS plus up to FLY_LOITER_SPREAD more (by unit), at FLY_LOITER_SPEED percent speed, then lands straight in. */
+export const FLY_LOITER_RADIUS = 3 * TILE;
+export const FLY_LOITER_TICKS = 18;
+export const FLY_LOITER_SPREAD = 14;
+export const FLY_LOITER_SPEED = 60;
+/** Cruising flyers weave about the straight line by up to this many radians (each its own phase), fading out near the goal. */
+export const FLY_WEAVE = 0.3;
+
 /** Separation of two light units (radius 0.3 each), the old fixed value. */
 export const SEPARATION_RADIUS = Math.floor(0.7 * TILE);
 
@@ -132,6 +260,31 @@ export const CLIFF_HEIGHT = 3;
 export const CLIFF_EVERY = 4;
 /** A legged unit walking on rock moves at this share of its speed, in thousandths. */
 export const CLIMB_SPEED_PERMILLE = 500;
+
+// --- Liquids: terrain below ground level ------------------------------------------------
+
+/**
+ * Liquid depth per cell, 0 (dry) to 9, set by `Terrain.depth`. The band decides the kind of liquid:
+ * 1-2 shallow water, 3-5 deep water, 6-8 lava, 9 a void (a drop with no floor). A cell is either rock
+ * (height 1..MAX_TERRAIN_HEIGHT) or liquid (depth 1..MAX_LIQUID_DEPTH), never both.
+ */
+export const MAX_LIQUID_DEPTH = 9;
+export const SHALLOW_MAX = 2;
+export const DEEP_MAX = 5;
+export const LAVA_MAX = 8;
+export const VOID_DEPTH = 9;
+/** The deepest liquid every ground unit may wade into (shallow water), and what the hover and amphibious drives reach. */
+export const DEFAULT_WADE = SHALLOW_MAX;
+export const AMPHIBIOUS_WADE = DEEP_MAX;
+export const HOVER_WADE = LAVA_MAX;
+/** A ground unit wading through liquid moves at this share of its speed, in thousandths, by liquid kind (index: 1 shallow, 2 deep, 3 lava); hover drives skim at full speed. */
+export const WADE_SPEED_PERMILLE: readonly number[] = [1000, 600, 450, 450, 450];
+/** A step through liquid costs this many tenths of a dry step in the path search (the speeds above, rounded up), so a ford is chosen over a long detour only when it is worth it. */
+export const WADE_STEP_COST: readonly number[] = [10, 17, 22, 22, 22];
+/** Every LAVA_HEAT_TICKS ticks a hover unit over lava takes LAVA_HEAT_DAMAGE, and a ground unit stranded in lava (painted under it, say) LAVA_STRAND_DAMAGE; one over a void falls and is lost. */
+export const LAVA_HEAT_TICKS = 5;
+export const LAVA_HEAT_DAMAGE = 3;
+export const LAVA_STRAND_DAMAGE = 60;
 
 // --- Class derivation (how modules combine into stats) -----------------------------
 
@@ -191,6 +344,7 @@ export const PRODUCTION_ENERGY_BY_SLOT: Readonly<Record<string, number>> = {
   radar: 40,
   comms: 15,
   repair: 40,
+  shield: 60,
 };
 
 // --- Construction, production & limits ---------------------------------------------
@@ -213,10 +367,10 @@ export const factoryCanBuild = (tiers: number, chassisSize: number): boolean => 
 export const FACTORY_TIER_NAMES = ['micro', 'light', 'medium', 'heavy', 'super-heavy', 'colossus'] as const;
 
 export const MAX_UNITS_PER_PLAYER = 256;
-/** Includes the starter classes (34), so players have room for a dozen of their own. */
-export const MAX_CLASSES_PER_PLAYER = 48;
+/** Includes the starter classes (41), so players have room for dozens of their own. A class is a shared flyweight, so the limit costs nothing per tick; it bounds the designs a player can load and the blueprint list sent at join (raised from 48 on 2026-10-30). */
+export const MAX_CLASSES_PER_PLAYER = 128;
 /** Retired classes keep their id for good, so redefining over and over would fill the id space: this caps every class an owner ever made. */
-export const MAX_CLASSES_EVER_PER_PLAYER = 256;
+export const MAX_CLASSES_EVER_PER_PLAYER = 512;
 /** Path-search work (A* cells expanded, and tiles of line-of-sight tested while smoothing) the planner may do per tick; routes beyond it wait for later ticks, so one big group order cannot stall the server. */
 export const PLAN_WORK_PER_TICK = 12_000;
 
@@ -266,6 +420,10 @@ export const HORDE_MAX_ALIVE = 120;
 /** Peak output of one solar panel and one wind turbine, in energy per tick (before the multipliers above). */
 export const SOLAR_PANEL_OUTPUT = 0.5;
 export const WIND_TURBINE_OUTPUT = 1;
+/** One steam turbine on a vent: steady, whatever the weather or the hour. */
+export const STEAM_TURBINE_OUTPUT = 1;
+/** Multiplier applied to steam output (1 = unchanged). A turbine yields STEAM_TURBINE_OUTPUT x this per tick. */
+export const STEAM_GENERATION_MULTIPLIER = 2;
 
 // --- Module stats ------------------------------------------------------------------
 
@@ -306,6 +464,10 @@ export interface PartTuning {
   readonly thrust?: number;
   /** Legs: the highest terrain (rock height) they can walk onto. */
   readonly climb?: number;
+  /** Amphibious and hover drives: the deepest liquid (`Terrain.depth`) the unit may enter. */
+  readonly wade?: number;
+  /** Hover drives skim over liquid at full speed. */
+  readonly hover?: boolean;
   readonly sensorRange?: number;
   /** Sensor tier: what a Detected block may configure (see sensor.ts). */
   readonly sensorTier?: number;
@@ -327,6 +489,8 @@ export interface PartTuning {
   readonly radarMaxEnergy?: number;
   /** Radio and laser link: reach in tiles (`use` is the energy per message). */
   readonly commsRange?: number;
+  /** Shield emitter: arc and radius it starts with and the most a script may set (degrees, tiles); `use` is the energy per tick at the starting size. */
+  readonly shield?: { readonly arc: number; readonly maxArc: number; readonly range: number; readonly maxRange: number };
 }
 
 export const PART_TUNING: Readonly<Record<string, PartTuning>> = {
@@ -369,13 +533,17 @@ export const PART_TUNING: Readonly<Record<string, PartTuning>> = {
   'legs.light': { mass: 2, thrust: 70, climb: 1, use: 2, integrity: 12 },
   'legs.heavy': { mass: 5, thrust: 180, climb: 2, use: 4, integrity: 30 },
   'legs.colossus': { mass: 14, thrust: 500, climb: 9, use: 10, integrity: 100 },
+  // Liquids: an amphibious drive wades into deep water (slowed); a hover skirt skims over water and lava at full
+  // speed (lava scorches it) but is heavy on energy and cannot climb.
+  'motor.amphibious': { mass: 3, thrust: 130, use: 3, wade: AMPHIBIOUS_WADE },
+  'motor.hover': { mass: 4, thrust: 170, use: 5, wade: HOVER_WADE, hover: true },
 
   'sensor.short': { mass: 1, sensorRange: 6, sensorTier: 1, use: 1 },
   'sensor.long': { mass: 2, sensorRange: 14, sensorTier: 2, use: 2 },
 
   // The tesla coil's range and cooldown come from TESLA_RANGE / TESLA_COOLDOWN above; its `use` is per discharge.
   'gun.light': { mass: 1, weapon: { range: 4, damage: 5, cooldown: 5 }, use: 0 },
-  'gun.cannon': { mass: 4, weapon: { range: 7, damage: 25, cooldown: 20, matter: 3 }, use: 0 },
+  'gun.cannon': { mass: 4, weapon: { range: 21, damage: 25, cooldown: 20, matter: 3 }, use: 0 },
   'laser.beam': { mass: 3, weapon: { range: 8, damage: 8, cooldown: 8 }, use: 100 },
   'tesla.coil': { mass: 5, weapon: { range: 0, damage: 0, cooldown: 0 }, use: 40 },
   // Missiles: damage is matter x MISSILE_DAMAGE_PER_MATTER; the matter comes from the cargo bay (vehicles) or the silos (buildings).
@@ -388,8 +556,10 @@ export const PART_TUNING: Readonly<Record<string, PartTuning>> = {
   'missile.large': { mass: 10, weapon: missileLauncher(30, 16, 60, { speed: 0.22, turn: 2.5, flight: 90, hp: 60, blast: 2.2, hitChance: 1 }), use: 0 },
 
   // Heavy weapons for the big tiers: a slow siege cannon (buildings) and a rotary gun (crowds of small units).
-  'cannon.siege': { mass: 14, weapon: { range: 9, damage: 120, cooldown: 30, matter: 8 }, use: 0 },
+  'cannon.siege': { mass: 14, weapon: { range: 27, damage: 120, cooldown: 30, matter: 8 }, use: 0 },
   'gun.rotary': { mass: 10, weapon: { range: 7, damage: 20, cooldown: 3 }, use: 1 },
+  // Flamethrower: lobs a fireball that lands and burns; `damage` is what the fire does each time it burns (FLAME_BURN_DAMAGE).
+  'flame.projector': { mass: 14, weapon: { range: 9, damage: FLAME_BURN_DAMAGE, cooldown: 1, matter: 1 }, use: 0 },
 
   'armor.plate': { mass: 4, hp: 60 },
   'armor.heavy': { mass: 12, hp: 300 },
@@ -415,9 +585,12 @@ export const PART_TUNING: Readonly<Record<string, PartTuning>> = {
   'radio.basic': { mass: 1, commsRange: 12, use: 1 },
   'radio.laser': { mass: 3, commsRange: 40, use: 3 },
   'repair.beam': { mass: 3, repairRate: 4, use: 8 },
+  // The shield is the most power-hungry module: `use` is per tick, for the starting arc and radius; a wider or longer shield costs in proportion.
+  'shield.emitter': { mass: 4, use: 5, shield: { arc: 120, maxArc: 240, range: 3, maxRange: 6 } },
   'charger.pad': { mass: 3, chargeRate: 10 },
   'solar.panel': { mass: 2, output: SOLAR_PANEL_OUTPUT },
   'wind.turbine': { mass: 4, output: WIND_TURBINE_OUTPUT },
+  'steam.turbine': { mass: 5, output: STEAM_TURBINE_OUTPUT },
   'antenna.small': { mass: 1, antennaRange: 3 },
   'antenna.medium': { mass: 2, antennaRange: 6 },
   'antenna.large': { mass: 4, antennaRange: 12 },

@@ -4,6 +4,10 @@ import {
   compileUnitProgram,
   Construction,
   daylight,
+  Feature,
+  FEATURES,
+  FeatureKind,
+  featureTile,
   GAME_COMPONENTS,
   gap,
   Health,
@@ -12,12 +16,14 @@ import {
   powerLinks,
   statsFor,
   Terrain,
+  TICK_RATE,
   TILE,
   Unit,
   VisionGrid,
   inSight,
   viewersOf,
   wind,
+  Weather,
   World,
   type BlueprintStats,
   type CpuProfile,
@@ -25,6 +31,9 @@ import {
   type PowerNode,
   type ProgramButton,
 } from '@wst/engine';
+
+/** How a steam vent is covered: bare and venting, a building site over it, a building without a steam turbine over it, or one with a turbine. */
+export const VentCover = { Open: 0, Site: 1, Plugged: 2, Tapped: 3 } as const;
 
 /** A power link oriented from the network's sources towards its consumers (for the flow animation). */
 export interface PowerFlow {
@@ -111,6 +120,9 @@ export class ClientState {
   private readonly modules = this.world.store(Modules);
   private readonly health = this.world.store(Health);
   private readonly construction = this.world.store(Construction);
+  private readonly features = this.world.store(Feature);
+  /** Per steam vent: how it is covered (VentCover), kept up to date with the buildings. */
+  readonly ventCover = new Map<number, number>();
   private readonly buttonCache = new Map<number, { source: string; buttons: readonly ProgramButton[] }>();
 
   /** Buttons declared by an own class's program (compiled locally from the source the server sent). */
@@ -153,16 +165,90 @@ export class ClientState {
     return { x: Math.round(pos.f.x[e] / TILE - size / 2), y: Math.round(pos.f.y[e] / TILE - size / 2), size };
   }
 
+  /** How many steam vents lie under building `e` (its footprint, shape included). */
+  ventsUnder(e: number): number {
+    const s = this.stats(e);
+    if (!s?.structure) return 0;
+    const f = this.footprint(e);
+    const pos = this.world.store(Position);
+    let count = 0;
+    for (const v of this.features.dense) {
+      if (this.features.f.kind[v] !== FeatureKind.Vent) continue;
+      const x = Math.floor(pos.f.x[v] / TILE) - f.x;
+      const y = Math.floor(pos.f.y[v] / TILE) - f.y;
+      if (x >= 0 && y >= 0 && x < f.size && y < f.size && (!s.shape || s.shape[y][x] === 'X')) count++;
+    }
+    return count;
+  }
+
+  /** How a steam vent at tile (x, y) is covered by the buildings in `nodes`. */
+  private coverOf(x: number, y: number, nodes: readonly PowerNode[]): number {
+    let cover: number = VentCover.Open;
+    for (const n of nodes) {
+      if (x < n.x || y < n.y || x >= n.x + n.size || y >= n.y + n.size) continue;
+      const s = this.stats(n.e);
+      if (s?.shape && s.shape[y - n.y][x - n.x] !== 'X') continue;
+      if (n.site) cover = Math.max(cover, VentCover.Site);
+      else cover = Math.max(cover, s && s.steam > 0 ? VentCover.Tapped : VentCover.Plugged);
+    }
+    return cover;
+  }
+
   /** Dev tools: sunlight / wind fixed at a level 0..100 (-1: natural). */
   devSun = -1;
   devWind = -1;
+  /** The weather (as the server's): the natural mix for the tick, unless the dev tools forced or scaled it (`setSky`). */
+  private readonly skies = new Weather();
+
+  /** Dev tools: force a `Sky` (-1: natural) and scale all weather 0..100 (-1: full); it slides from what is showing. */
+  setSky(sky: number, intensity: number, changeSeconds: number): void {
+    this.skies.setDev(sky, intensity, this.tick, changeSeconds < 0 ? -1 : changeSeconds * TICK_RATE);
+  }
+
+  /** Dev tools: the sky forced to a `Sky` (-1: natural). */
+  get devSky(): number {
+    return this.skies.forced;
+  }
+
+  /** The weather now: the mix of each `Sky` and what it does (see `Weather`). */
+  get weather(): Weather {
+    this.skies.update(this.seed, this.tick);
+    return this.skies;
+  }
 
   get daylight(): number {
     return this.devSun >= 0 ? this.devSun : daylight(this.tick);
   }
 
+  /** Wind 0..100, lifted to the weather's floor and held to its ceiling (as `Simulation.windNow`). */
   get wind(): number {
-    return this.devWind >= 0 ? this.devWind : wind(this.seed, this.tick);
+    return this.devWind >= 0 ? this.devWind : this.weather.windy(wind(this.seed, this.tick));
+  }
+
+  /** Sunlight that solar panels get: daylight scaled and capped by the weather (as `Simulation.solarNow`; above 100 in a heatwave). */
+  get solar(): number {
+    return this.devSun >= 0 ? this.devSun : this.weather.solar(daylight(this.tick));
+  }
+
+  /** The `Sky` with the most weight now (Dry if none), and how strongly the weather is felt 0..100. */
+  get sky(): number {
+    return this.weather.kind;
+  }
+
+  get skyStrength(): number {
+    return this.weather.strength;
+  }
+
+  /** Haze 0..100 (mist, dust and the like), which shrinks sight. */
+  get haze(): number {
+    return this.weather.haze;
+  }
+
+  /** Is this tile in view right now (always, without fog of war)? Used to show things only where the player can see. */
+  tileVisible(tx: number, ty: number): boolean {
+    if (!this.fog) return true;
+    const { width, height } = this.terrain;
+    return tx >= 0 && ty >= 0 && tx < width && ty < height && this.vision[ty * width + tx] === 2;
   }
 
   /** Team of each player seen on the scoreboard (kept when a player drops out, so an away ally's units still lend vision). */
@@ -194,7 +280,7 @@ export class ClientState {
     // Rock and buildings block sight, the same rule the server filters by.
     const grid = VisionGrid.of(this.terrain);
     grid.begin();
-    grid.add(this.terrain, viewersOf(this.world, this.viewOwners(), (e) => this.stats(e), undefined, this.daylight));
+    grid.add(this.terrain, viewersOf(this.world, this.viewOwners(), (e) => this.stats(e), undefined, this.daylight, this.haze));
     for (let i = 0; i < v.length; i++) if (grid.stamp[i] === grid.gen) v[i] = 2;
     this.visionVersion++;
     // A ghost of a radar contact vanishes once the fog is pushed back over its tile: the real thing is shown there now.
@@ -217,10 +303,17 @@ export class ClientState {
     return n;
   }
 
+  /** Own construction sites in progress (the server caps them at `MAX_SITES_PER_PLAYER`). */
+  ownSiteCount(): number {
+    let n = 0;
+    for (const e of this.construction.dense) if (this.unit.f.owner[e] === this.myId) n++;
+    return n;
+  }
+
   /** Whether a building with its top-left on tile (x, y) would be inside own vision (the server's placement rule). */
   canPlaceInVision(x: number, y: number, size: number): boolean {
     if (!this.fog) return true;
-    const viewers = viewersOf(this.world, this.viewOwners(), (e) => this.stats(e), (e) => this.isSite(e), this.daylight);
+    const viewers = viewersOf(this.world, this.viewOwners(), (e) => this.stats(e), (e) => this.isSite(e), this.daylight, this.haze);
     return inSight(this.terrain, viewers, (x + size / 2) * TILE, (y + size / 2) * TILE);
   }
 
@@ -277,7 +370,8 @@ export class ClientState {
       this.world.despawned.length > 0 ||
       this.construction.removed.length > 0 ||
       this.unit.changed.some((e) => this.isStructure(e)) ||
-      this.modules.changed.some((e) => this.isStructure(e));
+      this.modules.changed.some((e) => this.isStructure(e)) ||
+      this.features.changed.length > 0;
     if (changed) this.refreshStructures();
   }
 
@@ -291,6 +385,14 @@ export class ClientState {
       const f = this.footprint(e);
       this.terrain.occupy(f.x, f.y, f.size, 1, s.shape);
       nodes.push({ e, owner: this.unit.f.owner[e], x: f.x, y: f.y, size: f.size, reach: s.linkRange, site: this.isSite(e) });
+    }
+    this.ventCover.clear();
+    const pos = this.world.store(Position);
+    for (const v of this.features.dense) {
+      const kind = this.features.f.kind[v];
+      const at = featureTile(kind, pos.f.x[v], pos.f.y[v]);
+      if (FEATURES[kind]?.solid) this.terrain.occupy(at.x, at.y, at.size, 1);
+      else if (kind === FeatureKind.Vent) this.ventCover.set(v, this.coverOf(at.x, at.y, nodes));
     }
     this.powerNodes = nodes;
     this.links = powerLinks(nodes).map(([i, j]) => [nodes[i].e, nodes[j].e]);

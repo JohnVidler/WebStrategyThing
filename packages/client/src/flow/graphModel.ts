@@ -3,8 +3,11 @@ import {
   COST,
   configToText,
   EVENT_BY_NAME,
+  exprText,
   expandBlocks,
   MAX_CUSTOM_PARAMS,
+  LIST_ELEMENT_COST,
+  LIST_MAX,
   LOCAL_READ_COST,
   STATEMENT_COST,
   VARIABLE_READ_COST,
@@ -212,6 +215,13 @@ export function buildGraph(program: Program, host: FlowHost, problems: ReadonlyM
         e.args.forEach((a, i) => sub(argKey(i), b?.args?.[i] ?? `arg ${i + 1}`, a, at(`args.${i}`)));
         return { ...base, kind: 'query', title: e.fn, subtitle: 'query', inputs, controls, cost: WIRED_NODE_COST + (b?.cost ?? 0), doc: b?.doc };
       }
+      case 'chain': {
+        const b = api.get(e.fn);
+        e.args.forEach((a, i) => sub(argKey(i), b?.args?.[i] ?? `arg ${i + 1}`, a, at(`args.${i}`)));
+        // The steps (functions and all) are shown as text: they are edited in the Text view.
+        const steps = exprText(e).slice(exprText({ ...e, steps: [] }).length);
+        return { ...base, kind: 'query', title: e.fn, subtitle: `list ${steps}`, inputs, controls, cost: WIRED_NODE_COST + (b?.cost ?? 0), doc: `${b?.doc ?? ''} Steps: ${steps}. Edit the steps in the Text view.`.trim() };
+      }
       default:
         return { ...base, kind: 'logic', title: '?', inputs, controls, cost: 0 };
     }
@@ -413,6 +423,17 @@ export function handlerWorstCase(h: Handler, host: FlowHost): number {
       case 'bin': return WIRED_NODE_COST + exprCost(e.a, locals) + exprCost(e.b, locals);
       case 'cond': return WIRED_NODE_COST + exprCost(e.c, locals) + exprCost(e.a, locals) + exprCost(e.b, locals);
       case 'call': return WIRED_NODE_COST + (api.get(e.fn)?.cost ?? 0) + e.args.reduce((n, a) => n + exprCost(a, locals), 0);
+      case 'chain': {
+        // The source and, for each step, its arguments once and its function for every entry (a list never holds more than LIST_MAX).
+        let total = WIRED_NODE_COST + (api.get(e.fn)?.cost ?? 0) + e.args.reduce((n, a) => n + exprCost(a, locals), 0);
+        for (const st of e.steps) {
+          const inner = new Set([...locals, ...st.params]);
+          const plain = st.params.length ? st.args.slice(0, -1) : st.args;
+          total += WIRED_NODE_COST + plain.reduce((n, a) => n + exprCost(a, locals), 0);
+          if (st.params.length) total += LIST_MAX * (LIST_ELEMENT_COST + exprCost(st.args[st.args.length - 1], inner));
+        }
+        return total;
+      }
     }
   };
   const list = (stmts: readonly Stmt[], locals: Set<string>): number => {

@@ -12,6 +12,8 @@ interface Track {
 }
 
 const FADE_MS = 1500;
+/** Longest random silence before an idle track starts. */
+const IDLE_PAUSE_MS = 6000;
 const STORAGE_KEY = 'wst-music';
 
 interface Saved {
@@ -63,6 +65,8 @@ export class MusicPlayer {
   private voices: Voice[] = [];
   private readonly saved = loadSaved();
   private ticker: number | undefined;
+  /** Timer for the silence before idle music starts. */
+  private pause: number | undefined;
   private failures = 0;
   private lastNudge = 0;
   private gestured = false;
@@ -185,8 +189,22 @@ export class MusicPlayer {
     return fit.length ? fit : this.tracks.filter((t) => t.tags.includes('idle'));
   }
 
-  /** Starts a random fitting track, fading it in while everything already playing fades out. */
-  private playNext(): void {
+  /**
+   * Starts a random fitting track, fading it in while everything already playing fades out.
+   * Idle music waits a random pause (up to IDLE_PAUSE_MS) first; other contexts start at once.
+   */
+  private playNext(immediate = false): void {
+    window.clearTimeout(this.pause);
+    this.pause = undefined;
+    if (this.context === 'idle' && !immediate && this.candidates().length) {
+      for (const v of this.voices) v.target = 0;
+      if (this.voices.length) this.startTicker();
+      this.pause = window.setTimeout(() => {
+        this.pause = undefined;
+        this.playNext(true);
+      }, Math.random() * IDLE_PAUSE_MS);
+      return;
+    }
     const options = this.candidates();
     if (!options.length) return;
     // Avoid an immediate repeat when there is a choice.
@@ -216,7 +234,7 @@ export class MusicPlayer {
     voice.audio.onerror = () => {
       this.drop(voice);
       // A bad file: try another, but give up once everything has failed in a row.
-      if (++this.failures < this.tracks.length) this.playNext();
+      if (++this.failures < this.tracks.length) this.playNext(true);
     };
     this.applyVolume();
     this.start(voice);

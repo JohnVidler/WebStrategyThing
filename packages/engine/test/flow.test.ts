@@ -31,6 +31,7 @@ const api: HostApi<Ctx> = [
   { name: 'act2', argc: 2, kind: 'action', cost: 0, fn: (c, a) => (c.calls.push([a[0], a[1]]), 0) },
   { name: 'ask', argc: 0, kind: 'query', cost: 0, fn: () => 3 },
   { name: 'tune', argc: 1, kind: 'config', cost: 0, fn: (c, a) => (c.calls.push([-a[0]]), 1) },
+  { name: 'calc', argc: 1, kind: 'query', cost: 0, fn: (_c, a) => a[0] },
 ];
 const host: FlowHost = { api, constants: new Map([['K', 9]]) };
 const text = (src: string) => {
@@ -106,7 +107,6 @@ describe('text form', () => {
     expect(messages.some((m) => /Unknown event 'nope'/.test(m))).toBe(true);
     expect(messages.some((m) => /plain '='/.test(m))).toBe(true);
     expect(messages.some((m) => /not supported/.test(m))).toBe(true);
-    expect(messages.some((m) => /const must be bound to a call/.test(m))).toBe(true);
     expect(messages.some((m) => /top level/.test(m))).toBe(true);
     expect(bad.errors.every((e) => e.from !== undefined && e.to !== undefined)).toBe(true);
     // Syntax errors are located too.
@@ -138,7 +138,7 @@ describe('checking', () => {
     expect(errorsOf('on(Idle, () => {\n  act(nope);\n});')).toEqual([expect.stringMatching(/Unknown name 'nope'/)]);
     expect(errorsOf('on(Idle, () => {\n  act(1, 2);\n});')).toEqual([expect.stringMatching(/takes 1 argument/)]);
     expect(errorsOf('on(Idle, () => {\n  if (1) {\n    const x = ask();\n  }\n  act(x);\n});')).toEqual([expect.stringMatching(/Unknown name 'x'/)]);
-    expect(parseText('on(Idle, () => {\n  const ask = 1;\n});', host).errors[0].message).toMatch(/must be bound to a call/);
+    expect(parseText('on(Idle, () => {\n  const ask = 1;\n});', host).errors[0].message).toMatch(/already used/);
     expect(errorsOf('on(Idle, () => {\n  const ask = ask();\n});')[0]).toMatch(/already used/);
     expect(errorsOf('let a = 0;\non(Idle, () => {\n  K = 1;\n});')[0]).toMatch(/Only variables can be assigned/);
   });

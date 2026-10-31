@@ -1,7 +1,8 @@
-import { FREE_LITERALS } from './cost';
+import { FREE_LITERALS, MAX_CHAIN_STEPS } from './cost';
 import { customEventDef, customEventNames, EVENT_BY_NAME, isCustomEventName, MAX_CUSTOM_EVENTS, MAX_CUSTOM_PARAMS, type ConfigField, type EventDef } from './events';
 import type { FlowHost } from './host';
 import { FlowError, isTextExpr, textParts, type ConfigValue, type Expr, type FlowDoc, type Handler, type Stmt } from './ir';
+import { LIST_OPS, LIST_OP_BY_NAME } from './lists';
 
 export const RESERVED_WORDS: ReadonlySet<string> = new Set([
   'on', 'emit', 'use', 'config', 'let', 'const', 'var', 'if', 'else', 'while', 'for', 'return', 'true', 'false', 'function', 'break', 'continue',
@@ -99,6 +100,48 @@ export function checkDoc(doc: FlowDoc, host: FlowHost, reservedKeys?: ReadonlyMa
       maxLocals = Math.max(maxLocals, locals.size);
     }
 
+    /** True while checking the steps of a chain: the shared list buffer is in use, so another chain may not start. */
+    let inChain = false;
+
+    const chain = (e: Extract<Expr, { k: 'chain' }>, node: string): void => {
+      if (inChain) {
+        fail('A list chain cannot sit inside another chain: work it out first (const x = ...) and use x', node);
+        return;
+      }
+      const source = api.get(e.fn);
+      if (!source) fail(`Unknown function '${e.fn}'`, node);
+      else if (!source.list) fail(`${e.fn}() does not return a list: a chain starts with a find function such as findResources()`, node);
+      else if (e.args.length !== source.argc) fail(`${source.name}() takes ${source.argc} argument(s), not ${e.args.length}`, node);
+      for (const a of e.args) expr(a, node);
+      if (!e.steps.length) fail('A list needs an ending that gives one number, such as .first() or .count()', node);
+      if (e.steps.length > MAX_CHAIN_STEPS) fail(`A chain has at most ${MAX_CHAIN_STEPS} steps`, node);
+      inChain = true;
+      e.steps.forEach((st, i) => {
+        const def = LIST_OP_BY_NAME.get(st.op);
+        if (!def) {
+          fail(`Unknown list step .${st.op}() (steps: ${LIST_OPS.map((o) => o.name).join(', ')})`, node);
+          return;
+        }
+        const last = i === e.steps.length - 1;
+        if (def.terminal && !last) fail(`.${def.name}() gives one number, so it must be the last step`, node);
+        else if (!def.terminal && last) fail(`A chain must end with a step that gives one number, such as .first() or .count() (not .${def.name}())`, node);
+        if (def.name === 'random' && !api.has('rand')) fail('.random() needs the rand() function', node);
+        if (st.params.length !== def.params || st.args.length !== def.args + (def.params ? 1 : 0)) {
+          const shape = def.params === 0 ? '' : def.params === 1 ? 'r => ...' : '(a, r) => ...';
+          fail(`.${def.name}() is written .${def.name}(${[...Array<string>(def.args).fill('n'), ...(def.params ? [shape] : [])].join(', ')})`, node);
+          return;
+        }
+        for (const a of st.args.slice(0, def.args)) expr(a, node);
+        if (def.params) {
+          const mark = declared.length;
+          for (const p of st.params) declareLocal(p, node);
+          expr(st.args[def.args], node);
+          while (declared.length > mark) locals.delete(declared.pop()!);
+        }
+      });
+      inChain = false;
+    };
+
     const expr = (e: Expr, node: string): void => {
       switch (e.k) {
         case 'num':
@@ -132,10 +175,14 @@ export function checkDoc(doc: FlowDoc, host: FlowHost, reservedKeys?: ReadonlyMa
           if (!b) fail(`Unknown function '${e.fn}'`, node);
           else if (b.kind !== 'query') {
             fail(`${b.name}() ${b.kind === 'action' ? 'is an action' : 'is a runtime setting'}: call it as a statement${b.kind === 'config' ? ' (config.' + b.name + ')' : ''}, not inside an expression`, node);
-          } else if (e.args.length !== b.argc) fail(`${b.name}() takes ${b.argc} argument(s), not ${e.args.length}`, node);
+          } else if (b.list) fail(`${b.name}() returns a list: add a step that gives one number, such as .first(), .count() or .minBy(r => dist(r))`, node);
+          else if (e.args.length !== b.argc) fail(`${b.name}() takes ${b.argc} argument(s), not ${e.args.length}`, node);
           callArgs(b, e.args, node);
           break;
         }
+        case 'chain':
+          chain(e, node);
+          break;
       }
     };
 
@@ -164,6 +211,7 @@ export function checkDoc(doc: FlowDoc, host: FlowHost, reservedKeys?: ReadonlyMa
           case 'call': {
             const b = api.get(s.fn);
             if (!b) fail(`Unknown function '${s.fn}'`, s.id);
+            else if (b.list) fail(`${b.name}() returns a list: it can only start a chain, such as ${b.name}(...).first()`, s.id);
             else if (s.args.length !== b.argc) fail(`${b.name}() takes ${b.argc} argument(s), not ${s.args.length}`, s.id);
             callArgs(b, s.args, s.id);
             if (s.outcomes) {
