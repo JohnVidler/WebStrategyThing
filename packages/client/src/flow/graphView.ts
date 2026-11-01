@@ -205,13 +205,14 @@ export class GraphView {
       <aside class="graph-side"></aside>
       <div class="graph-main">
         <div class="graph-toolbar">
+          <button data-act="side" class="side-toggle" title="Show or hide the block palette" aria-pressed="true">☰ Blocks</button>
           <button data-act="undo" title="Undo (Ctrl+Z)">↶ Undo</button>
           <button data-act="redo" title="Redo (Ctrl+Y)">↷ Redo</button>
           <select data-act="template" title="Start the class from a template made of blocks"><option value="">Template…</option>${CLASS_TEMPLATES.map((t) => `<option value="${t.name}" title="${t.about}">${t.name}</option>`).join('')}</select>
           <button data-act="tidy" title="Lay the whole program out again">Tidy</button>
           <button data-act="fit" title="Zoom to fit everything">Fit</button>
           <button data-act="delete" title="Delete the selected nodes (Delete)">Delete</button>
-          <span class="muted graph-hint">Drag from a pin to wire · double-click a wire to cut it · Delete removes the selection</span>
+          <span class="muted graph-hint" tabindex="0" title="Drag from a pin to wire · double-click a wire to cut it · Delete removes the selection" aria-label="Help">? Help</span>
         </div>
         <div class="graph-canvas" tabindex="0"></div>
         <div class="graph-banner" hidden></div>
@@ -241,6 +242,13 @@ export class GraphView {
     chooser.onchange = () => {
       this.applyTemplate(chooser.value);
       chooser.value = '';
+    };
+    const sideBtn = click('side');
+    sideBtn.onclick = () => {
+      const hidden = this.element.classList.toggle('side-hidden');
+      sideBtn.setAttribute('aria-pressed', String(!hidden));
+      // The canvas just changed size.
+      this.fit();
     };
     click('tidy').onclick = () => void this.tidy();
     click('fit').onclick = () => this.fit();

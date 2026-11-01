@@ -3,8 +3,10 @@ import type { SyntaxNode } from '@lezer/common';
 import { BLOCK_BY_NAME, blockContext, checkBlocks } from './blocks';
 import { checkDoc, type MemoryUse } from './check';
 import { configNumberText } from './config';
+import { CONTROL_SETTINGS, controlFrom } from './controls';
 import { customEventDef, EVENT_BY_NAME, isCustomEventName, type EventDef } from './events';
-import type { FlowHost } from './host';
+import { callSyntax, type BuiltinSig, type FlowHost } from './host';
+import { LIST_OP_BY_NAME } from './lists';
 import {
   emptyDoc,
   FlowError,
@@ -13,6 +15,7 @@ import {
   type BlockUse,
   type ChainStep,
   type ConfigValue,
+  type ControlDecl,
   type Expr,
   type FlowDoc,
   type Handler,
@@ -47,6 +50,39 @@ const PREC_UNARY = 10;
 const PREC_ATOM = 11;
 
 // ============================================================================================
+// The object tree: self, self.modules[...]
+// ============================================================================================
+
+/** Builtins by their place in the object tree (`self.hp`, `self.modules.weapon.fire`). */
+function memberIndex(host: FlowHost): Map<string, BuiltinSig> {
+  const out = new Map<string, BuiltinSig>();
+  for (const b of host.api) if (b.member) out.set(b.member, b);
+  return out;
+}
+
+/** The message for a `self...` path that names nothing, listing what would have been valid at the point it went wrong. */
+function unknownMember(path: readonly string[], members: ReadonlyMap<string, BuiltinSig>): string {
+  const names = (prefix: string): string[] => {
+    const seen = new Set<string>();
+    for (const key of members.keys()) {
+      const m = key.replace('[]', '');
+      if (m.startsWith(prefix)) seen.add(m.slice(prefix.length).split('.')[0]);
+    }
+    return [...seen];
+  };
+  const text = path.join('.');
+  if (path[1] === 'modules') {
+    if (path.length === 2) return "self.modules holds the unit's modules: write self.modules['weapon'].fire(h)";
+    if (path.length === 3 || !names('self.modules.').includes(path[2])) {
+      return `This unit has no module called '${path[2]}' (modules: ${names('self.modules.').join(', ')})`;
+    }
+    return `${text} does not exist (${path[2]} has: ${names(`self.modules.${path[2]}.`).join(', ')})`;
+  }
+  if (path.length === 1) return "self is the unit running the program: write self.hp, self.moveTo(x, y) or self.modules['weapon'].fire(h)";
+  return `self has no '${path[1]}' (it has: ${names('self.').filter((n) => n !== 'modules').join(', ')}, modules)`;
+}
+
+// ============================================================================================
 // Parsing
 // ============================================================================================
 
@@ -69,6 +105,7 @@ export function parseText(text: string, host: FlowHost, prev?: FlowDoc, reserved
   const tree = tsParser.parse(text);
   const next = idGenerator(prev, reserved);
   const apiByName = new Map(host.api.map((b) => [b.name, b]));
+  const members = memberIndex(host);
   /** Where each node came from (its first line), so problems found later can point at the text. */
   const ranges = new Map<string, { from: number; to: number }>();
   const firstLine = (n: { from: number; to: number }) => {
@@ -136,6 +173,53 @@ export function parseText(text: string, host: FlowHost, prev?: FlowDoc, reserved
     }
   };
 
+  /**
+   * `self.modules['weapon'][i].fire` as the path ['self', 'modules', 'weapon', '[]', 'fire'] and the node of the index;
+   * undefined unless it is a plain chain of names with at most one index.
+   */
+  const memberInfo = (n: SyntaxNode): { path: string[]; index?: SyntaxNode } | undefined => {
+    if (n.name === 'VariableName') return { path: [src(n)] };
+    if (n.name !== 'MemberExpression') return undefined;
+    const parts = kids(n);
+    const head = memberInfo(parts[0]);
+    if (!head) return undefined;
+    const name = parts.find((p) => p.name === 'PropertyName');
+    if (name) return { path: [...head.path, src(name)], index: head.index };
+    const open = parts.findIndex((p) => p.name === '[');
+    const key = open >= 0 ? parts[open + 1] : undefined;
+    if (!key) return undefined;
+    if (key.name === 'String') return { path: [...head.path, src(key).slice(1, -1)], index: head.index };
+    return head.index ? undefined : { path: [...head.path, '[]'], index: key };
+  };
+  const isSelf = (n: SyntaxNode): boolean => memberInfo(n)?.path[0] === 'self';
+
+  /** The builtin a `self...` path names (module aliases resolved), or undefined. */
+  const findMember = (path: readonly string[]): BuiltinSig | undefined => {
+    const key = (p: readonly string[]) => p.join('.').replace(/\.\[\]/g, '[]');
+    return members.get(key(path)) ?? members.get(key(path.map((p, i) => (i === 2 && path[1] === 'modules' ? (host.moduleAliases?.get(p) ?? p) : p))));
+  };
+  /** `self.modules.weapon.filter` and the like: a step of a chain that starts at a module list. */
+  const isListChain = (n: SyntaxNode): boolean => {
+    const path = memberInfo(n)?.path;
+    return !!path && path.length > 2 && LIST_OP_BY_NAME.has(path[path.length - 1]) && !!findMember(path.slice(0, -1))?.list;
+  };
+  /** A `self...` name that is a property, method or module call (not the start of a list chain). */
+  const isSelfCall = (n: SyntaxNode): boolean => isSelf(n) && !isListChain(n);
+
+  /** The builtin a `self...` path names, with a problem reported at `n` if it names none or is used the wrong way. */
+  const selfCall = (n: SyntaxNode, called: boolean): { b: BuiltinSig; lead: Expr[] } | undefined => {
+    const { path, index } = memberInfo(n)!;
+    const text = path.join('.').replace(/\.\[\]/g, '[i]');
+    const b = findMember(path);
+    if (!b) {
+      err(unknownMember(path, members), n);
+      return undefined;
+    }
+    if (called && b.prop) err(`${text} is a property: write it without brackets`, n);
+    else if (!called && !b.prop) err(`${text} is a function: write ${text}(${(b.args ?? []).slice(index ? 1 : 0).join(', ')})`, n);
+    return { b, lead: index ? [expr(index)] : [] };
+  };
+
   // --- expressions ---
   const expr = (n: SyntaxNode): Expr => {
     switch (n.name) {
@@ -181,8 +265,20 @@ export function parseText(text: string, host: FlowHost, prev?: FlowDoc, reserved
         const [c, , a, , b] = kids(n);
         return { k: 'cond', c: expr(c), a: expr(a), b: expr(b) };
       }
+      case 'MemberExpression': {
+        if (!isSelf(n)) {
+          err('Only self.something can be read like this', n);
+          return { k: 'num', v: 0 };
+        }
+        const r = selfCall(n, false);
+        return { k: 'call', fn: r?.b.name ?? 'x', args: r?.lead ?? [] };
+      }
       case 'CallExpression': {
         const [callee, args] = kids(n);
+        if (callee.name === 'MemberExpression' && isSelfCall(callee)) {
+          const r = selfCall(callee, true);
+          return { k: 'call', fn: r?.b.name ?? 'x', args: [...(r?.lead ?? []), ...argList(args)] };
+        }
         if (callee.name === 'MemberExpression') return chainExpr(n);
         if (callee.name !== 'VariableName') {
           err('Only built-in functions can be called inside expressions', callee);
@@ -212,6 +308,10 @@ export function parseText(text: string, host: FlowHost, prev?: FlowDoc, reserved
         break;
       }
     }
+    if (cur.name === 'MemberExpression' && isSelf(cur)) {
+      const b = findMember(memberInfo(cur)!.path);
+      if (b?.list) return { k: 'chain', fn: b.name, args: [], steps };
+    }
     err('A list chain starts with a find function, such as findResources(10).filter(r => resource(r) > 50).first()', n);
     return { k: 'num', v: 0 };
   };
@@ -240,9 +340,16 @@ export function parseText(text: string, host: FlowHost, prev?: FlowDoc, reserved
   const callStmt = (n: SyntaxNode, result?: string): Stmt | undefined => {
     const [callee, args] = kids(n);
     let fn: string;
-    if (callee.name === 'VariableName') {
+    let lead: Expr[] = [];
+    if (callee.name === 'MemberExpression' && isSelfCall(callee)) {
+      const r = selfCall(callee, true);
+      if (!r) return undefined;
+      fn = r.b.name;
+      lead = r.lead;
+    } else if (callee.name === 'VariableName') {
       fn = src(callee);
-      if (apiByName.get(fn)?.kind === 'config') err(`${fn}() is a runtime setting: write config.${fn}(...)`, callee);
+      const b = apiByName.get(fn);
+      if (b?.kind === 'config') err(`${fn}() is a runtime setting: write ${b.member ?? `config.${fn}`}(...)`, callee);
     } else if (callee.name === 'MemberExpression' && src(callee.firstChild!) === 'config') {
       fn = src(callee.lastChild!);
       const b = apiByName.get(fn);
@@ -272,7 +379,7 @@ export function parseText(text: string, host: FlowHost, prev?: FlowDoc, reserved
       }
     }
     const id = mk(n);
-    return { id, k: 'call', fn, args: argNodes.map(expr), ...(result !== undefined ? { result } : {}), ...(outcomes ? { outcomes } : {}) };
+    return { id, k: 'call', fn, args: [...lead, ...argNodes.map(expr)], ...(result !== undefined ? { result } : {}), ...(outcomes ? { outcomes } : {}) };
   };
 
   const stmt = (n: SyntaxNode): Stmt[] => {
@@ -320,7 +427,12 @@ export function parseText(text: string, host: FlowHost, prev?: FlowDoc, reserved
           err('A const needs a value, such as: const foe = scan();', n);
           return [];
         }
-        if (value.name !== 'CallExpression' || kids(value)[0].name === 'MemberExpression') {
+        if (value.name === 'MemberExpression' && isSelfCall(value)) {
+          // const load = self.cargo; is the property read, kept as a call with a result (the graph shows it as one).
+          const r = selfCall(value, false);
+          return [{ id: mk(n), k: 'call', fn: r?.b.name ?? 'x', args: r?.lead ?? [], result: src(name) }];
+        }
+        if (value.name !== 'CallExpression' || (kids(value)[0].name === 'MemberExpression' && !isSelfCall(kids(value)[0]))) {
           // Any other expression (a list chain, a sum, a condition) is bound through calc(), which returns what it is given.
           return [{ id: mk(n), k: 'call', fn: 'calc', args: [expr(value)], result: src(name) }];
         }
@@ -356,6 +468,7 @@ export function parseText(text: string, host: FlowHost, prev?: FlowDoc, reserved
   const vars: VarDecl[] = [];
   const handlers: Handler[] = [];
   const blocks: BlockUse[] = [];
+  const controls: ControlDecl[] = [];
   let note: string[] = [];
   const takeNote = (): string | undefined => {
     const n = note.length ? note.join('\n') : undefined;
@@ -453,6 +566,20 @@ export function parseText(text: string, host: FlowHost, prev?: FlowDoc, reserved
     blocks.push({ id: mk(call), block: def.name, settings, ...(comment ? { note: comment } : {}) });
   };
 
+  const control = (kind: ControlDecl['kind'], call: SyntaxNode, comment: string | undefined): void => {
+    const args = kids(kids(call)[1]).filter((c) => !['(', ')', ','].includes(c.name));
+    const nameNode = args[0];
+    if (!nameNode || nameNode.name !== 'VariableName') {
+      err(`${kind}() needs a variable first, such as ${kind}(power, { label: 'Power' })`, call);
+      return;
+    }
+    let settings: Record<string, ConfigValue> = {};
+    if (args.length === 2 && args[1].name === 'ObjectExpression') settings = configOf({ name: kind, config: CONTROL_SETTINGS[kind] } as unknown as EventDef, args[1]);
+    else if (args.length > 1) err('The settings of a control are written as one object: { label: "Power", min: 0, max: 10 }', args[1]);
+    controls.push(controlFrom(kind, src(nameNode), settings, comment));
+    ranges.set(`ctl:${src(nameNode)}`, firstLine(call));
+  };
+
   for (const n of kids(tree.topNode)) {
     if (n.name === 'LineComment') {
       note.push(src(n).replace(/^\/\/ ?/, ''));
@@ -473,13 +600,15 @@ export function parseText(text: string, host: FlowHost, prev?: FlowDoc, reserved
       handler(n.firstChild, comment);
     } else if (n.name === 'ExpressionStatement' && n.firstChild?.name === 'CallExpression' && src(kids(n.firstChild)[0]) === 'use') {
       use(n.firstChild, comment);
+    } else if (n.name === 'ExpressionStatement' && n.firstChild?.name === 'CallExpression' && ['slider', 'toggle'].includes(src(kids(n.firstChild)[0]))) {
+      control(src(kids(n.firstChild)[0]) as ControlDecl['kind'], n.firstChild, comment);
     } else if (n.name !== ';') {
-      err('At the top level only let declarations, use(...) and on(...) blocks are allowed', n);
+      err('At the top level only let declarations, slider(...), toggle(...), use(...) and on(...) blocks are allowed', n);
     }
   }
 
   const syntaxErrors = errors.length;
-  let doc: FlowDoc = { ...emptyDoc(), vars, handlers, ...(blocks.length ? { blocks } : {}) };
+  let doc: FlowDoc = { ...emptyDoc(), vars, handlers, ...(blocks.length ? { blocks } : {}), ...(controls.length ? { controls } : {}) };
   // Check the program too (with its blocks expanded), and turn each problem into a range in the text.
   const analysis = checkDoc(expandBlocks(doc, host), host, host.reservedKeys);
   for (const e of [...checkBlocks(doc), ...analysis.errors]) {
@@ -562,15 +691,17 @@ export function expandBlocks(doc: FlowDoc, host: FlowHost): FlowDoc {
   if (!doc.blocks?.length) return doc;
   const vars = [...doc.vars];
   const handlers = [...doc.handlers];
+  const controls = [...(doc.controls ?? [])];
   for (const u of doc.blocks) {
     if (!BLOCK_BY_NAME.has(u.block)) continue;
     const part = parseText(blockText(u, host), host);
     if (part.syntaxErrors) throw new Error(`Block ${u.block} wrote a program with errors: ${part.errors.map((e) => e.message).join('; ')}`);
     vars.push(...part.doc.vars);
+    controls.push(...(part.doc.controls ?? []));
     for (const h of part.doc.handlers) handlers.push({ ...h, id: `${u.id}~${h.id}`, body: prefixed(h.body, u.id) });
   }
   const { blocks: _blocks, ...rest } = doc;
-  return { ...rest, vars, handlers };
+  return { ...rest, vars, handlers, ...(controls.length ? { controls } : {}) };
 }
 
 /** One block turned into its plain variables and event blocks, in the program. */
@@ -590,7 +721,7 @@ export function expandOne(doc: FlowDoc, id: string, host: FlowHost): FlowDoc {
     });
   const handlers = expanded.handlers.map((h) => ({ ...h, id: gen(), body: fresh(h.body), ...(use.note ? {} : {}) }));
   const { blocks: _b, ...base } = doc;
-  return { ...base, vars: [...doc.vars, ...expanded.vars], handlers: [...doc.handlers, ...handlers], ...(rest.length ? { blocks: rest } : {}) };
+  return { ...base, vars: [...doc.vars, ...expanded.vars], handlers: [...doc.handlers, ...handlers], ...(expanded.controls?.length ? { controls: expanded.controls } : {}), ...(rest.length ? { blocks: rest } : {}) };
 }
 
 // ============================================================================================
@@ -598,7 +729,15 @@ export function expandOne(doc: FlowDoc, id: string, host: FlowHost): FlowDoc {
 // ============================================================================================
 
 /** An expression as program text, with the fewest parentheses that keep its meaning. */
-export function exprText(e: Expr): string {
+/** A call as text: its place in the object tree if it has one (an `[]` there takes the first argument as the index). */
+function callText(b: BuiltinSig | undefined, fn: string, args: readonly Expr[], expr: (e: Expr) => string): string {
+  if (!b?.member) return `${fn}(${args.map(expr).join(', ')})`;
+  const indexed = b.member.includes('[]');
+  const path = indexed ? b.member.replace('[]', `[${expr(args[0])}]`) : b.member;
+  return b.prop ? path : `${path}(${args.slice(indexed ? 1 : 0).map(expr).join(', ')})`;
+}
+
+export function exprText(e: Expr, lookup?: (fn: string) => BuiltinSig | undefined): string {
   const prec = (e: Expr): number => {
     switch (e.k) {
       case 'bin': return PREC[e.op];
@@ -625,7 +764,7 @@ export function exprText(e: Expr): string {
         return `${left} ${op} ${right}`;
       }
       case 'cond': return `${wrap(e.c, 1)} ? ${wrap(e.a, 1)} : ${wrap(e.b, 1)}`;
-      case 'call': return `${e.fn}(${e.args.map(expr).join(', ')})`;
+      case 'call': return callText(lookup?.(e.fn), e.fn, e.args, expr);
       case 'chain': {
         const steps = e.steps.map((st) => {
           const plain = st.params.length ? st.args.slice(0, -1) : st.args;
@@ -633,7 +772,8 @@ export function exprText(e: Expr): string {
           if (st.params.length) parts.push(`${st.params.length === 1 ? st.params[0] : `(${st.params.join(', ')})`} => ${expr(st.args[st.args.length - 1])}`);
           return `.${st.op}(${parts.join(', ')})`;
         });
-        return `${e.fn}(${e.args.map(expr).join(', ')})${steps.join('')}`;
+        const head = lookup?.(e.fn);
+        return `${head?.list && head.member ? head.member : `${e.fn}(${e.args.map(expr).join(', ')})`}${steps.join('')}`;
       }
     }
   };
@@ -647,7 +787,7 @@ export function printText(doc: FlowDoc, host: FlowHost): string {
     if (note !== undefined) for (const l of note.split('\n')) lines.push(`${indent}//${l ? ' ' + l : ''}`);
   };
 
-  const expr = exprText;
+  const expr = (e: Expr): string => exprText(e, (fn) => apiByName.get(fn));
 
   const block = (list: readonly Stmt[], indent: string): void => {
     for (const s of list) {
@@ -661,7 +801,11 @@ export function printText(doc: FlowDoc, host: FlowHost): string {
             lines.push(`${indent}const ${s.result} = ${expr(s.args[0])};`);
             break;
           }
-          const callee = `${b?.kind === 'config' ? 'config.' : ''}${s.fn}`;
+          const callee = b ? callSyntax(b) : s.fn;
+          if (b?.member && !s.outcomes) {
+            lines.push(`${indent}${s.result !== undefined ? `const ${s.result} = ` : ''}${callText(b, s.fn, s.args, expr)};`);
+            break;
+          }
           const lead = `${indent}${s.result !== undefined ? `const ${s.result} = ` : ''}${callee}(${s.args.map(expr).join(', ')}`;
           const present = s.outcomes ? [...(b?.outcomes ?? []).filter((n) => s.outcomes![n]), ...Object.keys(s.outcomes).filter((n) => !(b?.outcomes ?? []).includes(n))] : [];
           if (!s.outcomes) {
@@ -728,6 +872,11 @@ export function printText(doc: FlowDoc, host: FlowHost): string {
   for (const v of doc.vars) {
     comment(v.note, '');
     lines.push(`let ${v.name} = ${v.init};`);
+  }
+  for (const c of doc.controls ?? []) {
+    comment(c.note, '');
+    const label = `label: '${c.label.replace(/(['\\])/g, '\\$1')}'`;
+    lines.push(c.kind === 'toggle' ? `toggle(${c.name}, { ${label} });` : `slider(${c.name}, { ${label}, min: ${c.min}, max: ${c.max}${c.step === 1 ? '' : `, step: ${c.step}`} });`);
   }
   for (const b of doc.blocks ?? []) {
     if (lines.length && !lines[lines.length - 1].startsWith('use(')) lines.push('');

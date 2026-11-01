@@ -1,6 +1,7 @@
 import { World } from '../ecs/world';
 import { configInt, configInts, handles, type FlowProgram } from '../flow/compile';
 import { CommsLink, EventId, OrderPolicy } from '../flow/events';
+import { clampControl } from '../flow/controls';
 import { FlowError } from '../flow/ir';
 import { createFlow, raise, type FlowState } from '../flow/run';
 import type { Alert } from '../net/codec';
@@ -30,6 +31,10 @@ import {
   Shell,
   Aim,
   Shield,
+  Light,
+  Smoke,
+  Charge,
+  Hangar,
   Modules,
   Motion,
   Position,
@@ -40,18 +45,27 @@ import {
   Storage,
   Unit,
   Weapon,
+  Weapon2,
+  Weapon3,
+  Weapon4,
 } from './components';
 import { missileSystem, type MissileFlight } from './missile';
 import { shellSystem, type ShellFlight } from './shell';
 import { carriesFlame, flameSystem, type FlameFlight } from './flame';
 import { addAim, aimSystem } from './aim';
 import { addShield, shieldSystem, type ShieldState } from './shield';
+import { addLight, lightSystem, type LightState } from './light';
+import { smokeSystem, type SmokeCloud } from './smoke';
+import { defenceSystem } from './defence';
+import { railSystem, type RailCharge } from './rail';
+import { ionSystem } from './ion';
+import { addHangar, hangarSystem, type Bay } from './hangar';
 import { PARTS, SWITCHABLE, TILE } from './parts';
 import { findPath, searchWork } from './path';
 import { daylight, emptyNetwork, powerLinks, powerNetworks, powerTopology, wind, Weather, type PowerNetwork, type PowerNode } from './power';
 import { factoryCanBuild, FACTORY_TIER_NAMES, FLAME_VULNERABILITY, BASE_LINK_RANGE, BUILD_RANGE, BUILDING_BUILD_RANGE, BUILDING_TRANSFER_RANGE, DEMOLISH_REFUND, DOCK_RANGE, FLY_LOITER_RADIUS, HARVEST_RANGE, MAX_PRODUCTION_QUEUE, MAX_SITES_PER_PLAYER, MOONLIGHT, PLAN_WORK_PER_TICK, RADAR_COOLDOWN_TICKS, RADAR_ENERGY_PER_TILE, SITE_START_HP, STARTING_SHOTS, UNIT_TRANSFER_RANGE } from './rules';
 import { SpatialGrid } from './spatial';
-import { inSight, viewersOf } from './vision';
+import { inSight, viewersOf, VisionGrid } from './vision';
 import {
   buildSystem,
   repairSystem,
@@ -272,6 +286,10 @@ export class Simulation {
   readonly lastDistance: number[] = [];
   /** Ticks left of a sidestep round another unit (sign: which way it turns); 0 when walking the path. */
   readonly avoidTicks: number[] = [];
+  /** A moving unit's current speed (sub-tile units per tick; it accelerates up to its top speed) and its last direction of travel as a unit vector; 0 when it stands. */
+  readonly speedNow: number[] = [];
+  readonly headX: number[] = [];
+  readonly headY: number[] = [];
   /** A flying unit's heading in radians (undefined: it points at its goal when it next moves), and its approach phase: -1 cruising, above 0 loitering (ticks left), 0 landing. */
   readonly flyHeading: (number | undefined)[] = [];
   readonly flyPhase: number[] = [];
@@ -294,6 +312,27 @@ export class Simulation {
   /** Entity -> its energy shield's settings, and the shields that are up this tick (see shield.ts). */
   readonly shields: (ShieldState | undefined)[] = [];
   readonly shieldList: number[] = [];
+  /** Entity -> its spotlight's settings (see light.ts). */
+  readonly lights: (LightState | undefined)[] = [];
+  /** Smoke cloud entity -> its place and time left; the tiles under smoke; the tick each launcher is next ready (see smoke.ts). */
+  readonly smokeClouds: (SmokeCloud | undefined)[] = [];
+  smokeCount = 0;
+  smokeDirty = false;
+  smokeTiles = new Uint8Array(0);
+  readonly smokeReady: number[] = [];
+  /** Carriers of point defence and when each next shoots (see defence.ts). */
+  readonly defenders = new Set<number>();
+  readonly defenceReady: number[] = [];
+  /** Railguns charging, and the carriers whose fired line is shown for one more tick (see rail.ts). */
+  readonly rails = new Map<number, RailCharge>();
+  readonly railLines: number[] = [];
+  /** Ion bolts (see ion.ts): the part held down, until when, until when the target is immune, and who is held down now. */
+  readonly ionBit: number[] = [];
+  readonly ionUntil: number[] = [];
+  readonly ionImmune: number[] = [];
+  readonly ionActive = new Set<number>();
+  /** Carrier -> its drone bay (see hangar.ts). */
+  readonly bays = new Map<number, Bay>();
   /** Entity -> owner of the last weapon that damaged it (0 = none). */
   readonly lastHitBy: number[] = [];
   /** Building -> generation left over from last tick (in 1/100 of 1/GENERATION_SCALE energy). */
@@ -310,6 +349,8 @@ export class Simulation {
   readonly teams = new Map<number, number>();
   /** Buildings may only be placed within the owner's (or their team's) vision; off when fog of war is. */
   requirePlacementVision = false;
+  /** Tiles each player (key: owner, or `-1 - team`) has seen so far; buildings may also go on these. Only kept while `requirePlacementVision`. */
+  private readonly explored = new Map<number, Uint8Array>();
   /** Dev tools only: a fixed sunlight / wind level 0..100 for testing, or -1 for the natural cycle (see `sunNow`, `windNow`). */
   devSun = -1;
   devWind = -1;
@@ -381,7 +422,12 @@ export class Simulation {
   readonly energyView = this.world.store(EnergyView);
   readonly modules = this.world.store(Modules);
   readonly motion = this.world.store(Motion);
+  /** State of weapon 0 (target, cooldown, laser power, aim); the code that predates several weapons reads this. */
   readonly weapon = this.world.store(Weapon);
+  /** State of weapon i, in the order of the blueprint's weapon modules (`stats.weapons`); an entity has the first n. */
+  /** The weapon store whose shot is being resolved (set by the combat system, read by the shell, missile and ion code for the aim). */
+  firing = this.weapon;
+  readonly weaponStores = [this.weapon, this.world.store(Weapon2), this.world.store(Weapon3), this.world.store(Weapon4)];
   readonly harvester = this.world.store(Harvester);
   readonly energy = this.world.store(Energy);
   readonly storage = this.world.store(Storage);
@@ -394,6 +440,10 @@ export class Simulation {
   readonly flame = this.world.store(Flame);
   readonly aim = this.world.store(Aim);
   readonly shield = this.world.store(Shield);
+  readonly light = this.world.store(Light);
+  readonly smoke = this.world.store(Smoke);
+  readonly charge = this.world.store(Charge);
+  readonly hangar = this.world.store(Hangar);
 
   constructor(
     readonly config: SimConfig,
@@ -435,13 +485,13 @@ export class Simulation {
     }
     const e = this.addCommon(bp, x, y);
     this.motion.add(e);
-    if (bp.stats.weapon) {
-      this.weapon.add(e, { target: -1 });
+    if (bp.stats.weapons.length > 0) {
+      this.addWeapons(e, bp.stats.weapons.length);
       addAim(this, e);
     }
     if (bp.stats.cargo > 0) {
       // A unit whose weapon burns matter leaves the factory with a few shots loaded instead of an empty bay.
-      this.cargo.add(e, { amount: Math.min(bp.stats.cargo, (bp.stats.weapon?.matter ?? 0) * STARTING_SHOTS) });
+      this.cargo.add(e, { amount: Math.min(bp.stats.cargo, bp.stats.weapons.reduce((sum, w) => sum + (w?.matter ?? 0), 0) * STARTING_SHOTS) });
       this.harvester.add(e, { target: -1 });
     }
     if (bp.stats.buildRate > 0) this.builder.add(e, { target: -1 });
@@ -523,8 +573,8 @@ export class Simulation {
     if (s.resourceCapacity > 0) this.stockpile.add(e);
     if (s.buildRate > 0) this.builder.add(e, { target: -1 });
     if (s.repairRate > 0) this.repairer.add(e, { target: -1 });
-    if (s.weapon) {
-      this.weapon.add(e, { target: -1 });
+    if (s.weapons.length > 0) {
+      this.addWeapons(e, s.weapons.length);
       addAim(this, e);
     }
     this.tally(this.unit.f.owner[e]).createdBuildings++;
@@ -664,6 +714,11 @@ export class Simulation {
     return this.networkFor(site)?.depot ?? false;
   }
 
+  /** Gives a new unit or building the state of its first `n` weapons. */
+  private addWeapons(e: number, n: number): void {
+    for (let i = 0; i < n; i++) this.weaponStores[i].add(e, { target: -1 });
+  }
+
   private addCommon(bp: Blueprint, x: number, y: number): number {
     const e = this.world.create();
     this.pos.add(e, { x: this.clamp(x, this.widthSub), y: this.clamp(y, this.heightSub) });
@@ -680,6 +735,9 @@ export class Simulation {
     this.flatTicks[e] = 0;
     this.cpuDebt[e] = 0;
     if (bp.stats.shield) addShield(this, e);
+    if (bp.stats.light) addLight(this, e);
+    if (bp.stats.defence) this.defenders.add(e);
+    if (bp.stats.hangar) addHangar(this, e);
     return e;
   }
 
@@ -726,6 +784,12 @@ export class Simulation {
     this.shellFlights[e] = undefined;
     this.flameFlights[e] = undefined;
     this.shields[e] = undefined;
+    this.lights[e] = undefined;
+    this.smokeClouds[e] = undefined;
+    this.defenders.delete(e);
+    this.rails.delete(e);
+    this.ionActive.delete(e);
+    this.bays.delete(e);
     this.activities[e] = undefined;
     this.suspended[e] = undefined;
     this.activeUnits.delete(e);
@@ -848,7 +912,7 @@ export class Simulation {
   }
 
   /** The set of working modules of `t` changed (switched or broken or mended): refresh what depends on it. */
-  private modulesChanged(t: number): void {
+  modulesChanged(t: number): void {
     this.modules.markChanged(t);
     if (this.stats(t).structure) this.powerDirty = true;
     if (this.motion.has(t) && this.stats(t).speed <= 0) this.halt(t);
@@ -866,7 +930,7 @@ export class Simulation {
 
   /** Effective stats: the class stats with this unit's switched-off modules removed (shared, memoised). */
   stats(e: number): BlueprintStats {
-    return statsFor(this.blueprintOf(e)!, (this.modules.f.off[e] | this.modules.f.broken[e]) >>> 0);
+    return statsFor(this.blueprintOf(e)!, (this.modules.f.off[e] | this.modules.f.broken[e] | this.modules.f.ion[e]) >>> 0);
   }
 
   /** Building footprint: top-left tile and size. */
@@ -988,7 +1052,7 @@ export class Simulation {
     const bit = (1 << index) >>> 0;
     const mask = this.modules.f.off[e];
     const broken = this.modules.f.broken[e];
-    if (on && ((broken >>> index) & 1)) return false; // a broken module stays out until it is repaired
+    if (on && (((broken | this.modules.f.ion[e]) >>> index) & 1)) return false; // a broken or ion-struck module stays out until it is repaired or the bolt wears off
     const next = (on ? mask & ~bit : mask | bit) >>> 0;
     if (next === mask) return true;
     if (byScript && def.slot === 'cpu' && statsFor(bp, (next | broken) >>> 0).cyclesPerTick === 0) return false;
@@ -1348,6 +1412,27 @@ export class Simulation {
     return true;
   }
 
+  /**
+   * The player moves a slider or toggle a class program declared (`slider(...)`, `toggle(...)`): writes the
+   * variable it is bound to, kept inside the control's range and on a notch.
+   */
+  issueControl(owner: number, e: number, name: string, value: number): boolean {
+    const bp = this.ownedBlueprint(owner, e);
+    const control = bp.program?.controls.find((c) => c.name === name);
+    if (!control) throw new CommandError(`${bp.name} has no '${name}' control`);
+    const f = this.flowFor(e);
+    if (!f) throw new CommandError(`${bp.name} has no CPU running`);
+    f.mem[control.slot] = clampControl(control, value);
+    return true;
+  }
+
+  /** The current value of each control of unit `e`'s program, in the order they are declared (empty without a running program). */
+  controlValues(e: number): number[] {
+    const controls = this.blueprintOf(e)?.program?.controls;
+    const f = controls?.length ? this.flowFor(e) : undefined;
+    return f ? controls!.map((c) => f.mem[c.slot]) : [];
+  }
+
   /** Resource field nearest to tile (x, y), or -1. */
   nearestResource(x: number, y: number): number {
     const px = x * TILE + TILE / 2;
@@ -1412,12 +1497,43 @@ export class Simulation {
     if (bp) this.refundPool(owner, bp.stats.cost);
   }
 
-  /** Whether a point (in tiles) is inside the vision of `owner` or their team; unfinished sites don't count. */
+  /** Key of the shared explored map for an owner: their team's, or their own. */
+  private exploredKey(owner: number): number {
+    const team = this.teams.get(owner);
+    return team !== undefined ? -1 - team : owner;
+  }
+
+  /** Whether a point (in tiles) is in sight of `owner` or their team now, or was seen before; unfinished sites don't count. */
   private canSeeTile(owner: number, x: number, y: number): boolean {
+    const tx = Math.floor(x);
+    const ty = Math.floor(y);
+    if (tx >= 0 && ty >= 0 && tx < this.terrain.width && ty < this.terrain.height && this.explored.get(this.exploredKey(owner))?.[ty * this.terrain.width + tx]) return true;
     const team = this.teams.get(owner);
     const owners = new Set([owner]);
     if (team !== undefined) for (const [o, t] of this.teams) if (t === team) owners.add(o);
     return inSight(this.terrain, viewersOf(this.world, owners, (e) => this.stats(e), (e) => this.isSite(e), this.sunNow(), this.hazeNow()), x * TILE, y * TILE);
+  }
+
+  /** Records the tiles each player (or team) can see as explored; only runs while placement needs vision, every other tick. */
+  private exploreSystem(): void {
+    if (!this.requirePlacementVision || (this.tick & 1) !== 0) return;
+    const groups = new Map<number, Set<number>>();
+    for (const e of this.unit.dense) {
+      const o = this.unit.f.owner[e];
+      const key = this.exploredKey(o);
+      let set = groups.get(key);
+      if (!set) groups.set(key, (set = new Set()));
+      set.add(o);
+    }
+    const n = this.terrain.width * this.terrain.height;
+    const grid = VisionGrid.of(this.terrain);
+    for (const [key, owners] of groups) {
+      let map = this.explored.get(key);
+      if (!map) this.explored.set(key, (map = new Uint8Array(n)));
+      grid.begin();
+      grid.add(this.terrain, viewersOf(this.world, owners, (e) => this.stats(e), (e) => this.isSite(e), this.sunNow(), this.hazeNow()));
+      for (let i = 0; i < n; i++) if (grid.stamp[i] === grid.gen) map[i] = 1;
+    }
   }
 
   /**
@@ -1432,7 +1548,7 @@ export class Simulation {
     const sites = this.construction.dense.filter((e) => this.unit.f.owner[e] === owner).length;
     if (sites >= MAX_SITES_PER_PLAYER) throw new CommandError(`At most ${MAX_SITES_PER_PLAYER} construction sites at once`);
     if (this.requirePlacementVision && !this.canSeeTile(owner, tx + bp.stats.footprint / 2, ty + bp.stats.footprint / 2)) {
-      throw new CommandError('You can only build where you have vision');
+      throw new CommandError('You can only build on ground you have explored');
     }
     const site = this.spawnStructure(bp, tx, ty, 0, false);
     for (const b of builders) {
@@ -1686,8 +1802,13 @@ export class Simulation {
     harvestSystem(this);
     resourceRegenerationSystem(this);
     shieldSystem(this);
+    lightSystem(this);
     lightningSystem(this);
+    smokeSystem(this);
+    ionSystem(this);
     combatSystem(this);
+    railSystem(this);
+    defenceSystem(this);
     shellSystem(this);
     flameSystem(this);
     aimSystem(this);
@@ -1696,9 +1817,11 @@ export class Simulation {
     repairSystem(this);
     chargingSystem(this);
     productionSystem(this);
+    hangarSystem(this);
     decaySystem(this);
     deathSystem(this);
     energyViewSystem(this);
+    this.exploreSystem();
     this.planWork = PLAN_WORK_PER_TICK; // commands applied before the next tick start with a full budget
     this.tick++;
   }

@@ -10,6 +10,8 @@ export const TILE = 1024;
 
 /** Interaction ranges, measured from a building's edge (or a unit's centre). */
 export const HARVEST_RANGE = 1.5 * TILE;
+/** A cargo module's `harvestRate` is for a hull of this radius (tiles, a light chassis); other hulls gather in proportion to their radius. */
+export const HARVEST_REFERENCE_RADIUS = 0.3;
 export const DOCK_RANGE = 1.5 * TILE;
 /** Energy transfer reach, from the giver: units only reach neighbours; buildings (charging pads) reach further. */
 export const UNIT_TRANSFER_RANGE = 1 * TILE;
@@ -82,6 +84,58 @@ export const STORAGE_RESERVE_FRACTION = 0.02;
 export const TESLA_RANGE = 3 * TILE;
 /** Radius of a flak burst around the missile it is aimed at (sub-tile units). */
 export const FLAK_BURST_RADIUS = Math.floor(1.5 * TILE);
+/** Damage a flak burst does to each enemy flying unit inside it (missiles take the weapon's own damage). */
+export const FLAK_AIR_DAMAGE = 8;
+
+/**
+ * Smoke launcher: a volley of SMOKE_CANISTERS canisters thrown SMOKE_THROW out, one straight ahead and the others SMOKE_SPREAD (radians)
+ * to each side. Each makes a cloud of SMOKE_RADIUS that lasts SMOKE_TICKS and blocks sight; a laser through it does SMOKE_LASER_PERCENT %.
+ * The module then rests SMOKE_COOLDOWN ticks. At most MAX_SMOKE clouds exist at once (the oldest vanish first).
+ */
+export const SMOKE_CANISTERS = 3;
+export const SMOKE_SPREAD = (25 * Math.PI) / 180;
+export const SMOKE_THROW = 4 * TILE;
+export const SMOKE_RADIUS = Math.floor(1.5 * TILE);
+export const SMOKE_TICKS = 150;
+export const SMOKE_COOLDOWN = 300;
+export const SMOKE_LASER_PERCENT = 50;
+export const MAX_SMOKE = 120;
+
+/**
+ * Point defence: each working module shoots at the nearest enemy missile or cannon shell within PD_RANGE every PD_COOLDOWN ticks.
+ * A missile is hit like any shot at it (its own hit chance) for PD_DAMAGE; a shell is destroyed with PD_SHELL_HIT_PERMILLE in a thousand.
+ */
+export const PD_RANGE = 3 * TILE;
+export const PD_COOLDOWN = 4;
+export const PD_DAMAGE = 4;
+export const PD_SHELL_HIT_PERMILLE = 350;
+
+/**
+ * Railgun: charges RAIL_CHARGE_TICKS before it fires (and the energy is spent when the charge starts). The charge is lost if the carrier
+ * takes RAIL_BREAK_PERMILLE of its hit points in damage, is stunned, loses the module or the target, or is ordered to move. The shot
+ * pierces up to RAIL_PIERCE enemies, each after the first taking RAIL_FALLOFF_PERMILLE of the one before.
+ */
+export const RAIL_CHARGE_TICKS = 50;
+export const RAIL_PIERCE = 4;
+export const RAIL_FALLOFF_PERMILLE = 600;
+export const RAIL_BREAK_PERMILLE = 150;
+
+/** Ion gun: the module it hits is off for ION_TICKS, and the target cannot be ion-disabled again for ION_IMMUNITY_TICKS after. A shield that stops the bolt loses ION_SHIELD_DRAIN energy. */
+export const ION_TICKS = 60;
+export const ION_IMMUNITY_TICKS = 40;
+export const ION_SHIELD_DRAIN = 100;
+
+/**
+ * Drone bay: each bay module holds DRONE_BAY_CAPACITY micro drones. A drone is built at DRONE_BUILD_PERCENT of the normal build time,
+ * launched one per DRONE_LAUNCH_GAP ticks, and docks when it is within DRONE_DOCK_RANGE of its carrier. Docked drones are recharged by
+ * DRONE_RECHARGE energy and mended by DRONE_REPAIR hit points a tick.
+ */
+export const DRONE_BAY_CAPACITY = 2;
+export const DRONE_BUILD_PERCENT = 150;
+export const DRONE_LAUNCH_GAP = 5;
+export const DRONE_DOCK_RANGE = 1.2 * TILE;
+export const DRONE_RECHARGE = 10;
+export const DRONE_REPAIR = 1;
 export const TESLA_STUN_TICKS = 30;
 export const TESLA_COOLDOWN = 150;
 /** A tesla mounted on a vehicle also stuns that vehicle, for this share of the full duration. */
@@ -175,6 +229,23 @@ export const SHIELD_INTERFERENCE_DRAIN = 1.5;
 /** The shield sits at least this far (sub-tile units) outside the hull, so it never has to cut through the unit that casts it. */
 export const SHIELD_CLEARANCE = Math.floor(0.5 * TILE);
 
+// --- Spotlights (see light.ts) -------------------------------------------------------------
+
+/** A spotlight lights a beam this many tiles long for every point of energy per tick it is given. */
+export const LIGHT_TILES_PER_ENERGY = 4;
+/** Half the width of a spotlight's beam (radians, about 11 degrees): wider than a weapon's sight cone, so it is a lamp and not a pencil. */
+export const LIGHT_HALF_ANGLE = 0.2;
+/** The most a spotlight turns towards its aim in one tick (radians, about 4 degrees: a half turn takes about 4 s). */
+export const LIGHT_TURN_PER_TICK = 0.07;
+/** A spotlight is at full strength while its owner holds this much energy or more, dims in proportion as the store falls, and is out at LIGHT_OFF_BELOW (and below). Absolute amounts, so it does not depend on how many batteries a building has. */
+export const LIGHT_FULL_ABOVE = 100;
+export const LIGHT_OFF_BELOW = 30;
+/** `outwardBearing()` looks at allied units and buildings this far round the light (tiles) to find which way is away from home. */
+export const LIGHT_HOME_RADIUS = 15;
+/** `lightBlocked(degrees)` says yes when an allied unit stands within this many tiles of the beam, inside its width plus LIGHT_FRIEND_MARGIN (radians). */
+export const LIGHT_FRIEND_RANGE = 10;
+export const LIGHT_FRIEND_MARGIN = 0.1;
+
 // --- World & timing ----------------------------------------------------------------
 
 /** Ticks in one day/night cycle (2 minutes at 10 Hz). Daylight during the first DAYLIGHT_TICKS, then night. */
@@ -240,7 +311,7 @@ export const SEPARATION_GAP = Math.floor(0.1 * TILE);
 /** Flying units fly in arcs: the tightest turn at full speed has this radius (sub-tile units), and slower flight turns tighter. */
 export const FLY_TURN_RADIUS = Math.floor(1.2 * TILE);
 /** A flying unit starts to circle its goal when this close (sub-tile units); it circles for FLY_LOITER_TICKS plus up to FLY_LOITER_SPREAD more (by unit), at FLY_LOITER_SPEED percent speed, then lands straight in. */
-export const FLY_LOITER_RADIUS = 3 * TILE;
+export const FLY_LOITER_RADIUS = 6 * TILE;
 export const FLY_LOITER_TICKS = 18;
 export const FLY_LOITER_SPREAD = 14;
 export const FLY_LOITER_SPEED = 60;
@@ -289,7 +360,14 @@ export const LAVA_STRAND_DAMAGE = 60;
 // --- Class derivation (how modules combine into stats) -----------------------------
 
 /** Unit speed = thrust × this ÷ total mass (sub-tile units per tick). */
-export const SPEED_FACTOR = 24;
+export const SPEED_FACTOR = 48;
+/** Ground and air units speed up gradually: reaching top speed from a standstill takes ACCEL_TICKS_BASE plus ACCEL_TICKS_PER_TILE for every tile of hull radius (a micro hull about 0.5 s, a colossus about 1.8 s). */
+export const ACCEL_TICKS_BASE = 2;
+export const ACCEL_TICKS_PER_TILE = 16;
+/** Braking is this many times faster than accelerating (also used to slow down for a corner ahead). */
+export const BRAKE_FACTOR = 2;
+/** The slowest a turn makes a unit go, as a share of top speed: a turn of 90 degrees or more drops it to this; gentler turns scale between (the cosine of the turn). */
+export const CORNER_MIN_SPEED = 0.25;
 /** Call-stack depth every class has before CPU stack bonuses. */
 export const BASE_STACK = 8;
 /** Power-link reach (tiles) of a building with no antenna. */
@@ -345,6 +423,7 @@ export const PRODUCTION_ENERGY_BY_SLOT: Readonly<Record<string, number>> = {
   comms: 15,
   repair: 40,
   shield: 60,
+  light: 20,
 };
 
 // --- Construction, production & limits ---------------------------------------------
@@ -491,6 +570,8 @@ export interface PartTuning {
   readonly commsRange?: number;
   /** Shield emitter: arc and radius it starts with and the most a script may set (degrees, tiles); `use` is the energy per tick at the starting size. */
   readonly shield?: { readonly arc: number; readonly maxArc: number; readonly range: number; readonly maxRange: number };
+  /** Spotlight: the energy per tick it starts at and the most a script may set (the beam is LIGHT_TILES_PER_ENERGY tiles long for each). */
+  readonly light?: { readonly power: number; readonly maxPower: number };
 }
 
 export const PART_TUNING: Readonly<Record<string, PartTuning>> = {
@@ -503,6 +584,7 @@ export const PART_TUNING: Readonly<Record<string, PartTuning>> = {
   'chassis.long.heavy': { mass: 19, hp: 420, slots: 16, energy: 4400 },
   // The size ladder beyond light/medium/heavy (see the factory tier comment above).
   'chassis.micro': { mass: 1, hp: 15, slots: 3, energy: 300 },
+  'chassis.drone': { mass: 2, hp: 30, slots: 4, energy: 500 },
   'chassis.superheavy': { mass: 20, hp: 480, slots: 14, energy: 4800 },
   'chassis.colossus': { mass: 40, hp: 1000, slots: 20, energy: 9000 },
   // Building frames: a token buffer only; real storage comes from battery modules.
@@ -545,6 +627,9 @@ export const PART_TUNING: Readonly<Record<string, PartTuning>> = {
   'gun.light': { mass: 1, weapon: { range: 4, damage: 5, cooldown: 5 }, use: 0 },
   'gun.cannon': { mass: 4, weapon: { range: 21, damage: 25, cooldown: 20, matter: 3 }, use: 0 },
   'laser.beam': { mass: 3, weapon: { range: 8, damage: 8, cooldown: 8 }, use: 100 },
+  // Railgun: `use` is the energy spent when the charge starts. Ion gun: no damage, `use` is high on purpose.
+  'rail.gun': { mass: 8, weapon: { range: 18, damage: 120, cooldown: 60 }, use: 400 },
+  'ion.gun': { mass: 4, weapon: { range: 9, damage: 0, cooldown: 80 }, use: 350 },
   'tesla.coil': { mass: 5, weapon: { range: 0, damage: 0, cooldown: 0 }, use: 40 },
   // Missiles: damage is matter x MISSILE_DAMAGE_PER_MATTER; the matter comes from the cargo bay (vehicles) or the silos (buildings).
   // Flak: an air-burst that only ever hurts missiles; every enemy missile in the burst is hit, no roll.
@@ -564,8 +649,9 @@ export const PART_TUNING: Readonly<Record<string, PartTuning>> = {
   'armor.plate': { mass: 4, hp: 60 },
   'armor.heavy': { mass: 12, hp: 300 },
 
-  'cargo.bay': { mass: 1, cargo: 40, harvestRate: 4, use: 1 },
-  'cargo.hold': { mass: 4, cargo: 200, harvestRate: 12, use: 3 },
+  // harvestRate is per tick on a light hull; the class's rate scales with its hull radius (HARVEST_REFERENCE_RADIUS).
+  'cargo.bay': { mass: 1, cargo: 40, harvestRate: 2, use: 1 },
+  'cargo.hold': { mass: 4, cargo: 200, harvestRate: 6, use: 3 },
 
   'battery.cell': { mass: 2, energy: 500 },
   'battery.large': { mass: 5, energy: 2000 },
@@ -587,6 +673,12 @@ export const PART_TUNING: Readonly<Record<string, PartTuning>> = {
   'repair.beam': { mass: 3, repairRate: 4, use: 8 },
   // The shield is the most power-hungry module: `use` is per tick, for the starting arc and radius; a wider or longer shield costs in proportion.
   'shield.emitter': { mass: 4, use: 5, shield: { arc: 120, maxArc: 240, range: 3, maxRange: 6 } },
+  // The spotlight draws its power every tick: 5 energy lights a 20-tile beam (further than any sensor sees), 10 a 40-tile one.
+  'light.spot': { mass: 3, light: { power: 5, maxPower: 10 } },
+  // Smoke: `use` is per volley. Point defence: `use` is per shot. The drone bay costs nothing itself; its drones pay.
+  'smoke.launcher': { mass: 2, use: 60 },
+  'defence.point': { mass: 2, use: 3 },
+  'hangar.bay': { mass: 6 },
   'charger.pad': { mass: 3, chargeRate: 10 },
   'solar.panel': { mass: 2, output: SOLAR_PANEL_OUTPUT },
   'wind.turbine': { mass: 4, output: WIND_TURBINE_OUTPUT },

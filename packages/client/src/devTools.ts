@@ -95,7 +95,7 @@ export class DevTools {
         { id: 'weather', label: 'Weather', title: 'Sunlight, wind, rain and storms', sections: [this.weatherSection()] },
         { id: 'spawn', label: 'Spawn', title: 'Units, buildings, matter and fire', sections: [this.spawnSection(), this.matterSection(), this.fireSection()] },
         { id: 'terrain', label: 'Terrain', title: 'Paint water, lava, voids, rock and dry ground', sections: [this.terrainSection()] },
-        { id: 'combat', label: 'Combat', title: 'Hurt or destroy the selected units and buildings', sections: [this.damageSection()] },
+        { id: 'combat', label: 'Combat', title: 'Hurt or destroy the selected units and buildings', sections: [this.damageSection(), this.weaponsSection()] },
         { id: 'fix', label: 'Clean-up', title: 'Remove things, heal, finish construction', sections: [this.removeSection(), this.repairSection()] },
         { id: 'effects', label: 'Effects', title: 'Blasts, sparks, fragments and lights, for looking at', sections: this.effectsSections() },
         { id: 'ui', label: 'Interface', title: 'Previews of interface pieces', sections: [this.alertsSection()] },
@@ -424,6 +424,28 @@ export class DevTools {
         }, 'Destroy the selected units; any that fly are certain to tumble and crash'),
       ),
       this.row(make('label', { className: 'dev-check' }, crashBox, 'Shot-down fliers always crash')),
+    );
+  }
+
+  /** The railgun, ion gun, smoke and drone bay, on demand (DevCommand 'weapons'). */
+  private weaponsSection(): HTMLElement {
+    const onSelected = (action: 'ion' | 'rail' | 'fill' | 'launch' | 'recall'): void => {
+      const ids = this.actions.selection();
+      if (ids.length === 0) this.note('Nothing is selected.', false);
+      else this.run({ kind: 'weapons', action, ids: ids.slice(0, 500), ...this.tile() });
+    };
+    return this.section(
+      'Weapons and modules',
+      this.row(
+        this.button('Smoke at the target', () => this.run({ kind: 'weapons', action: 'smoke', ids: [], ...this.tile() }), 'Drops three smoke clouds round the marked tile (or the middle of the view)'),
+        this.button('Ion selected', () => onSelected('ion'), 'Holds a random working module of each selected unit or building down for a few seconds'),
+      ),
+      this.row(this.button('Fire selected railguns', () => onSelected('rail'), 'A selected railgun that has a target skips the charge and fires at once')),
+      this.row(
+        this.button('Fill drone bays', () => onSelected('fill'), 'Fills the bays of the selected carriers with Wasps, free'),
+        this.button('Launch drones', () => onSelected('launch'), 'Sends every docked drone of the selected carriers out'),
+        this.button('Recall drones', () => onSelected('recall'), 'Calls the launched drones back to their carriers'),
+      ),
     );
   }
 

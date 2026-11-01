@@ -1,8 +1,8 @@
-import { WADE_SPEED_PERMILLE, FLAME_BURN_INTERVAL, FLAME_BURN_TICKS, FLAME_SHOTS_PER_MATTER, FLAME_VULNERABILITY, BUILD_RANGE, BUILDING_BUILD_RANGE, BUILDING_TRANSFER_RANGE, CHARGE_PAD_RATE_MULTIPLIER, FLAK_BURST_RADIUS, PART_TUNING, type MissileTuning, RADAR_COOLDOWN_TICKS, RADAR_ENERGY_PER_TILE, RADAR_FADE_TICKS, SHIELD_ENERGY_PER_DAMAGE, STEAM_GENERATION_MULTIPLIER, TESLA_COOLDOWN, TESLA_RANGE, TESLA_SELF_STUN_FACTOR, TESLA_STUN_TICKS, TILE } from './rules';
+import { DRONE_BAY_CAPACITY, DRONE_BUILD_PERCENT, ION_IMMUNITY_TICKS, ION_TICKS, PD_COOLDOWN, PD_RANGE, RAIL_CHARGE_TICKS, RAIL_PIERCE, SMOKE_CANISTERS, SMOKE_COOLDOWN, SMOKE_RADIUS, SMOKE_THROW, SMOKE_TICKS, FLAK_AIR_DAMAGE, WADE_SPEED_PERMILLE, FLAME_BURN_INTERVAL, FLAME_BURN_TICKS, FLAME_SHOTS_PER_MATTER, FLAME_VULNERABILITY, BUILD_RANGE, BUILDING_BUILD_RANGE, BUILDING_TRANSFER_RANGE, CHARGE_PAD_RATE_MULTIPLIER, FLAK_BURST_RADIUS, PART_TUNING, type MissileTuning, RADAR_COOLDOWN_TICKS, RADAR_ENERGY_PER_TILE, RADAR_FADE_TICKS, LIGHT_FULL_ABOVE, LIGHT_OFF_BELOW, LIGHT_TILES_PER_ENERGY, SHIELD_ENERGY_PER_DAMAGE, STEAM_GENERATION_MULTIPLIER, TESLA_COOLDOWN, TESLA_RANGE, TESLA_SELF_STUN_FACTOR, TESLA_STUN_TICKS, TILE } from './rules';
 
 export { TILE };
 
-export type WeaponKind = 'gun' | 'cannon' | 'laser' | 'tesla' | 'missile' | 'flak' | 'flame';
+export type WeaponKind = 'gun' | 'cannon' | 'laser' | 'tesla' | 'missile' | 'flak' | 'flame' | 'rail' | 'ion';
 
 export type PartSlot =
   | 'chassis'
@@ -23,7 +23,11 @@ export type PartSlot =
   | 'radar'
   | 'comms'
   | 'repair'
-  | 'shield';
+  | 'shield'
+  | 'light'
+  | 'smoke'
+  | 'defence'
+  | 'hangar';
 
 /** Numeric slot codes, exposed to scripts via moduleKind() as M_CPU, M_MOTOR, ... */
 export const SLOT_CODES: Readonly<Record<PartSlot, number>> = {
@@ -46,11 +50,15 @@ export const SLOT_CODES: Readonly<Record<PartSlot, number>> = {
   repair: 17,
   comms: 18,
   shield: 19,
+  light: 20,
+  smoke: 21,
+  defence: 22,
+  hangar: 23,
 };
 
 /** Modules that use or make energy can be switched off; passive ones (frame, memory, armour, batteries) cannot. */
 export const SWITCHABLE: ReadonlySet<PartSlot> = new Set<PartSlot>([
-  'cpu', 'motor', 'sensor', 'weapon', 'cargo', 'factory', 'charger', 'generator', 'antenna', 'builder', 'radar', 'repair', 'comms', 'shield',
+  'cpu', 'motor', 'sensor', 'weapon', 'cargo', 'factory', 'charger', 'generator', 'antenna', 'builder', 'radar', 'repair', 'comms', 'shield', 'light', 'smoke', 'defence', 'hangar',
 ]);
 
 /**
@@ -140,6 +148,8 @@ export interface PartDef {
   readonly commsRange?: number;
   /** Shield emitter: starting and largest arc (degrees) and radius (tiles). `use` is the energy per tick at the starting size. */
   readonly shield?: { readonly arc: number; readonly maxArc: number; readonly range: number; readonly maxRange: number };
+  /** Spotlight: the energy per tick it starts at and the most a script may set (LIGHT_TILES_PER_ENERGY tiles of beam for each). */
+  readonly light?: { readonly power: number; readonly maxPower: number };
   readonly structureOnly?: boolean;
   readonly mobileOnly?: boolean;
   readonly description: string;
@@ -196,7 +206,7 @@ const CATALOGUE: PartDef[] = [
   { id: 'gun.cannon', slot: 'weapon', name: 'Cannon', ...T('gun.cannon'), weapon: { ...T('gun.cannon').weapon!, kind: 'cannon' }, description: `${T('gun.cannon').weapon!.damage} damage, range ${T('gun.cannon').weapon!.range}. Fires a fast shell, not an instant shot: it flies on past a miss, and now and then glances off rock or a unit. Standing on higher ground than the target adds range. Uses ${T('gun.cannon').weapon!.matter} matter per shot: from the cargo bay on a vehicle, from the silos on a building.` },
   { id: 'laser.beam', slot: 'weapon', name: 'Laser', ...T('laser.beam'), weapon: { ...T('laser.beam').weapon!, kind: 'laser' }, description: `${T('laser.beam').weapon!.damage} damage at full power, range ${T('laser.beam').weapon!.range}. Heavy energy cost: ${T('laser.beam').use} per shot; damage scales with the energy spent, which scripts can set with laserPower(energy).` },
   { id: 'tesla.coil', slot: 'weapon', name: 'Tesla coil', ...T('tesla.coil'), weapon: { ...T('tesla.coil').weapon!, kind: 'tesla' }, description: `Stuns the CPU of every unit and building within ${TESLA_RANGE / TILE} tiles for ${TESLA_STUN_TICKS / 10}s, friend or foe, then recharges for ${TESLA_COOLDOWN / 10}s. Aim it with fire(). On a vehicle it stuns the vehicle too, for ${Math.round(TESLA_SELF_STUN_FACTOR * 100)}% as long.` },
-  { id: 'flak.cannon', slot: 'weapon', name: 'Flak cannon', ...T('flak.cannon'), weapon: { ...T('flak.cannon').weapon!, kind: 'flak' }, description: `Anti-missile air-burst: ${T('flak.cannon').weapon!.damage} damage to every enemy missile within ${FLAK_BURST_RADIUS / TILE} tiles of the one it is aimed at, range ${T('flak.cannon').weapon!.range}, never misses. Harmless to units and buildings. ${T('flak.cannon').use} energy per shot. Aim it with fire(); a Detected block can watch for MISSILE.` },
+  { id: 'flak.cannon', slot: 'weapon', name: 'Flak cannon', ...T('flak.cannon'), weapon: { ...T('flak.cannon').weapon!, kind: 'flak' }, description: `Anti-missile and anti-aircraft air-burst: ${T('flak.cannon').weapon!.damage} damage to every enemy missile, and ${FLAK_AIR_DAMAGE} to every enemy flying unit, within ${FLAK_BURST_RADIUS / TILE} tiles of the one it is aimed at, range ${T('flak.cannon').weapon!.range}, never misses. Harmless to ground units and buildings. ${T('flak.cannon').use} energy per shot. Aim it with fire(); a Detected block can watch for AIR (missiles and aircraft), MISSILE or FLIER.` },
   ...(['small', 'medium', 'large', 'huge'] as const).map((size): PartDef => {
     const id = `missile.${size}`;
     const t = T(id);
@@ -226,6 +236,10 @@ const CATALOGUE: PartDef[] = [
   { id: 'build.crane', slot: 'builder', name: 'Build crane', ...T('build.crane'), structureOnly: true, description: `Constructs buildings up to ${BUILDING_BUILD_RANGE / TILE} tiles from this building's edge, investing ${T('build.crane').buildRate} resources per tick.` },
   { id: 'repair.beam', slot: 'repair', name: 'Repair beam', ...T('repair.beam'), description: `Restores ${T('repair.beam').repairRate} hit points per tick to an own unit or building in reach (${BUILD_RANGE / TILE} tiles from a unit, ${BUILDING_BUILD_RANGE / TILE} from a building), costing ${T('repair.beam').use} energy per tick. Aim it with repair(h).` },
   { id: 'shield.emitter', slot: 'shield', name: 'Shield emitter', ...T('shield.emitter'), description: `Projects an arc of energy (${T('shield.emitter').shield!.arc} degrees, ${tiles(T('shield.emitter').shield!.range)} out) that enemy units cannot pass and enemy shots cannot cross. Every point of damage it stops drains ${SHIELD_ENERGY_PER_DAMAGE} energy from the battery; when the battery is flat the emitter blows, hurting its owner. Costs ${T('shield.emitter').use} energy every tick while on, more for a wider or longer arc. It never aims itself: a program points it with config.shieldAngle(degrees) (the ShieldGuard block faces the nearest enemy or incoming shell), and can widen it up to ${T('shield.emitter').shield!.maxArc} degrees with config.shieldArc and push it out to ${tiles(T('shield.emitter').shield!.maxRange)} with config.shieldRange. Tesla pulses and flak ignore it. One per class.` },
+  { id: 'light.spot', slot: 'light', name: 'Spotlight', ...T('light.spot'), description: `Throws a narrow beam of light that shows everything it falls on, past the edge of the fog and the dark. The beam is ${LIGHT_TILES_PER_ENERGY} tiles long for every point of energy it is given each tick: it starts at ${T('light.spot').light!.power} (${T('light.spot').light!.power * LIGHT_TILES_PER_ENERGY} tiles) and a program can raise it to ${T('light.spot').light!.maxPower} (${T('light.spot').light!.maxPower * LIGHT_TILES_PER_ENERGY} tiles) with config.lightPower(energy), or switch it off with 0. Rock and buildings still cast shadows. It dims as the energy stored in its unit or building falls below  and goes out at . It never aims itself: a program points it with config.lightAngle(degrees), turning slowly (the Spotlight block follows the nearest enemy its sensor finds, else pans across the way out from home, avoiding your own units).` },
+  { id: 'smoke.launcher', slot: 'smoke', name: 'Smoke launcher', ...T('smoke.launcher'), description: `Throws a volley of ${SMOKE_CANISTERS} smoke canisters ${SMOKE_THROW / TILE} tiles out, one straight ahead and the others to each side. Each makes a cloud ${(SMOKE_RADIUS / TILE) * 2} tiles across that lasts ${SMOKE_TICKS / 10}s: it blocks sight (sensors, the fog, spotlights) and halves the damage of a laser that crosses it. Radar and radio see straight through. Uses no matter, ${T('smoke.launcher').use} energy per volley, then rests ${SMOKE_COOLDOWN / 10}s. Fire it with smoke(degrees). One per class.` },
+  { id: 'defence.point', slot: 'defence', name: 'Point defence', ...T('defence.point'), description: `Shoots down incoming enemy missiles and cannon shells on its own: every ${PD_COOLDOWN} ticks it fires at the nearest one within ${PD_RANGE / TILE} tiles, for ${T('defence.point').use} energy a shot. It stops about a third of shells and hits missiles with their own chance to be hit. Needs no program and does not use the weapon slot, so a unit can carry it beside its gun. More modules shoot more shots at once.` },
+  { id: 'hangar.bay', slot: 'hangar', name: 'Drone bay', ...T('hangar.bay'), mobileOnly: true, minSize: 3, description: `Holds ${DRONE_BAY_CAPACITY} small drones (any micro or light unit). It builds them itself from the carrier's cargo and battery (${DRONE_BUILD_PERCENT}% of the normal build time), recharges and mends them while docked, and launches them on command. Drones that are docked cannot be seen or hurt, and die with the carrier. Choose the drone with config.droneClass("Name"), then launchDrones() and recallDrones(). Heavy and bigger hulls only.` },
   { id: 'radar.pulse', slot: 'radar', name: 'Radar', ...T('radar.pulse'), description: `Pulse scan: radarPulse(energy) spends that energy (up to ${T('radar.pulse').radarMaxEnergy}) and reveals every unit and building within ${RADAR_ENERGY_PER_TILE} energy per tile of range, up to ${Math.floor(T('radar.pulse').radarMaxEnergy! / RADAR_ENERGY_PER_TILE)} tiles. Contacts show as blips that fade over ${RADAR_FADE_TICKS / 10}s; the module rests ${RADAR_COOLDOWN_TICKS / 10}s between pulses.` },
   { id: 'radio.basic', slot: 'comms', name: 'Radio', ...T('radio.basic'), link: 'radio', description: `Short-range radio: radioSend(channel, value) reaches every allied unit and building with a radio within ${T('radio.basic').commsRange} tiles, through rock and buildings, and raises their Message event. Costs ${T('radio.basic').use} energy per message; receiving is free.` },
   { id: 'radio.laser', slot: 'comms', name: 'Laser link', ...T('radio.laser'), link: 'laser', description: `Line-of-sight laser communication: laserSend(channel, value) reaches every allied unit and building with a laser link within ${T('radio.laser').commsRange} tiles that it has a clear line to (rock blocks it). Costs ${T('radio.laser').use} energy per message; receiving is free.` },
@@ -239,6 +253,7 @@ const CATALOGUE: PartDef[] = [
 
   // --- Size tiers beyond light/medium/heavy, legs, and the heavy modules that make the big tiers worth it.
   { id: 'chassis.micro', slot: 'chassis', name: 'Micro chassis', ...T('chassis.micro'), size: 0, radius: 0.22, description: 'Tiny and cheap: room for a CPU and two modules. Built at full speed by any factory.' },
+  { id: 'chassis.drone', slot: 'chassis', name: 'Drone chassis', ...T('chassis.drone'), size: 0, radius: 0.2, description: 'A tiny airframe with room for a CPU and three modules: made for drones launched from a carrier. Built at full speed by any factory.' },
   { id: 'chassis.superheavy', slot: 'chassis', name: 'Super-heavy chassis', ...T('chassis.superheavy'), size: 4, radius: 0.7, description: 'A huge armoured hull with room for heavy modules. Needs 4 factory modules, and a corridor 3 tiles wide to drive through.' },
   { id: 'chassis.colossus', slot: 'chassis', name: 'Colossus chassis', ...T('chassis.colossus'), size: 5, radius: 1, description: 'The biggest hull there is. Needs 5 factory modules and a corridor 3 tiles wide, unless it walks over the rock on colossus legs.' },
   { id: 'motor.huge', slot: 'motor', name: 'Huge motor', ...T('motor.huge'), mobileOnly: true, minSize: 3, description: 'Ground drive for heavy and bigger hulls.' },
@@ -248,8 +263,10 @@ const CATALOGUE: PartDef[] = [
   { id: 'cannon.siege', slot: 'weapon', name: 'Siege cannon', ...T('cannon.siege'), minSize: 4, weapon: { ...T('cannon.siege').weapon!, kind: 'cannon' }, description: `${T('cannon.siege').weapon!.damage} damage, range ${T('cannon.siege').weapon!.range}, one shot every ${T('cannon.siege').weapon!.cooldown / 10}s, as a fast shell that can miss or glance off; high ground adds range. Uses ${T('cannon.siege').weapon!.matter} matter per shot from the cargo. Super-heavy and colossus hulls only.` },
   { id: 'gun.rotary', slot: 'weapon', name: 'Rotary gun', ...T('gun.rotary'), minSize: 4, weapon: { ...T('gun.rotary').weapon!, kind: 'gun' }, description: `${T('gun.rotary').weapon!.damage} damage every ${T('gun.rotary').weapon!.cooldown} ticks, range ${T('gun.rotary').weapon!.range}: shreds crowds of small units. ${T('gun.rotary').use} energy per shot. Super-heavy and colossus hulls only.` },
   { id: 'flame.projector', slot: 'weapon', name: 'Flamethrower', ...T('flame.projector'), weapon: { ...T('flame.projector').weapon!, kind: 'flame' }, description: `Sprays a jet of slow fireballs (range ${T('flame.projector').weapon!.range}, about 5 a second) that land and burn in place for ${FLAME_BURN_TICKS / 10}s, each hurting ${T('flame.projector').weapon!.damage} every ${FLAME_BURN_INTERVAL / 10}s everything in it: your own units and buildings too, and the fires add up. Enemy shields turn the fireballs back. Uses ${T('flame.projector').weapon!.matter} matter for every ${FLAME_SHOTS_PER_MATTER} fireballs from the cargo. The fuel makes its carrier fragile (${FLAME_VULNERABILITY}x damage), and when it dies it throws fire in every direction.` },
+  { id: 'rail.gun', slot: 'weapon', name: 'Railgun', ...T('rail.gun'), minSize: 3, weapon: { ...T('rail.gun').weapon!, kind: 'rail' }, description: `${T('rail.gun').weapon!.damage} damage in an instant line of range ${T('rail.gun').weapon!.range} that pierces up to ${RAIL_PIERCE} enemies (each one after the first takes less) and is stopped by rock and shields. It must charge for ${RAIL_CHARGE_TICKS / 10}s first, in plain sight, and spends ${T('rail.gun').use} energy when the charge starts. Heavy damage, a moving unit's charge breaks, and so does one that takes a beating or a tesla stun: swarm it. Heavy and bigger hulls only.` },
+  { id: 'ion.gun', slot: 'weapon', name: 'Ion gun', ...T('ion.gun'), minSize: 2, weapon: { ...T('ion.gun').weapon!, kind: 'ion' }, description: `Does no damage: its bolt (range ${T('ion.gun').weapon!.range}) holds one working module of the target down for ${ION_TICKS / 10}s, the kind chosen with config.aim or a random one. Costs ${T('ion.gun').use} energy a shot and rests ${T('ion.gun').weapon!.cooldown / 10}s. Whatever it hits cannot be ion-struck again for ${ION_IMMUNITY_TICKS / 10}s. A shield stops the bolt. Medium and bigger hulls only.` },
   { id: 'armor.heavy', slot: 'armor', name: 'Heavy armour', ...T('armor.heavy'), minSize: 3, description: `+${T('armor.heavy').hp} hit points. Heavy and bigger hulls only.` },
-  { id: 'cargo.hold', slot: 'cargo', name: `Cargo hold (${T('cargo.hold').cargo})`, ...T('cargo.hold'), mobileOnly: true, minSize: 3, description: `Harvests ${T('cargo.hold').harvestRate} per tick and carries ${T('cargo.hold').cargo} resources. Heavy and bigger hulls only.` },
+  { id: 'cargo.hold', slot: 'cargo', name: `Cargo hold (${T('cargo.hold').cargo})`, ...T('cargo.hold'), mobileOnly: true, minSize: 3, description: `Harvests ${T('cargo.hold').harvestRate} per tick on a light hull (more on bigger ones) and carries ${T('cargo.hold').cargo} resources. Heavy and bigger hulls only.` },
   { id: 'battery.large', slot: 'battery', name: 'Large battery', ...T('battery.large'), minSize: 3, description: `+${T('battery.large').energy} energy storage for heavy and bigger hulls (and buildings).` },
 ];
 

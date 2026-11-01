@@ -1,3 +1,4 @@
+import { controlProblems, MAX_CONTROLS } from './controls';
 import { FREE_LITERALS, MAX_CHAIN_STEPS } from './cost';
 import { customEventDef, customEventNames, EVENT_BY_NAME, isCustomEventName, MAX_CUSTOM_EVENTS, MAX_CUSTOM_PARAMS, type ConfigField, type EventDef } from './events';
 import type { FlowHost } from './host';
@@ -5,7 +6,7 @@ import { FlowError, isTextExpr, textParts, type ConfigValue, type Expr, type Flo
 import { LIST_OPS, LIST_OP_BY_NAME } from './lists';
 
 export const RESERVED_WORDS: ReadonlySet<string> = new Set([
-  'on', 'emit', 'use', 'config', 'let', 'const', 'var', 'if', 'else', 'while', 'for', 'return', 'true', 'false', 'function', 'break', 'continue',
+  'on', 'emit', 'use', 'slider', 'toggle', 'config', 'self', 'let', 'const', 'var', 'if', 'else', 'while', 'for', 'return', 'true', 'false', 'function', 'break', 'continue',
 ]);
 
 export const MAX_BUTTONS = 12;
@@ -60,6 +61,15 @@ export function checkDoc(doc: FlowDoc, host: FlowHost, reservedKeys?: ReadonlyMa
     else if (!Number.isInteger(v.init) || (v.init | 0) !== v.init) fail(`Variable '${v.name}' needs an integer start value`, at);
     vars.add(v.name);
   }
+
+  const controlled = new Set<string>();
+  for (const c of doc.controls ?? []) {
+    const at = `ctl:${c.name}`;
+    if (controlled.has(c.name)) fail(`${c.name} already has a control`, at);
+    controlled.add(c.name);
+    for (const m of controlProblems(c, doc.vars.find((v) => v.name === c.name)?.init)) fail(m, at);
+  }
+  if (controlled.size > MAX_CONTROLS) fail(`At most ${MAX_CONTROLS} controls per class (found ${controlled.size})`);
 
   const custom = customEventNames(doc);
   if (custom.length > MAX_CUSTOM_EVENTS) fail(`At most ${MAX_CUSTOM_EVENTS} events of your own per class (found ${custom.length})`);

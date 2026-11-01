@@ -14,6 +14,8 @@
 const PAD = 2;
 /** Rounds of corner-cutting. */
 const SMOOTH_ROUNDS = 2;
+/** Rock this high next to liquid is a cliff or wall, not a slope: the shore against it is a hard line, not a curve. */
+export const HARD_EDGE_HEIGHT = 2;
 
 export type Loop = Float32Array;
 
@@ -66,6 +68,8 @@ export interface LiquidSource {
   depthAt(x: number, y: number): number;
   /** Solid rock (or off the map). */
   isRock(x: number, y: number): boolean;
+  /** Rock height of a cell (0: open ground). Shores against rock at least `HARD_EDGE_HEIGHT` high stay sharp; without it every shore is rounded. */
+  heightAt?(x: number, y: number): number;
 }
 
 /** Outlines of every tier that has any cells (an empty map costs one scan). */
@@ -107,6 +111,7 @@ export function outline(src: LiquidSource, lo: number, hi: number, underRock: bo
   const W = width + 2 * PAD;
   const H = height + 2 * PAD;
   const mask = new Uint8Array(W * H);
+  const hard = src.heightAt ? new Uint8Array(W * H) : null; // samples that are tall rock: a shore against one is not rounded
   for (let j = 0; j < H; j++) {
     for (let i = 0; i < W; i++) {
       const cx = i - PAD;
@@ -119,15 +124,16 @@ export function outline(src: LiquidSource, lo: number, hi: number, underRock: bo
         for (let dy = -1; dy <= 1 && !on; dy++) for (let dx = -1; dx <= 1 && !on; dx++) if ((dx || dy) && inBounds(width, height, x + dx, y + dy) && inField(x + dx, y + dy)) on = true;
       }
       mask[j * W + i] = on ? 1 : 0;
+      if (hard && !on && inBounds(width, height, cx, cy) && src.heightAt!(cx, cy) >= HARD_EDGE_HEIGHT) hard[j * W + i] = 1;
     }
   }
-  return march(mask, W, H, width, height, rounds);
+  return march(mask, hard, W, H, width, height, rounds);
 }
 
 const inBounds = (w: number, h: number, x: number, y: number) => x >= 0 && y >= 0 && x < w && y < h;
 
 /** Marching squares over the padded mask, stitched into closed loops in tile units (padding removed), then rounded and clipped to the map. */
-function march(mask: Uint8Array, W: number, H: number, width: number, height: number, rounds: number): Loop[] {
+function march(mask: Uint8Array, hard: Uint8Array | null, W: number, H: number, width: number, height: number, rounds: number): Loop[] {
   // An edge is a crossing point between two samples: id = 2 * (j * W + i) + (0: between (i, j) and (i + 1, j); 1: between (i, j) and (i, j + 1)).
   const hEdge = (i: number, j: number) => 2 * (j * W + i);
   const vEdge = (i: number, j: number) => 2 * (j * W + i) + 1;
@@ -165,6 +171,13 @@ function march(mask: Uint8Array, W: number, H: number, width: number, height: nu
       }
     }
   }
+  // Whether a crossing point sits on a shore against tall rock (its empty sample is such rock).
+  const isHard = (id: number): number => {
+    if (!hard) return 0;
+    const a = id >> 1;
+    const b = id & 1 ? a + W : a + 1;
+    return mask[a] ? hard[b] : hard[a];
+  };
   const point = (id: number, out: number[]) => {
     const idx = id >> 1;
     const i = idx % W;
@@ -177,37 +190,72 @@ function march(mask: Uint8Array, W: number, H: number, width: number, height: nu
   for (const start of links.keys()) {
     if (done.has(start)) continue;
     const pts: number[] = [];
+    const pinned: number[] = [];
     let prev = -1;
     let cur = start;
     for (;;) {
       done.add(cur);
       point(cur, pts);
+      pinned.push(isHard(cur));
       const next = links.get(cur)!.find((n) => n !== prev && !(done.has(n) && n !== start)) ?? -1;
       if (next < 0 || next === start) break;
       prev = cur;
       cur = next;
     }
     if (pts.length < 6) continue;
-    loops.push(clip(chaikin(pts, rounds), width, height));
+    squareCorners(pts, pinned);
+    loops.push(clip(chaikin(pts, rounds, pinned), width, height));
   }
   return loops;
 }
 
-/** Corner-cutting on a closed loop: each round replaces every corner by two points a quarter of the way along its sides. */
-function chaikin(pts: number[], rounds: number): Float32Array {
+/** Where two pinned points are joined by a diagonal (the grid cutting a corner of tall rock), puts in the cell corner so the turn stays square. */
+function squareCorners(pts: number[], pinned: number[]): void {
+  const n = pinned.length;
+  const outPts: number[] = [];
+  const outPin: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const x0 = pts[2 * i], y0 = pts[2 * i + 1], x1 = pts[2 * j], y1 = pts[2 * j + 1];
+    outPts.push(x0, y0);
+    outPin.push(pinned[i]);
+    if (pinned[i] && pinned[j] && x0 !== x1 && y0 !== y1) {
+      // Of the two ways round, the cell corner has whole-number coordinates (the other is a cell centre).
+      if (Number.isInteger(x0)) outPts.push(x0, y1);
+      else outPts.push(x1, y0);
+      outPin.push(1);
+    }
+  }
+  pts.length = 0;
+  pts.push(...outPts);
+  pinned.length = 0;
+  pinned.push(...outPin);
+}
+
+/**
+ * Corner-cutting on a closed loop: each round replaces every corner by two points a quarter of the way along its sides.
+ * A side whose two ends are both `pinned` (a shore against tall rock) is left as it is.
+ */
+function chaikin(pts: number[], rounds: number, pinned: number[]): Float32Array {
   let cur = pts;
+  let pin = pinned;
   for (let r = 0; r < rounds; r++) {
     const n = cur.length / 2;
-    const next: number[] = new Array(n * 4);
+    const next: number[] = [];
+    const nextPin: number[] = [];
     for (let i = 0; i < n; i++) {
       const j = (i + 1) % n;
       const x0 = cur[2 * i], y0 = cur[2 * i + 1], x1 = cur[2 * j], y1 = cur[2 * j + 1];
-      next[4 * i] = 0.75 * x0 + 0.25 * x1;
-      next[4 * i + 1] = 0.75 * y0 + 0.25 * y1;
-      next[4 * i + 2] = 0.25 * x0 + 0.75 * x1;
-      next[4 * i + 3] = 0.25 * y0 + 0.75 * y1;
+      if (pin[i] && pin[j]) {
+        next.push(x0, y0);
+        nextPin.push(1);
+        continue;
+      }
+      next.push(0.75 * x0 + 0.25 * x1, 0.75 * y0 + 0.25 * y1, 0.25 * x0 + 0.75 * x1, 0.25 * y0 + 0.75 * y1);
+      nextPin.push(0, 0);
     }
     cur = next;
+    pin = nextPin;
   }
   return Float32Array.from(cur);
 }

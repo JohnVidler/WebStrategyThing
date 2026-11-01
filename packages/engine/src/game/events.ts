@@ -27,4 +27,15 @@ export const SimEvent = {
   Lightning: 14,
   /** A fireball landed and set a fire: the flame entity's index (twice). */
   FlameLand: 15,
+  /** A smoke launcher threw a volley: the carrier (twice). */
+  Smoke: 16,
+  /** Point defence shot at an incoming missile or shell: the defender, and the thing shot at (hit or not). */
+  Intercept: 17,
+  /** A railgun fired: the carrier and the point the line ends at is read from its Charge heading; the second payload is the first target hit, or the carrier. */
+  RailShot: 18,
+  /** An ion bolt struck: the shooter and the target. */
+  IonHit: 19,
+  /** A drone launched from or docked in a carrier: the carrier, and the drone (launch) or the carrier again (dock). */
+  DroneLaunch: 20,
+  DroneDock: 21,
 } as const;

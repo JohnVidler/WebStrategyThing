@@ -13,6 +13,7 @@ Several LLM instances may work in this repo at the same time. To avoid collision
 7. Do not commit or push unless the user asks.
 8. **UI work follows `STYLE.md`**: the visual and interaction intent (panels, colours, motion, sound, reduce motion, dev-only features). Read it before adding or changing any screen, and update it when you set a new convention.
 9. **Dev tools for new features**: any new environmental or gameplay feature that can be driven from the dev tools should be (weather, spawnable things, resources, match endings and the like). Add a `DevCommand` (`engine/src/net/dev.ts`, handled in `Match.dev`) and a control on the matching vertical tab of the Dev Options panel (`client/src/devTools.ts`; add a new tab for a new class of tool), so the feature can be seen without waiting for it to turn up naturally. Cover it in `server/test/dev.test.ts`, and never mention the dev tools in the changelog.
+10. **Script API names**: a new unit call goes in `UNIT_API` (`game/api.ts`) and gets its place in the `self` object tree in `game/members.ts` (a module call belongs under `self.modules.<module>`); calls left out stay global. Do not add new global-style calls for a module.
 
 ## Player-facing changelog (`packages/client/src/changelog.md`)
 

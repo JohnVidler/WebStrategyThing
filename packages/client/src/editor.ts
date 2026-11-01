@@ -27,6 +27,8 @@ import {
   EVENT_BY_NAME,
   EVENTS,
   FLOW_HOST,
+  callSignature,
+  callSyntax,
   resolveSweep,
   SCRIPT_CONSTANT_DOCS,
   UNIT_API,
@@ -86,11 +88,11 @@ function docNode(html: string): HTMLElement {
 const KIND_LABEL = { query: 'query', action: 'action', config: 'runtime setting' } as const;
 
 /** Written form of a call: runtime settings live in the `config` namespace. */
-const callName = (b: { name: string; kind: string }) => (b.kind === 'config' ? `config.${b.name}` : b.name);
+const callName = callSyntax;
 
 function builtinDoc(name: string): string {
   const b = BUILTINS.get(name)!;
-  const sig = `${callName(b)}(${(b.args ?? []).join(', ')})`;
+  const sig = callSignature(b);
   return `<code>${sig}</code> · ${KIND_LABEL[b.kind]}${b.cost ? ` · +${b.cost} cycles` : ''}<br>${escapeHtml(b.doc ?? '')}`;
 }
 
@@ -178,7 +180,7 @@ function completions(context: CompletionContext) {
       type: b.kind === 'query' ? 'function' : b.kind === 'action' ? 'method' : 'property',
       detail: `(${(b.args ?? []).join(', ')}) ${KIND_LABEL[b.kind]}`,
       info: () => docNode(builtinDoc(b.name)),
-      apply: `${callName(b)}(`,
+      apply: b.prop ? callName(b) : `${callName(b)}(`,
       boost: b.kind === 'config' ? -1 : 0,
     })),
     ...SCRIPT_CONSTANT_DOCS.map(([name, value, doc]) => ({ label: name, type: 'constant', detail: String(value), info: doc })),

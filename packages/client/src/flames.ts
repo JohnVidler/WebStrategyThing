@@ -100,8 +100,52 @@ export function drawSmoke(blob: Blob, cx: number, cy: number, scale: number, str
     const x = cx + drift;
     const y = cy - phase * scale * 1.7;
     const r = scale * (0.16 + 0.34 * phase);
-    const alpha = 0.34 * strength * (1 - phase) * Math.min(1, phase * 8);
+    const alpha = Math.min(0.85, 0.34 * strength) * (1 - phase) * Math.min(1, phase * 8);
     blob(x, y, r * 1.6, SMOKE, alpha);
+  }
+}
+
+/** Anything (building or unit) shows smoke once it is below this share of its hit points, and fire below `DAMAGE_FIRE_BELOW`. */
+export const DAMAGE_SMOKE_BELOW = 0.9;
+export const DAMAGE_FIRE_BELOW = 0.6;
+/** Most smoke columns and fires on one thing. */
+const DAMAGE_MAX_SMOKES = 5;
+const DAMAGE_MAX_FIRES = 5;
+
+/** How many smoke columns and fires a thing `size` tiles across shows at `frac` (0..1) of its hit points. */
+export function damageCounts(frac: number, size: number): { smokes: number; fires: number } {
+  if (frac >= DAMAGE_SMOKE_BELOW || frac <= 0) return { smokes: 0, fires: 0 };
+  const room = Math.min(4, Math.max(1, Math.round(size * 1.5)));
+  const smoke = (DAMAGE_SMOKE_BELOW - frac) / DAMAGE_SMOKE_BELOW;
+  const burn = frac >= DAMAGE_FIRE_BELOW ? 0 : (DAMAGE_FIRE_BELOW - frac) / DAMAGE_FIRE_BELOW;
+  return {
+    smokes: Math.min(DAMAGE_MAX_SMOKES, Math.max(1, Math.ceil(smoke * room) + (frac < 0.5 ? 1 : 0))),
+    fires: burn <= 0 ? 0 : Math.min(DAMAGE_MAX_FIRES, Math.max(1, Math.ceil(burn * room))),
+  };
+}
+
+/**
+ * Smoke, then fire, on something centred at (cx, cy) that is `size` tiles across. `frac` is its hit points over its
+ * maximum. Spots are fixed by `seed`, so the same ones keep burning as it gets worse; `budget` (0..1) thins the effect
+ * when many are on screen. Bold on purpose: dense dark smoke, tall flames and a glow, so damage reads from across the map.
+ */
+export function drawDamage(g: Graphics, blob: Blob, cx: number, cy: number, scale: number, size: number, frac: number, now: number, seed: number, still: boolean, budget = 1): void {
+  const { smokes, fires } = damageCounts(frac, size);
+  if (smokes === 0) return;
+  const span = Math.max(0.6, size) * scale * 0.5;
+  const dense = (1.6 + 1.2 * (1 - frac)) * budget;
+  const puff = scale * (1 + 0.25 * Math.min(size, 4));
+  for (let i = 0; i < smokes; i++) {
+    const x = cx + (hash01(seed, 200 + i) - 0.5) * span;
+    const y = cy + (hash01(seed, 210 + i) - 0.5) * span;
+    drawSmoke(blob, x, y, puff, dense, now, seed * 7 + i, still);
+  }
+  for (let i = 0; i < fires; i++) {
+    const x = cx + (hash01(seed, 300 + i) - 0.5) * span;
+    const y = cy + (hash01(seed, 310 + i) - 0.5) * span;
+    const fs = scale * (0.8 + 0.15 * Math.min(size, 4));
+    blob(x, y - fs * 0.2, fs * 0.9, FIRE_LIGHT, 0.3 * budget * flicker(now, seed + i, still));
+    drawFire(g, blob, x, y, fs, 1, now, seed * 5 + i, still, budget < 1 ? 4 : 7, false);
   }
 }
 

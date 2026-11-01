@@ -98,6 +98,8 @@ async function main(): Promise<void> {
       playSound('menu.back');
     },
     setModule: (entity, index, on) => send({ t: 'setModule', units: [entity], index, on }),
+    setControl: (units, name, value) => send({ t: 'control', units, name, value }),
+    requestControlValues: (units) => send({ t: 'controlValues', units }),
     place: (blueprint) => {
       const bp = state.blueprints.get(blueprint);
       if (bp) input.beginPlacement(bp);
@@ -155,7 +157,7 @@ async function main(): Promise<void> {
           defineClass: (name, parts) => send({ t: 'defineBlueprint', name, parts }),
           uploadProgram: (blueprint, source) => send({ t: 'setProgram', blueprint, source }),
           retireClass: (blueprint, retired) => send({ t: 'retireClass', blueprint, retired }),
-          preview: (parts, pxPerTile, rival) => renderer.previewImage(parts, pxPerTile, rival ? (state.myId === 1 ? 2 : 1) : state.myId),
+          preview: (parts, pxPerTile, rival, fit) => renderer.previewImage(parts, pxPerTile, rival ? (state.myId === 1 ? 2 : 1) : state.myId, fit),
           iconFor: (blueprint) => renderer.iconFor(state.blueprints.get(blueprint)!),
         })),
     );
@@ -279,6 +281,9 @@ async function main(): Promise<void> {
         break;
       case 'tasks':
         state.applyTasks(msg.updates);
+        break;
+      case 'controlValues':
+        state.applyControlValues(msg.values);
         break;
       case 'cpuProfile':
         state.applyCpuProfile(msg.unit, msg.tick, msg.profile);

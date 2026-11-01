@@ -18,7 +18,10 @@ export async function renderClassImage(
 ): Promise<string> {
   const g = new Graphics();
   drawLook(g, lookOf(parts), colour, TEX, true);
-  const tex = renderer.generateTexture({ target: g, resolution: 4 });
+  // A big enlargement needs a finer texture to stay sharp (the image is extracted at 2x), within a sane texture size.
+  const wanted = scaleFor(g.width, g.height);
+  const resolution = Math.max(4, Math.min(Math.ceil(2 * wanted), Math.floor(2048 / Math.max(g.width, g.height, 1))));
+  const tex = renderer.generateTexture({ target: g, resolution });
   g.destroy();
   const sprite = new Sprite(tex);
   sprite.scale.set(scaleFor(sprite.width, sprite.height));

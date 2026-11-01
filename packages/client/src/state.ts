@@ -30,6 +30,7 @@ import {
   type NetworkInfo,
   type PowerNode,
   type ProgramButton,
+  type ProgramControl,
 } from '@wst/engine';
 
 /** How a steam vent is covered: bare and venting, a building site over it, a building without a steam turbine over it, or one with a turbine. */
@@ -141,10 +142,35 @@ export class ClientState {
     return buttons;
   }
 
+  private readonly controlCache = new Map<number, { source: string; controls: readonly ProgramControl[] }>();
+  /** Last reported value of each control of an own unit's program (by entity, in the order its class declares them). */
+  readonly controlValues = new Map<number, number[]>();
+
+  /** Sliders and toggles declared by an own class's program (compiled locally, like its buttons). */
+  controlsOf(blueprint: number): readonly ProgramControl[] {
+    const source = this.programs.get(blueprint);
+    if (!source) return [];
+    const cached = this.controlCache.get(blueprint);
+    if (cached?.source === source) return cached.controls;
+    let controls: readonly ProgramControl[] = [];
+    try {
+      controls = compileUnitProgram(source).controls;
+    } catch {
+      // The server only accepts programs that compile; ignore anything else.
+    }
+    this.controlCache.set(blueprint, { source, controls });
+    return controls;
+  }
+
+  /** The server's answer to a controlValues request: [entity, value, value, ...] per unit. */
+  applyControlValues(values: readonly (readonly number[])[]): void {
+    for (const [e, ...v] of values) this.controlValues.set(e, v);
+  }
+
   stats(e: number): BlueprintStats | undefined {
     if (!this.unit.has(e)) return undefined;
     const bp = this.blueprints.get(this.unit.f.blueprint[e]);
-    return bp ? statsFor(bp, this.modules.has(e) ? (this.modules.f.off[e] | this.modules.f.broken[e]) >>> 0 : 0) : undefined;
+    return bp ? statsFor(bp, this.modules.has(e) ? (this.modules.f.off[e] | this.modules.f.broken[e] | this.modules.f.ion[e]) >>> 0 : 0) : undefined;
   }
 
   isStructure(e: number): boolean {
@@ -310,9 +336,13 @@ export class ClientState {
     return n;
   }
 
-  /** Whether a building with its top-left on tile (x, y) would be inside own vision (the server's placement rule). */
+  /** Whether a building with its top-left on tile (x, y) is on explored ground, or in own vision now (the server's placement rule). */
   canPlaceInVision(x: number, y: number, size: number): boolean {
     if (!this.fog) return true;
+    const { width, height } = this.terrain;
+    const cx = Math.floor(x + size / 2);
+    const cy = Math.floor(y + size / 2);
+    if (cx >= 0 && cy >= 0 && cx < width && cy < height && this.vision[cy * width + cx] > 0) return true;
     const viewers = viewersOf(this.world, this.viewOwners(), (e) => this.stats(e), (e) => this.isSite(e), this.daylight, this.haze);
     return inSight(this.terrain, viewers, (x + size / 2) * TILE, (y + size / 2) * TILE);
   }
@@ -335,6 +365,7 @@ export class ClientState {
   resetSession(): void {
     this.tasks.clear();
     this.cpuProfiles.clear();
+    this.controlValues.clear();
     this.lastHp.clear();
     this.programs.clear();
     this.allySet = undefined;

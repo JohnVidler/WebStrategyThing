@@ -82,7 +82,7 @@ describe('events from the game', () => {
     const f = sim.spawnStructure(hq, 10, 10);
     sim.addStock(f, 1000);
     sim.enqueueProduction(1, f, drone.id);
-    run(sim, drone.stats.buildTime + 30);
+    run(sim, drone.stats.buildTime + 12);
     const made = sim.unit.dense.find((e) => sim.unit.f.blueprint[e] === drone.id)!;
     expect(sim.tasks[made]!.count).toBe(1);
     expect(sim.tasks[made]!.type(0)).toBe(1); // MOVE

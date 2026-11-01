@@ -13,8 +13,11 @@ import { SimEvent } from './events';
 import { PART_LIST, PARTS, TILE } from './parts';
 import { routeEnergy, share, StorageMode, strikeIsAimed, strikeSpot } from './power';
 import { GENERATION_SCALE } from './parts';
-import { BUILDER_ENERGY_RESERVE, CLIMB_SPEED_PERMILLE, LAVA_HEAT_DAMAGE, LAVA_HEAT_TICKS, LAVA_STRAND_DAMAGE, WADE_SPEED_PERMILLE, FLY_LOITER_RADIUS, FLY_LOITER_SPEED, FLY_LOITER_SPREAD, FLY_LOITER_TICKS, FLY_TURN_RADIUS, FLY_WEAVE, SEPARATION_GAP, DECAY_TICKS, MAX_TRANSMISSION_LOSS, MOBILE_SOLAR_EFFICIENCY_PERCENT, RESOURCE_REGEN_INTERVAL_TICKS, SOLAR_GENERATION_MULTIPLIER, STEAM_GENERATION_MULTIPLIER, STORAGE_DISCHARGE_FRACTION, STORAGE_RESERVE_FRACTION, LIGHTNING_RADIUS, LIGHTNING_STUN_TICKS, TESLA_SELF_STUN_FACTOR, TESLA_STUN_TICKS, TRANSMISSION_LOSS_PER_TILE, WIND_GENERATION_MULTIPLIER, buildEnergyCost } from './rules';
-import { CHARGE_PAD_RATE_MULTIPLIER, CHARGE_RANGE, FLAK_BURST_RADIUS, FLAME_SHOTS_PER_MATTER, factoryCanBuild } from './rules';
+import { ACCEL_TICKS_BASE, ACCEL_TICKS_PER_TILE, BRAKE_FACTOR, CORNER_MIN_SPEED, BUILDER_ENERGY_RESERVE, CLIMB_SPEED_PERMILLE, LAVA_HEAT_DAMAGE, LAVA_HEAT_TICKS, LAVA_STRAND_DAMAGE, WADE_SPEED_PERMILLE, FLY_LOITER_RADIUS, FLY_LOITER_SPEED, FLY_LOITER_SPREAD, FLY_LOITER_TICKS, FLY_TURN_RADIUS, FLY_WEAVE, SEPARATION_GAP, DECAY_TICKS, MAX_TRANSMISSION_LOSS, MOBILE_SOLAR_EFFICIENCY_PERCENT, RESOURCE_REGEN_INTERVAL_TICKS, SOLAR_GENERATION_MULTIPLIER, STEAM_GENERATION_MULTIPLIER, STORAGE_DISCHARGE_FRACTION, STORAGE_RESERVE_FRACTION, LIGHTNING_RADIUS, LIGHTNING_STUN_TICKS, TESLA_SELF_STUN_FACTOR, TESLA_STUN_TICKS, TRANSMISSION_LOSS_PER_TILE, WIND_GENERATION_MULTIPLIER, buildEnergyCost } from './rules';
+import { CHARGE_PAD_RATE_MULTIPLIER, CHARGE_RANGE, FLAK_AIR_DAMAGE, FLAK_BURST_RADIUS, FLAME_SHOTS_PER_MATTER, SMOKE_LASER_PERCENT, factoryCanBuild } from './rules';
+import { smokeBlocks, smokeCrosses } from './smoke';
+import { startRail } from './rail';
+import { ionStrike } from './ion';
 import type { Simulation } from './simulation';
 import { liquidKind } from './terrain';
 
@@ -452,18 +455,62 @@ function flyStep(sim: Simulation, e: number, speed: number, gx: number, gy: numb
   return false;
 }
 
+/** Speed gained per tick: top speed spread over a start-up time that grows with the hull radius, so big hulls pull away slower. At least 1. */
+function accelOf(top: number, radius: number): number {
+  return Math.max(1, Math.floor(top / (ACCEL_TICKS_BASE + (ACCEL_TICKS_PER_TILE * radius) / TILE)));
+}
+
+/**
+ * The speed a ground unit moves at this tick. It accelerates towards `cap` (its top speed here, after terrain), brakes faster, and
+ * is held down by corners: a turn away from its direction of travel caps the speed (CORNER_MIN_SPEED at 90 degrees or more), and it
+ * starts braking early enough to take the next waypoint's turn at the right speed.
+ */
+function throttle(sim: Simulation, e: number, radius: number, top: number, cap: number, cur: number, x: number, y: number, path: number[]): number {
+  const accel = accelOf(top, radius);
+  if (cur > 0) {
+    const dx = path[0] - x;
+    const dy = path[1] - y;
+    const d = Math.sqrt(dx * dx + dy * dy);
+    if (d > 0) {
+      const ux = dx / d;
+      const uy = dy / d;
+      const hx = sim.headX[e] ?? ux;
+      const hy = sim.headY[e] ?? uy;
+      cap = Math.min(cap, Math.floor(top * Math.max(CORNER_MIN_SPEED, hx * ux + hy * uy)));
+      if (path.length >= 4) {
+        const ex = path[2] - path[0];
+        const ey = path[3] - path[1];
+        const el = Math.sqrt(ex * ex + ey * ey);
+        if (el > 0) {
+          const next = Math.floor(top * Math.max(CORNER_MIN_SPEED, (ux * ex + uy * ey) / el));
+          // Braking distance from the current speed down to the corner speed, plus this tick's step.
+          if (next < cur && d <= (cur * cur - next * next) / (2 * accel * BRAKE_FACTOR) + cur) cap = Math.min(cap, next);
+        }
+      }
+    }
+  }
+  if (cur > cap) return Math.max(cap, cur - accel * BRAKE_FACTOR);
+  return Math.min(cap, cur + accel);
+}
+
 /** Follows each unit's waypoints. Units that stop making progress near the goal count as arrived. */
 export function movementSystem(sim: Simulation): void {
   const m = sim.motion.f;
   const p = sim.pos.f;
   for (const e of sim.world.query(sim.motion.def)) {
-    if (!m.moving[e]) continue;
+    if (!m.moving[e]) {
+      sim.speedNow[e] = 0;
+      continue;
+    }
     const s = sim.stats(e);
     if (s.speed <= 0) {
       m.moving[e] = 0;
       continue;
     }
-    if (!sim.spend(e, s.motorUse)) continue; // out of energy: stranded until recharged
+    if (!sim.spend(e, s.motorUse)) {
+      sim.speedNow[e] = 0;
+      continue; // out of energy: stranded until recharged
+    }
     const path = sim.paths[e];
     if (!path || path.length === 0) {
       arrive(sim, e);
@@ -472,7 +519,9 @@ export function movementSystem(sim: Simulation): void {
     if (s.flying) {
       const fx = p.x[e];
       const fy = p.y[e];
-      const arrived = flyStep(sim, e, s.speed, path[0], path[1]);
+      const cur = Math.min(s.speed, (sim.speedNow[e] ?? 0) + accelOf(s.speed, s.radius));
+      sim.speedNow[e] = cur;
+      const arrived = flyStep(sim, e, cur, path[0], path[1]);
       // An enemy shield is a wall to flyers too: they stay where they were and try again next tick.
       if (sim.shieldList.length > 0 && moveBlocked(sim, e, fx, fy, p.x[e], p.y[e])) {
         p.x[e] = fx;
@@ -492,6 +541,10 @@ export function movementSystem(sim: Simulation): void {
       const d = sim.terrain.depthAt(Math.floor(x / TILE), Math.floor(y / TILE));
       if (d > 0) budget = Math.floor((budget * WADE_SPEED_PERMILLE[liquidKind(d)]) / 1000);
     }
+    const ox = x;
+    const oy = y;
+    budget = throttle(sim, e, s.radius, s.speed, budget, Math.min(budget, sim.speedNow[e] ?? 0), x, y, path); // slower ground (rock, water) takes effect at once
+    sim.speedNow[e] = budget;
     if (!s.flying && path.length >= 2 && budget > 0 && sidestep(sim, e, s, x, y, path[0], path[1], budget)) {
       x = p.x[e];
       y = p.y[e];
@@ -519,6 +572,16 @@ export function movementSystem(sim: Simulation): void {
     p.x[e] = x;
     p.y[e] = y;
     sim.pos.markChanged(e);
+    // Remember the direction of travel for cornering; a unit that did not move (held by a shield, boxed in) starts over from a standstill.
+    const mx = x - ox;
+    const my = y - oy;
+    const ml = Math.sqrt(mx * mx + my * my);
+    if (ml > 0) {
+      sim.headX[e] = mx / ml;
+      sim.headY[e] = my / ml;
+    } else if (path.length) {
+      sim.speedNow[e] = 0;
+    }
     if (!path.length) {
       arrive(sim, e);
       continue;
@@ -526,7 +589,7 @@ export function movementSystem(sim: Simulation): void {
 
     // Progress check: crowds at the destination (or blocked routes) shouldn't jitter forever.
     const left = Math.sqrt((m.tx[e] - x) ** 2 + (m.ty[e] - y) ** 2);
-    if (left > sim.lastDistance[e] - s.speed / 4) sim.stuckTicks[e]++;
+    if (left > sim.lastDistance[e] - Math.max(1, ml) / 4) sim.stuckTicks[e]++;
     else sim.stuckTicks[e] = 0;
     sim.lastDistance[e] = Math.min(sim.lastDistance[e], left);
     const stuck = sim.stuckTicks[e];
@@ -665,20 +728,41 @@ export function resourceRegenerationSystem(sim: Simulation): void {
 }
 
 export function combatSystem(sim: Simulation): void {
-  const w = sim.weapon.f;
-  for (const e of sim.world.query(sim.weapon.def)) {
+  for (let slot = 0; slot < sim.weaponStores.length; slot++) {
+    const store = sim.weaponStores[slot];
+    if (store.dense.length === 0) continue;
+    sim.firing = store;
+    fireWeapons(sim, slot, store);
+  }
+  sim.firing = sim.weaponStores[0];
+}
+
+/** One pass of the combat system for weapon number `slot` of every unit and building that has one. */
+function fireWeapons(sim: Simulation, slot: number, store: Simulation['weapon']): void {
+  const w = store.f;
+  for (const e of sim.world.query(store.def)) {
     if (w.cooldown[e] > 0) {
       w.cooldown[e]--;
       continue;
     }
     if (w.target[e] < 0) continue;
     const t = sim.world.resolve(w.target[e]);
-    const stats = sim.stats(e).weapon;
-    if (t < 0 || !stats || !sim.health.has(t) || (stats.kind === 'flak' && !sim.missile.has(t))) {
+    const stats = sim.stats(e).weapons[slot];
+    if (t < 0 || !stats || !sim.health.has(t) || (stats.kind === 'flak' && !flakTarget(sim, e, t))) {
+      w.target[e] = -1;
+      continue;
+    }
+    // Smoke between the shooter and a target it has locked hides the target: the lock is dropped (flak, tesla and missiles in the air are unaffected).
+    if (sim.smokeCount > 0 && stats.kind !== 'flak' && stats.kind !== 'tesla' && !sim.missile.has(t) && smokeBlocks(sim, sim.pos.f.x[e], sim.pos.f.y[e], sim.pos.f.x[t], sim.pos.f.y[t])) {
       w.target[e] = -1;
       continue;
     }
     if (reachDistance(sim, e, t) > stats.range + rangeBonus(sim, e, t, stats.kind)) continue;
+    // A railgun charges first (see rail.ts): the energy goes when the charge starts, the shot comes from railSystem.
+    if (stats.kind === 'rail') {
+      startRail(sim, e, t, stats.use, slot);
+      continue;
+    }
     // A flamethrower pays one matter for every FLAME_SHOTS_PER_MATTER fireballs, counting them in `power` (a laser's setting, unused here).
     const fuel = stats.kind === 'flame' && w.power[e] % FLAME_SHOTS_PER_MATTER !== 0 ? 0 : stats.matter;
     if (!sim.canSpendMatter(e, fuel)) continue;
@@ -693,15 +777,22 @@ export function combatSystem(sim: Simulation): void {
       teslaDischarge(sim, e, stats.range);
       continue;
     }
+    if (stats.kind === 'ion') {
+      ionStrike(sim, e, t);
+      continue;
+    }
     if (stats.kind === 'missile') {
       launchMissile(sim, e, t, stats);
       continue;
     }
     if (stats.kind === 'flak') {
-      // Air-burst: every enemy missile around the target is hit, with no roll to connect.
+      // Air-burst: every enemy missile and flying unit around the target is hit, with no roll to connect.
       const owner = sim.unit.f.owner[e];
       sim.spatial.forEachInRadius(sim.pos.f.x[t], sim.pos.f.y[t], FLAK_BURST_RADIUS, (o) => {
-        if (sim.missile.has(o) && !sim.allied(sim.missile.f.owner[o], owner) && sim.health.f.hp[o] > 0) sim.damage(o, stats.damage, owner);
+        if (sim.health.f.hp[o] <= 0) return;
+        if (sim.missile.has(o)) {
+          if (!sim.allied(sim.missile.f.owner[o], owner)) sim.damage(o, stats.damage, owner);
+        } else if (sim.unit.has(o) && !sim.allied(sim.unit.f.owner[o], owner) && sim.stats(o).flying) sim.damage(o, FLAK_AIR_DAMAGE, owner);
       });
       continue;
     }
@@ -717,7 +808,9 @@ export function combatSystem(sim: Simulation): void {
     }
     // Small missiles are hard to hit: the shot (and its energy) is simply wasted.
     if (sim.missile.has(t) && !shotHitsMissile(sim, t)) continue;
-    const damage = stats.kind === 'laser' && stats.use > 0 ? Math.max(1, Math.round((stats.damage * shotEnergy) / stats.use)) : stats.damage;
+    let damage = stats.kind === 'laser' && stats.use > 0 ? Math.max(1, Math.round((stats.damage * shotEnergy) / stats.use)) : stats.damage;
+    // A laser that crosses smoke is scattered: it does only part of its damage.
+    if (stats.kind === 'laser' && smokeCrosses(sim, sim.pos.f.x[e], sim.pos.f.y[e], sim.pos.f.x[t], sim.pos.f.y[t])) damage = Math.max(1, Math.round((damage * SMOKE_LASER_PERCENT) / 100));
     // An enemy shield across the line takes the hit instead (shots at a missile fly over it).
     if (sim.shieldList.length > 0 && !sim.missile.has(t)) {
       const shield = shieldBlock(sim, sim.unit.f.owner[e], sim.pos.f.x[e], sim.pos.f.y[e], sim.pos.f.x[t], sim.pos.f.y[t]);
@@ -728,6 +821,12 @@ export function combatSystem(sim: Simulation): void {
     }
     sim.damage(t, damage, sim.unit.f.owner[e], w.aim[e]);
   }
+}
+
+/** What flak may be aimed at: an enemy missile or an enemy flying unit (never a building or a ground unit). */
+function flakTarget(sim: Simulation, e: number, t: number): boolean {
+  if (sim.missile.has(t)) return true;
+  return sim.unit.has(t) && sim.stats(t).flying && !sim.allied(sim.unit.f.owner[t], sim.unit.f.owner[e]);
 }
 
 /** Stuns every unit and building in range, friend or foe; the weapon's own vehicle gets a shorter stun. */

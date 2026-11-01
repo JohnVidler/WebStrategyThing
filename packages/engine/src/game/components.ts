@@ -29,8 +29,8 @@ export const Production = defineComponent(
 );
 /** Energy as a percentage: replicated only when the whole percent changes. */
 export const EnergyView = defineComponent('EnergyView', { pct: 'u8' }, { networked: true });
-/** Bit i set = parts[i] switched off (`off`) or broken by damage (`broken`). Clients need both to derive the unit's effective stats. */
-export const Modules = defineComponent('Modules', { off: 'u32', broken: 'u32' }, { networked: true });
+/** Bit i set = parts[i] switched off (`off`), broken by damage (`broken`) or held down for a few seconds by an ion bolt (`ion`). Clients need all three to derive the unit's effective stats. */
+export const Modules = defineComponent('Modules', { off: 'u32', broken: 'u32', ion: 'u32' }, { networked: true });
 /** Resources held by a building with silos. */
 export const Stockpile = defineComponent('Stockpile', { amount: 'i32' }, { networked: true });
 /** Present while a building is still being constructed. `progress` is percent. */
@@ -64,11 +64,38 @@ export const Aim = defineComponent('Aim', { heading: 'u8' }, { networked: true }
  */
 export const Shield = defineComponent('Shield', { heading: 'u8', arc: 'u8', range: 'u8', active: 'u8', strain: 'u8' }, { networked: true });
 
+/**
+ * A unit's or building's spotlight (see light.ts). `heading` is in 256ths of a turn from east, as for Aim; `power` is the energy per tick it is
+ * paying for now in tenths, which sets the beam's length (0 while it is off, unpaid or unfinished); `dim` is how bright it is, 0 to 255, falling as
+ * its owner's store runs down. Both sides draw the beam and, from it, what it shows.
+ */
+export const Light = defineComponent('Light', { heading: 'u8', power: 'u8', dim: 'u8' }, { networked: true });
+
+/**
+ * A smoke cloud (see smoke.ts; Position too). `radius` is in tenths of a tile, `life` how much of its time is left, 255 down to 0, for the fade.
+ * Clouds do not move, so clients derive which tiles they cover from the position and radius alone.
+ */
+export const Smoke = defineComponent('Smoke', { radius: 'u8', life: 'u8' }, { networked: true });
+
+/**
+ * A weapon charging up (a railgun, see rail.ts): present on the carrier only while it charges. `heading` is the aim in 256ths of a turn
+ * from east, `pct` how far the charge is, 0 to 255. After the shot it stays one more tick with `state` 1 and `len` the length of the line in tenths of a tile.
+ */
+export const Charge = defineComponent('Charge', { heading: 'u8', pct: 'u8', state: 'u8', len: 'u8' }, { networked: true });
+
+/** Drone bay contents (see hangar.ts), on a carrier: how many drones are docked, and how many its bays hold. */
+export const Hangar = defineComponent('Hangar', { docked: 'u8', capacity: 'u8' }, { networked: true });
+
 // Server-only.
 /** `arrived`: 1 = reached the end of the path to (tx, ty); 2 = stopped short by a crowd. */
 export const Motion = defineComponent('Motion', { tx: 'i32', ty: 'i32', moving: 'u8', arrived: 'u8' });
 /** `aim`: the module class (SLOT_CODES) shots are aimed at; 0 = any, a random module each hit. */
-export const Weapon = defineComponent('Weapon', { target: 'i32', cooldown: 'u16', power: 'u16', aim: 'u8' });
+const WEAPON_FIELDS = { target: 'i32', cooldown: 'u16', power: 'u16', aim: 'u8' } as const;
+export const Weapon = defineComponent('Weapon', WEAPON_FIELDS);
+/** The state of a unit's second, third and fourth weapon (`Weapon` is the first); see `Simulation.weaponStores`. */
+export const Weapon2 = defineComponent('Weapon2', WEAPON_FIELDS);
+export const Weapon3 = defineComponent('Weapon3', WEAPON_FIELDS);
+export const Weapon4 = defineComponent('Weapon4', WEAPON_FIELDS);
 /** `target` is the resource handle last given to harvest() — kept as "where I was working". */
 export const Harvester = defineComponent('Harvester', { target: 'i32' });
 export const Energy = defineComponent('Energy', { amount: 'i32' });
@@ -121,4 +148,11 @@ export const GAME_COMPONENTS = [
   Aim,
   Shield,
   Flame,
+  Light,
+  Smoke,
+  Charge,
+  Hangar,
+  Weapon2,
+  Weapon3,
+  Weapon4,
 ] as const;

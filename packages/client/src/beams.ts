@@ -1,4 +1,5 @@
 import type { Graphics } from 'pixi.js';
+import { drawIonBolt, ION_BOLT_MS } from './weaponFx';
 
 /**
  * What the instant (hit-scan) weapons look like. The engine resolves these shots at once, so the effect is purely visual:
@@ -6,14 +7,14 @@ import type { Graphics } from 'pixi.js';
  * cross the gap, flak is a string of dim puffs that ends in an air-burst (the burst itself is a `flak` blast).
  * Positions are screen pixels; `age` runs 0..1 over the shot's life.
  */
-export type ShotKind = 'gun' | 'laser' | 'flak';
+export type ShotKind = 'gun' | 'laser' | 'flak' | 'ion' | 'pd';
 
 /** How long (ms) each kind of shot lasts on screen. */
-export const SHOT_LIFE_MS: Record<ShotKind, number> = { gun: 160, laser: 260, flak: 220 };
+export const SHOT_LIFE_MS: Record<ShotKind, number> = { gun: 160, laser: 260, flak: 220, ion: ION_BOLT_MS, pd: 150 };
 
 /** The weapon kinds that are drawn as shots; anything else has its own effect (shells, missiles, tesla). */
 export function shotKindOf(weapon: string | undefined): ShotKind {
-  return weapon === 'laser' ? 'laser' : weapon === 'flak' ? 'flak' : 'gun';
+  return weapon === 'laser' ? 'laser' : weapon === 'flak' ? 'flak' : weapon === 'ion' ? 'ion' : 'gun';
 }
 
 /** 0..1 strength of a shot from its damage: a light gun (5) is slight, a rotary gun (20) full. */
@@ -43,6 +44,8 @@ export function drawShot(g: Graphics, kind: ShotKind, ax: number, ay: number, bx
   const fade = 1 - age;
   if (kind === 'laser') drawLaser(g, ax, ay, bx, by, nx, ny, age, fade, colour, power, unit, seed, still);
   else if (kind === 'flak') drawFlakTrail(g, ax, ay, bx, by, len, nx, ny, age, fade, unit);
+  else if (kind === 'ion') drawIonBolt(g, ax, ay, bx, by, age, seed, unit, still);
+  else if (kind === 'pd') drawPointDefenceShot(g, ax, ay, len, nx, ny, age, fade, unit);
   else drawTracer(g, ax, ay, bx, by, len, nx, ny, age, fade, colour, power, unit, seed);
 }
 
@@ -105,6 +108,19 @@ function drawTracer(g: Graphics, ax: number, ay: number, bx: number, by: number,
   // Impact flash where the first tracer lands.
   const hit = Math.max(0, 1 - Math.abs(age - 0.55) / 0.2);
   if (hit > 0) g.circle(bx, by, Math.max(2.5, unit * 0.1) * (0.8 + 0.5 * power) * (0.6 + 0.6 * hit)).fill({ color: TRACER, alpha: 0.65 * hit });
+}
+
+/** Point defence: two quick pale-green darts that streak out and are gone, so a cluster of them reads as a stream of tiny stitches rather than a beam. */
+const PD_GREEN = 0x9dffb4;
+function drawPointDefenceShot(g: Graphics, ax: number, ay: number, len: number, nx: number, ny: number, age: number, fade: number, unit: number): void {
+  const head = Math.min(1, age * 2.2);
+  const tail = Math.max(0, head - 0.35);
+  const w = Math.max(1.4, unit * 0.04);
+  for (const off of [-0.5, 0.5]) {
+    const ox = -ny * w * off * 2, oy = nx * w * off * 2;
+    g.moveTo(ax + ox + nx * len * tail, ay + oy + ny * len * tail).lineTo(ax + ox + nx * len * head, ay + oy + ny * len * head).stroke({ width: w, color: PD_GREEN, alpha: 0.9 * fade, cap: 'round' });
+  }
+  g.circle(ax + nx * len * head, ay + ny * len * head, w * 1.4).fill({ color: WHITE, alpha: 0.8 * fade });
 }
 
 /** Flak: dim puffs strung along the line (the shell is hard to see), thinning as they go; the air-burst is a separate blast. */

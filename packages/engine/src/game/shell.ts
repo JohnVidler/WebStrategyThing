@@ -94,7 +94,7 @@ export function launchShell(sim: Simulation, e: number, target: number, w: Canno
     left: w.range + rangeBonus(sim, e, target, w.kind) + halfSize(sim, target),
     damage: w.damage,
     owner,
-    aim: sim.weapon.f.aim[e],
+    aim: sim.firing.f.aim[e],
     height: elevationOf(sim, e),
     bounces: 0,
     ignore: -1,

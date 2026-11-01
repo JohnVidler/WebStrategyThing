@@ -3,6 +3,7 @@ import type { AddressInfo } from 'node:net';
 import { mapById, parseClientMessage, parseBotLevel, parseGameMode, parseScenario } from '@wst/engine';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { Match } from './match';
+import { traffic } from './traffic';
 import { campaignLevel, campaignMap, refreshCampaigns } from './campaign';
 import { devToolsEnabled } from './devTools';
 import { loadTracks, sendTrack } from './music';
@@ -234,6 +235,7 @@ function roomFor(address: string, name: string, title: string, mapId?: string, m
     room = { match: new Match({ fog: process.env.FOG !== 'off', mapId: mapById(mapId).id, mode: parsed, scenario: parseScenario(scenario), bots: parseBotList(bots), difficulty: parseBotLevel(Number(difficulty)), level, devTools: devToolsEnabled() }), emptySince: undefined, creator: address, title };
     room.match.start();
     rooms.set(name, room);
+    events.opened++;
     console.log(`room "${name}" opened`);
   }
   return room;
@@ -249,10 +251,37 @@ setInterval(() => {
     } else if (now - room.emptySince > EMPTY_ROOM_MS) {
       room.match.stop();
       rooms.delete(name);
+      events.closed++;
       console.log(`room "${name}" closed`);
     }
   }
 }, 5000).unref();
+
+/** Events since the last stats line. */
+const events = { opened: 0, closed: 0, joined: 0, left: 0, messages: 0 };
+const STATS_MS = Math.max(1000, Number(process.env.STATS_INTERVAL_MS) || 60000);
+let statsAt = Date.now();
+
+/** Bytes per second as a short human figure. */
+function rate(bytes: number, seconds: number): string {
+  const perSecond = bytes / Math.max(seconds, 0.001);
+  return perSecond >= 1024 * 1024 ? `${(perSecond / 1024 / 1024).toFixed(2)} MB/s` : `${(perSecond / 1024).toFixed(1)} kB/s`;
+}
+
+setInterval(() => {
+  let players = 0;
+  for (const { match } of rooms.values()) players += match.playerCount;
+  // Quiet while nobody is playing; the counts keep accumulating into the next line.
+  if (players === 0) return;
+  const { opened, closed, joined, left, messages } = events;
+  events.opened = events.closed = events.joined = events.left = events.messages = 0;
+  const now = Date.now();
+  const seconds = (now - statsAt) / 1000;
+  statsAt = now;
+  const { in: bytesIn, out: bytesOut } = traffic;
+  traffic.in = traffic.out = 0;
+  console.log(`stats: ${rooms.size} games, ${players} players online, ${menuSockets.size} on menu | bandwidth: ${rate(bytesOut, seconds)} out, ${rate(bytesIn, seconds)} in (payload, avg ${(bytesOut / Math.max(players, 1) / seconds / 1024).toFixed(1)} kB/s out per player) | since last: ${opened} opened, ${closed} closed, ${joined} joins, ${left} leaves, ${messages} messages`);
+}, STATS_MS).unref();
 
 function byteLength(data: Buffer | ArrayBuffer | Buffer[]): number {
   if (Array.isArray(data)) return data.reduce((n, b) => n + b.length, 0);
@@ -275,7 +304,9 @@ function admit(socket: WebSocket, address: string): ((data: Buffer | ArrayBuffer
   const messages = new Allowance(MESSAGE_BURST, MESSAGES_PER_SECOND);
   const bytes = new Allowance(BYTE_BURST, BYTES_PER_SECOND);
   return (data) => {
-    if (messages.take(1) && bytes.take(byteLength(data))) return true;
+    const size = byteLength(data);
+    traffic.in += size;
+    if (messages.take(1) && bytes.take(size)) return true;
     socket.close(1008, 'Too many messages');
     return false;
   };
@@ -315,11 +346,13 @@ function accept(socket: WebSocket, request: IncomingMessage): void {
   }
   const { match } = room;
   match.join(socket, token && TOKEN.test(token) ? token : undefined);
+  events.joined++;
   console.log(`player connected to "${roomName}" (${match.playerCount} online)`);
 
   socket.on('message', (data, isBinary) => {
     if (!allowed(data)) return;
     if (isBinary) return;
+    events.messages++;
     try {
       const msg = parseClientMessage(JSON.parse(data.toString()));
       if (msg) match.receive(socket, msg);
@@ -335,6 +368,7 @@ function accept(socket: WebSocket, request: IncomingMessage): void {
     } catch (err) {
       console.error(`leaving "${roomName}" failed:`, err);
     }
+    events.left++;
     console.log(`player disconnected from "${roomName}" (${match.playerCount} online)`);
   });
 }

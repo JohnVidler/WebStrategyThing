@@ -5,13 +5,17 @@ import { addTimer, textAt } from '../flow/run';
 import { ACTIVITY_OUTCOMES, ActivityKind, cancelActivity, resumeActivity, startActivity, suspendActivity } from './activity';
 import type { Builtin, CallKind, HostApi } from '../flow/host';
 import { Caps, type Blueprint, type BlueprintStats } from './blueprint';
-import { PARTS, SLOT_CODES, TIER_NAMES, TILE } from './parts';
+import { PARTS, SLOT_CODES, TIER_NAMES, TILE, type WeaponKind } from './parts';
 import { StorageMode } from './power';
 import { DEEP_MAX } from './rules';
 import type { Simulation } from './simulation';
 import { rangeBonus } from './shell';
 import { bearingTo, incomingBearing, reachDistance, setShieldAngle, setShieldArc, setShieldRange } from './shield';
+import { lightAngleOf, lightBlocked, outwardBearing, setLightAngle, setLightPower } from './light';
+import { throwSmoke } from './smoke';
+import { launchDrones, recallDrones, setDroneClass } from './hangar';
 import { TaskFlag, TaskType } from './tasks';
+import { memberOf } from './members';
 
 /**
  * Context handed to builtins. A single instance is reused for every unit
@@ -58,6 +62,11 @@ export const API_GROUPS = [
   'Buildings',
 ] as const;
 
+/** Weapon kinds as numbers for scripts (W_GUN, W_LASER, ...). Every kind must have one. */
+export const WEAPON_KIND_CODES: Readonly<Record<WeaponKind, number>> = {
+  gun: 0, cannon: 1, laser: 2, tesla: 3, missile: 4, flak: 5, flame: 6, rail: 7, ion: 8,
+};
+
 /** Names usable in scripts as integer constants, with a short description for the docs. */
 export const SCRIPT_CONSTANT_DOCS: readonly (readonly [string, number, string])[] = [
   ['MOVE', TaskType.Move, 'Task: travel to (x, y)'],
@@ -96,6 +105,7 @@ export const SCRIPT_CONSTANT_DOCS: readonly (readonly [string, number, string])[
   ['HAS_LASER', Caps.Laser, 'Capability: has a working laser link module'],
   ['CAN_REPAIR', Caps.Repair, 'Capability: has a working repair module'],
   ['HAS_SHIELD', Caps.Shield, 'Capability: has a working shield emitter'],
+  ['HAS_LIGHT', Caps.Light, 'Capability: has a working spotlight'],
   ['IS_STRUCTURE', Caps.Structure, 'Capability: is a building'],
   ['IS_FACTORY', Caps.Factory, 'Capability: can produce units'],
   ['IS_DEPOT', Caps.Depot, 'Capability: has resource silos (units can fill or take)'],
@@ -111,6 +121,7 @@ export const SCRIPT_CONSTANT_DOCS: readonly (readonly [string, number, string])[
   ...Object.entries(SLOT_CODES).map(
     ([slot, code]) => [`M_${slot.toUpperCase()}`, code, `Module kind: ${slot}`] as const,
   ),
+  ...(Object.entries(WEAPON_KIND_CODES) as [WeaponKind, number][]).map(([kind, code]) => [`W_${kind.toUpperCase()}`, code, `Weapon kind: ${kind} (compare with weaponKind(i))`] as const),
   ...FLOW_CONSTANT_DOCS,
 ];
 
@@ -250,17 +261,17 @@ function api(
   const m = /^(\w+)\((.*)\)$/.exec(sig);
   if (!m) throw new Error(`Bad signature ${sig}`);
   const args = m[2] ? m[2].split(',').map((s) => s.trim()) : [];
-  return { name: m[1], argc: args.length, cost, doc, group, args, fn, free: opts.free, outcomes: opts.outcomes, text: opts.text, kind: kindOf(m[1]), ...(opts.fill ? { fill: opts.fill, list: true } : {}) };
+  return { name: m[1], argc: args.length, cost, doc, group, args, fn, free: opts.free, outcomes: opts.outcomes, text: opts.text, kind: kindOf(m[1]), ...memberOf(m[1]), ...(opts.fill ? { fill: opts.fill, list: true } : {}) };
 }
 
 /** Calls that change the world now (statements). Everything else is a query unless it is a runtime setting. */
 const ACTIONS: ReadonlySet<string> = new Set([
-  'after', 'alert', 'notify', 'radioSend', 'laserSend', 'radarPulse', 'moveTo', 'move', 'stop', 'fire', 'giveEnergy', 'order', 'queueUnit',
+  'after', 'alert', 'notify', 'radioSend', 'laserSend', 'radarPulse', 'moveTo', 'move', 'stop', 'fire', 'weaponFire', 'giveEnergy', 'order', 'queueUnit',
   'goTo', 'approach', 'harvest', 'dock', 'take', 'build', 'repair', 'charge', 'supply', 'engage', 'suspendActivity', 'resumeActivity',
-  'nextOrder', 'swapOrder', 'clearOrders',
+  'nextOrder', 'swapOrder', 'clearOrders', 'smoke', 'launchDrones', 'recallDrones',
 ]);
 /** Runtime settings: persistent standing settings of a module or the CPU, written config.name(...). */
-const SETTINGS: ReadonlySet<string> = new Set(['rest', 'laserPower', 'aim', 'setModule', 'storageMode', 'shieldAngle', 'shieldArc', 'shieldRange']);
+const SETTINGS: ReadonlySet<string> = new Set(['rest', 'laserPower', 'aim', 'weaponLaserPower', 'weaponAim', 'setModule', 'storageMode', 'shieldAngle', 'shieldArc', 'shieldRange', 'lightAngle', 'lightPower', 'droneClass']);
 const kindOf = (name: string): CallKind => (SETTINGS.has(name) ? 'config' : ACTIONS.has(name) ? 'action' : 'query');
 
 /**
@@ -479,38 +490,29 @@ export const UNIT_API: HostApi<UnitContext> = [
       return 1;
     },
     { text: [0] }),
-  api('Actions', 'fire(h)', 2, 'Lock the weapon on a unit; returns 1 if in range. The weapon fires automatically. Energy: weapon use per shot.',
-    (c, a) => {
-      const { sim, e } = c;
-      const w = c.stats.weapon;
-      if (!w || !sim.weapon.has(e)) return 0;
-      const t = locate(c, a[0]);
-      if (t < 0 || t === e || !sim.health.has(t)) {
-        sim.weapon.f.target[e] = -1;
-        return 0;
-      }
-      sim.weapon.f.target[e] = sim.world.handle(t);
-      return reachDistance(sim, e, t) <= w.range + rangeBonus(sim, e, t, w.kind) ? 1 : 0;
-    }),
+  api('Actions', 'fire(h)', 2, 'Lock every weapon on a unit; returns 1 if one is in range. A locked weapon fires automatically and holds fire while it has no lock. Energy: weapon use per shot, from each weapon.',
+    (c, a) => fireAt(c, a[0], -1)),
   api('Actions', 'laserPower(energy)', 1,
     "Set the energy a laser spends per shot (1 to the laser's maximum); damage scales in proportion, so half the energy is half the damage. 0 restores the maximum. Returns the energy now in use, or 0 without a laser.",
-    (c, a) => {
-      const { sim, e } = c;
-      const w = c.stats.weapon;
-      if (!w || w.kind !== 'laser' || !sim.weapon.has(e)) return 0;
-      const p = a[0] <= 0 ? 0 : Math.min(Math.max(1, Math.floor(a[0])), c.stats.weapon!.use);
-      sim.weapon.f.power[e] = p;
-      return p > 0 ? p : w.use;
-    }),
+    (c, a) => setLaserPower(c, a[0], -1)),
   api('Actions', 'aim(kind)', 1,
     "Aim shots at one kind of module of the target (M_MOTOR, M_WEAPON, M_CPU, ...), or at M_ANY (the default) for a random module each hit. A module that takes enough damage breaks and does nothing until it is repaired; legs break easily. If the target has no working module of that kind, the hit lands on a random one. Returns the kind now aimed at, or -1 without a weapon.",
-    (c, a) => {
-      const { sim, e } = c;
-      if (!c.stats.weapon || !sim.weapon.has(e)) return -1;
-      const kind = a[0] > 0 && a[0] <= 255 ? Math.floor(a[0]) : 0;
-      sim.weapon.f.aim[e] = kind;
-      return kind;
-    }),
+    (c, a) => setAim(c, a[0], -1)),
+  // Indexed weapon calls: self.modules.weapon[i].fire(h) acts on weapon i; the plain fire(h), laserPower(n) and aim(k)
+  // (self.modules.weapon.fire(h)) act on every weapon. A weapon that is off or broken is skipped; its index stays.
+  api('Actions', 'weaponCount()', 0, 'How many weapon modules this unit has, working or not (self.modules.weapon.length).', (c) => weaponCount(c)),
+  api('Lists', 'weapons()', 1, 'List of the weapons of this unit, as indices 0 up (self.modules.weapon): self.modules.weapon.filter(w => self.modules.weapon[w].kind === W_LASER).first().',
+    () => -1, { fill: (c, _a, out) => { const n = weaponCount(c); for (let i = 0; i < n; i++) out[i] = i; return n; } }),
+  api('Actions', 'weaponKind(i)', 0, 'Kind of weapon i as a W_* constant (W_GUN, W_LASER, ...), or -1 if there is no such weapon or it is off or broken.',
+    (c, a) => { const w = weaponAt(c, a[0]); return w ? WEAPON_KIND_CODES[w.kind] : -1; }),
+  api('Actions', 'weaponRange(i)', 0, 'Reach of weapon i in tiles, or -1 if there is no such weapon or it is off or broken.',
+    (c, a) => { const w = weaponAt(c, a[0]); return w ? Math.floor(w.range / TILE) : -1; }),
+  api('Actions', 'weaponFire(i, h)', 2, 'Like fire(h), for weapon i only. Returns 0 if there is no such weapon or it is off or broken.',
+    (c, a) => (a[0] >= 0 && a[0] < weaponCount(c) ? fireAt(c, a[1], a[0]) : 0)),
+  api('Actions', 'weaponLaserPower(i, energy)', 1, 'Like laserPower(energy), for weapon i. Returns 0 if there is no such laser.',
+    (c, a) => (a[0] >= 0 && a[0] < weaponCount(c) ? setLaserPower(c, a[1], a[0]) : 0)),
+  api('Actions', 'weaponAim(i, kind)', 1, 'Like aim(kind), for weapon i. Returns -1 if there is no such weapon.',
+    (c, a) => (a[0] >= 0 && a[0] < weaponCount(c) ? setAim(c, a[1], a[0]) : -1)),
   api('Actions', 'shieldAngle(degrees)', 1,
     'Point the energy shield along an angle in degrees (0 = east, 90 = south, 180 = west, 270 = north). The shield never aims itself: a program (the ShieldGuard block, say) must point it. It turns at a limited speed. Returns the angle, or -1 without a working shield emitter.',
     (c, a) => setShieldAngle(c.sim, c.e, a[0])),
@@ -520,6 +522,36 @@ export const UNIT_API: HostApi<UnitContext> = [
   api('Actions', 'shieldRange(tiles)', 1,
     'Set how far from the unit or building the energy shield is cast, in tiles (from just outside the hull up to what the emitter allows). A longer reach costs more energy every tick. Returns the tiles now, or -1 without a working shield emitter.',
     (c, a) => setShieldRange(c.sim, c.e, a[0])),
+  api('Actions', 'smoke(degrees)', 2,
+    'Throw a volley of 3 smoke canisters along an angle in degrees (0 = east, 90 = south): clouds that block sight for a while. Needs a smoke launcher that is rested and has the energy. Returns 1 if thrown, else 0.',
+    (c, a) => (throwSmoke(c.sim, c.e, a[0]) ? 1 : 0)),
+  api('Sensing', 'smokeReady()', 0, '1 if the smoke launcher is working and rested, else 0.',
+    (c) => (c.stats.smoke && (c.sim.smokeReady[c.e] ?? 0) <= c.sim.tick ? 1 : 0)),
+  api('Sensing', 'charging(h)', 2, '1 if a unit you know about is charging a railgun right now, else 0. A charge takes 5 seconds and shows to everyone.',
+    (c, a) => { const t = locate(c, a[0]); return t >= 0 && c.sim.rails.has(t) ? 1 : 0; }),
+  api('Actions', 'droneClass(name)', 2,
+    'Choose which of your small (micro or light) unit classes the drone bay builds, by name. Returns 1 if it is such a class of yours and this unit has a drone bay, else 0.',
+    (c, a) => (setDroneClass(c.sim, c.e, textAt(a[0])) ? 1 : 0), { text: [0] }),
+  api('Actions', 'launchDrones()', 2, 'Launch every docked drone, one at a time. Returns how many are docked, or 0 without a working drone bay.',
+    (c) => launchDrones(c.sim, c.e)),
+  api('Actions', 'recallDrones()', 2, 'Call every launched drone back: each docks when it reaches this unit. Returns how many are out, or 0 without a working drone bay.',
+    (c) => recallDrones(c.sim, c.e)),
+  api('Sensing', 'dronesDocked()', 0, 'Drones docked in the bay now.', (c) => c.sim.bays.get(c.e)?.docked.length ?? 0),
+  api('Sensing', 'dronesOut()', 0, 'Drones launched from the bay and still alive.', (c) => c.sim.bays.get(c.e)?.out.length ?? 0),
+  api('Actions', 'lightAngle(degrees)', 1,
+    'Point the spotlight along an angle in degrees (0 = east, 90 = south, 180 = west, 270 = north). The light never aims itself: a program (the Spotlight block, say) must point it. It turns slowly. Returns the angle, or -1 without a working spotlight.',
+    (c, a) => setLightAngle(c.sim, c.e, a[0])),
+  api('Actions', 'lightPower(energy)', 1,
+    'Set the energy per tick the spotlight is given, from 0 (off) up to what the module allows. The beam is 4 tiles long for every point, so more power sees further, and it is paid every tick. Returns the power now, or -1 without a working spotlight.',
+    (c, a) => setLightPower(c.sim, c.e, a[0])),
+  api('Sensing', 'lightHeading()', 0, 'The angle in degrees (0 = east, 90 = south) the spotlight is turning to, or -1 without a working spotlight.',
+    (c) => lightAngleOf(c.sim, c.e)),
+  api('Sensing', 'outwardBearing()', 6, 'Angle in degrees (0 = east, 90 = south) that points away from home: opposite the middle of the allied units and buildings within 15 tiles, or away from the middle of the map if there are none. It is where a light should look to see the edge of the fog.',
+    (c) => outwardBearing(c.sim, c.e)),
+  api('Sensing', 'lightBlocked(degrees)', 6, '1 if a beam pointed along that angle would fall on an allied unit (not a building) within 10 tiles, else 0.',
+    (c, a) => (lightBlocked(c.sim, c.e, a[0]) ? 1 : 0)),
+  api('Sensing', 'lightOn()', 0, '1 while the spotlight is lit (module on, finished and paid for this tick), else 0.',
+    (c) => (c.sim.light.has(c.e) && c.sim.light.f.power[c.e] > 0 ? 1 : 0)),
   api('Sensing', 'shieldUp()', 0, '1 while the energy shield is up (emitter on, unbroken and paid for this tick), else 0.',
     (c) => (c.sim.shields[c.e]?.live ? 1 : 0)),
   api('Sensing', 'incomingBearing()', 6, 'Angle in degrees (0 = east, 90 = south) to the nearest enemy shell or missile in flight within 10 tiles, or -1 if none. No sensor needed: it is what a shield turns to face.',
@@ -564,10 +596,12 @@ export const UNIT_API: HostApi<UnitContext> = [
   api('Energy & modules', 'moduleCount()', 0, 'Number of parts, including the chassis (index 0..n-1).', (c) => c.bp.parts.length),
   api('Energy & modules', 'moduleKind(i)', 0, 'Kind of part i as an M_* constant (0 if out of range).',
     (c, a) => { const id = c.bp.parts[a[0]]; return id ? SLOT_CODES[PARTS[id].slot] : 0; }),
-  api('Energy & modules', 'moduleOn(i)', 0, '1 if part i is switched on and not broken (passive parts are always on).',
-    (c, a) => (a[0] >= 0 && a[0] < c.bp.parts.length && !(((c.sim.modules.f.off[c.e] | c.sim.modules.f.broken[c.e]) >>> a[0]) & 1) ? 1 : 0)),
+  api('Energy & modules', 'moduleOn(i)', 0, '1 if part i is switched on, not broken and not held down by an ion bolt (passive parts are always on).',
+    (c, a) => (a[0] >= 0 && a[0] < c.bp.parts.length && !(((c.sim.modules.f.off[c.e] | c.sim.modules.f.broken[c.e] | c.sim.modules.f.ion[c.e]) >>> a[0]) & 1) ? 1 : 0)),
   api('Energy & modules', 'moduleBroken(i)', 0, '1 if part i has been broken by damage: it does nothing until a repair module mends it.',
     (c, a) => (a[0] >= 0 && a[0] < c.bp.parts.length && (c.sim.modules.f.broken[c.e] >>> a[0]) & 1 ? 1 : 0)),
+  api('Energy & modules', 'ionLeft()', 0, 'Ticks left before the module an ion bolt is holding down on this unit or building works again (0 if none is held down).',
+    (c) => (c.sim.ionActive.has(c.e) ? Math.max(0, (c.sim.ionUntil[c.e] ?? 0) - c.sim.tick) : 0)),
   api('Energy & modules', 'brokenOf(h)', 0, 'Number of broken modules of an own unit or building (0 if none, -1 if it is not yours): worth a visit from a repair module.',
     (c, a) => {
       const t = c.sim.world.resolve(a[0]);
@@ -651,6 +685,58 @@ export const UNIT_API: HostApi<UnitContext> = [
   api('Movement', 'escapeY()', 6, 'Tile y of the tile escapeX() finds, or -1.', (c) => escapeCell(c)?.[1] ?? -1),
   api('Movement', 'wade()', 0, 'Deepest liquid (see depthAt) this unit can enter: 2 (shallow water, slowly) on wheels, tracks and legs, 5 on an amphibious drive, 8 on a hover skirt (which skims at full speed, and is scorched by lava). Flying units: 0.', (c) => (c.stats.flying ? 0 : c.stats.wade)),
 ];
+
+/** Weapons on this unit (modules, working or not): a script indexes them 0 up. */
+const weaponCount = (c: UnitContext): number => c.stats.weapons.length;
+
+/** Weapon i if it exists and works, else null. */
+const weaponAt = (c: UnitContext, i: number) => (i >= 0 && i < c.stats.weapons.length ? c.stats.weapons[i] : null);
+
+/** Runs `each` for weapon i that works (every working weapon when i is -1); the sum of what it returns. */
+function eachWeapon(c: UnitContext, i: number, each: (slot: number, w: NonNullable<ReturnType<typeof weaponAt>>) => number): number {
+  let sum = 0;
+  const { weapons } = c.stats;
+  for (let k = i < 0 ? 0 : i; k < (i < 0 ? weapons.length : Math.min(i + 1, weapons.length)); k++) {
+    const w = weapons[k];
+    if (w && c.sim.weaponStores[k].has(c.e)) sum += each(k, w);
+  }
+  return sum;
+}
+
+/** Locks weapon i (every weapon when -1) on a known unit; 1 if one of them has it in range. */
+function fireAt(c: UnitContext, h: number, i: number): number {
+  const { sim, e } = c;
+  const t = locate(c, h);
+  const ok = t >= 0 && t !== e && sim.health.has(t);
+  return eachWeapon(c, i, (slot, w) => {
+    const f = sim.weaponStores[slot].f;
+    if (!ok) {
+      f.target[e] = -1;
+      return 0;
+    }
+    f.target[e] = sim.world.handle(t);
+    return reachDistance(sim, e, t) <= w.range + rangeBonus(sim, e, t, w.kind) ? 1 : 0;
+  }) > 0 ? 1 : 0;
+}
+
+/** Sets the energy per shot of weapon i (every laser when -1); the power now in use, or 0 without a laser. */
+function setLaserPower(c: UnitContext, energy: number, i: number): number {
+  let now = 0;
+  eachWeapon(c, i, (slot, w) => {
+    if (w.kind !== 'laser') return 0;
+    const p = energy <= 0 ? 0 : Math.min(Math.max(1, Math.floor(energy)), w.use);
+    c.sim.weaponStores[slot].f.power[c.e] = p;
+    now = p > 0 ? p : w.use;
+    return 1;
+  });
+  return now;
+}
+
+/** Aims weapon i (every weapon when -1) at one kind of module; the kind now aimed at, or -1 without a weapon. */
+function setAim(c: UnitContext, module: number, i: number): number {
+  const kind = module > 0 && module <= 255 ? Math.floor(module) : 0;
+  return eachWeapon(c, i, (slot) => ((c.sim.weaponStores[slot].f.aim[c.e] = kind), 1)) > 0 ? kind : -1;
+}
 
 /** The nearest cell round the unit that it fits in and that is neither lava nor a void: ground it can leave lava for. */
 function escapeCell(c: UnitContext): [number, number] | null {

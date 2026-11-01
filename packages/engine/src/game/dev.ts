@@ -6,6 +6,11 @@ import { TILE } from './parts';
 import type { Simulation } from './simulation';
 import type { DevRemoveScope } from '../net/dev';
 import { flameBurstAt, lobFlame } from './flame';
+import { dropSmoke } from './smoke';
+import { startRail } from './rail';
+import { ionHold } from './ion';
+import { bayCapacity, fillBay, launchDrones, recallDrones } from './hangar';
+import type { DevWeaponAction } from '../net/dev';
 
 /*
  * Developer tools on the simulation: instant spawning, removal, healing and the like, for the Dev Options menu
@@ -133,6 +138,39 @@ export function devDamage(sim: Simulation, ids: readonly number[], amount: numbe
     if (!sim.unit.has(e)) continue;
     sim.damage(e, amount, 0);
     n++;
+  }
+  return n;
+}
+
+/**
+ * The new weapons and modules on demand (see DevCommand 'weapons'): a volley of smoke round a tile, or an action on each listed unit
+ * (an ion hold, an instant railgun shot, full drone bays, launching or recalling drones). Returns how many things it acted on.
+ */
+export function devWeapons(sim: Simulation, action: DevWeaponAction, ids: readonly number[], tx: number, ty: number): number {
+  if (action === 'smoke') return dropSmoke(sim, tx * TILE + TILE / 2, ty * TILE + TILE / 2);
+  let n = 0;
+  for (const e of ids) {
+    if (!sim.unit.has(e) || sim.isSite(e)) continue;
+    if (action === 'ion') {
+      if (ionHold(sim, e)) n++;
+    } else if (action === 'rail') {
+      const w = sim.stats(e).weapon;
+      const t = sim.weapon.has(e) ? sim.world.resolve(sim.weapon.f.target[e]) : -1;
+      if (!w || w.kind !== 'rail' || t < 0) continue;
+      sim.energy.f.amount[e] = Math.max(sim.energy.f.amount[e], w.use);
+      startRail(sim, e, t, w.use, 0);
+      const r = sim.rails.get(e);
+      if (r) {
+        r.left = 1;
+        n++;
+      }
+    } else if (action === 'fill') {
+      if (bayCapacity(sim, e) > 0 && fillBay(sim, e)) n++;
+    } else if (action === 'launch') {
+      if (launchDrones(sim, e) > 0) n++;
+    } else if (recallDrones(sim, e) > 0) {
+      n++;
+    }
   }
   return n;
 }

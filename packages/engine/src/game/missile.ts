@@ -71,7 +71,7 @@ export function launchMissile(sim: Simulation, e: number, target: number, w: Lau
     hitChance: m.hitChance,
     owner,
     target: sim.world.handle(target),
-    aim: sim.weapon.f.aim[e],
+    aim: sim.firing.f.aim[e],
   };
   return id;
 }

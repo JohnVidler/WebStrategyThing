@@ -7,8 +7,8 @@ export interface DesignerActions {
   defineClass(name: string, parts: string[]): void;
   uploadProgram(blueprint: number, source: string): void;
   retireClass(blueprint: number, retired: boolean): void;
-  /** Image of a (possibly unsaved) design at `pxPerTile` pixels per map tile, in the player's colours or a rival's. */
-  preview(parts: readonly string[], pxPerTile: number, rival?: boolean): Promise<string>;
+  /** Image of a (possibly unsaved) design at `pxPerTile` pixels per map tile, in the player's colours or a rival's. With `fit`, instead scaled so its longer side is `fit` pixels, however small the design. */
+  preview(parts: readonly string[], pxPerTile: number, rival?: boolean, fit?: number): Promise<string>;
   iconFor(blueprint: number): Promise<string>;
   /** When given, the designer shows buttons to download, upload and reset the saved set of classes (the offline designer; in a match they live on the menu). */
   designFiles?: { download(): void; upload(file: File): void; reset(): void };

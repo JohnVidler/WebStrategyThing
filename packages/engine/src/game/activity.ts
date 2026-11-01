@@ -46,6 +46,8 @@ export const ACTIVITY_OUTCOMES: Readonly<Record<string, readonly string[]>> = {
 export const EMPTY_BELOW = 4;
 /** Charged means this share of capacity (percent). */
 export const CHARGED_PERCENT = 95;
+/** A unit waiting at a charging pad that has no energy gives up after this many ticks (and each time this many pass). */
+const CHARGE_DRY_CHECK = 50;
 /** A flat unit is revived to this share (percent). */
 export const REVIVED_PERCENT = 50;
 /** How close an engaging unit tries to get to a target it cannot reach with its weapon (tiles). */
@@ -106,7 +108,7 @@ export function cancelActivity(sim: Simulation, e: number, halt = false, forget 
   sim.activities[e] = undefined;
   sim.activeUnits.delete(e);
   release(sim, e);
-  if (a.kind === ActivityKind.Engage && sim.weapon.has(e)) sim.weapon.f.target[e] = -1;
+  if (a.kind === ActivityKind.Engage) for (const store of sim.weaponStores) if (store.has(e)) store.f.target[e] = -1;
   if (halt) sim.halt(e);
 }
 
@@ -307,7 +309,11 @@ function step(sim: Simulation, e: number, a: ActivityState): number {
       if (t < 0 || !(sim.stats(t).caps & Caps.Charger) || sim.unit.f.owner[t] !== sim.unit.f.owner[e]) return 1;
       if (s.energyCapacity > 0 && sim.energy.f.amount[e] * 100 >= s.energyCapacity * CHARGED_PERCENT) return 0;
       const r = approach(sim, e, t, 1);
-      return r === 'blocked' ? blocked : -1;
+      if (r === 'blocked') return blocked;
+      // A pad with nothing left to give (no power link, or drained by other units) must not hold the unit for ever:
+      // give up every CHARGE_DRY_CHECK ticks so its program can carry on (and try again later).
+      if (r === 'in' && sim.energy.f.amount[t] <= 0 && a.age > 0 && a.age % CHARGE_DRY_CHECK === 0) return 1;
+      return -1;
     }
     case ActivityKind.Supply: {
       if (t < 0 || !sim.energy.has(t) || sim.unit.f.owner[t] !== sim.unit.f.owner[e]) return 1;
@@ -319,14 +325,20 @@ function step(sim: Simulation, e: number, a: ActivityState): number {
       return -1;
     }
     case ActivityKind.Engage: {
-      const w = s.weapon;
-      if (!w || !sim.weapon.has(e)) return blocked;
+      if (!s.weapon) return blocked;
       if (t < 0 || !sim.health.has(t)) return 0;
       const seen = sim.locate(e, a.target);
       if (seen < 0) return 1;
-      sim.weapon.f.target[e] = a.target;
+      // Every working weapon takes the target; close in until all of them can reach it (the shortest reach decides).
+      let inReach = true;
+      for (let i = 0; i < s.weapons.length; i++) {
+        const w = s.weapons[i];
+        if (!w || !sim.weaponStores[i].has(e)) continue;
+        sim.weaponStores[i].f.target[e] = a.target;
+        if (reachDistance(sim, e, t) > w.range + rangeBonus(sim, e, t, w.kind)) inReach = false;
+      }
       // Stop as soon as the target (or the enemy shield in front of it) is in reach: no need to get any closer to fire.
-      if (reachDistance(sim, e, t) > w.range + rangeBonus(sim, e, t, w.kind)) {
+      if (!inReach) {
         const r = approach(sim, e, t, ENGAGE_CLOSE);
         if (r === 'blocked') return blocked;
       } else if (sim.motion.has(e) && sim.motion.f.moving[e]) {

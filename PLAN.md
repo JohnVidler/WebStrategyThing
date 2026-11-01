@@ -23,6 +23,8 @@ Planned work and decisions. Compacted 2026-10-27: finished milestones are summar
 
 15. **Water, lava and void** (W1 to W5 built 2026-10-30, as-built notes and follow-ups in the section below).
 
+16. **New weapons and modules W-A to W-F** (decided and built 2026-10-31, section at the end): flak hits fliers, smoke launcher, point defence, railgun, ion gun, drone bay. Open: browser check and balance (`TODO.md`), sounds, bots that use them, drifting smoke, a unit cap for docked drones.
+
 ## Water, lava and void (planned and built 2026-10-30)
 
 **As built (2026-10-30), where it differs from the plan below:**
@@ -247,3 +249,118 @@ Why: 34 ready-made designs exist, factories build them straight away and the sto
 3. Optional tech path: modules unlock by building the matching structure during the match (decide with the owner).
 4. First-time guidance: a short guided design in the campaign or Single Player, and a clearer "why design" blurb in the Designer and Manual.
 5. Fallback if the designer stays optional: keep it as the advanced mode and make stock units a deliberate, balanced traditional-RTS roster.
+
+---
+
+# Several weapons per class (script side done 2026-11-01; engine side open)
+
+Scripts already see weapons as a list: `self.modules.weapon.length`, `self.modules.weapon[i].fire(h)` / `.laserPower(n)` / `.aim(k)` / `.kind` / `.range`, and `self.modules.weapon.filter(i => self.modules.weapon[i].kind === W_LASER).first()` (builtins `weaponCount`, `weapons`, `weaponKind`, `weaponRange`, `weaponFire`, `weaponLaserPower`, `weaponAim` in `game/api.ts`, names in `game/members.ts`). **Update 2026-11-01: steps 1 to 3 are built** (see `PROGRESS.md`): a class carries up to `WEAPONS_BY_SIZE` weapons (micro 1, light 2, medium 2, heavy 3, super-heavy and colossus 4; a building up to its footprint, at most 4), each with its own target, cooldown, laser power and aim; the plain `fire(h)`, `laserPower(n)` and `aim(k)` act on every weapon, the indexed forms on one. Decisions from the owner: a weapon never picks its own target (a weapon with no lock holds fire; the owner's "fire at its current angle" is NOT built, see below), matter is shared through the one cargo bay, and the limit follows chassis size. Still open: step 4 (the hull shows one turret and one beam origin whatever the number of weapons), the dev tools, the balance pass, and bots designing multi-weapon classes.
+
+Steps, each shippable on its own (the owner chose full multi-weapon on 2026-11-01; decide the open questions with them first):
+1. **State per weapon.** `Weapon` component (target, aim, power, cooldown, charge) becomes per weapon index; `BlueprintStats.weapon` becomes `weapons[]` (same fields). About 70 uses in 20 files (`systems.ts` combat, `shell/missile/flame/rail/ion/aim.ts`, `ai.ts`, `activity.ts`, `vision.ts`, `dev.ts`, client `art/renderer/DesignTab/gameSounds`). Keep the hot path allocation-free: parallel typed arrays indexed by `e * MAX_WEAPONS + i`, `MAX_WEAPONS` small (say 4).
+2. **Make the script builtins real.** `weaponCount`/`weaponKind`/`weaponRange` read the list; `weaponFire(i, h)` etc. act on weapon i; `fire(h)` stays weapon 0. `engage(h)` and the automatic fire pick every weapon in reach.
+3. **Blueprint and designer.** Allow several weapon modules (by chassis size and slots); the designer shows each; the CPU/energy/matter cost per shot adds up; the balance pass (P3) and the factory cost need a look.
+4. **Rendering and sound.** Mount positions on the hull, one beam/shell origin per weapon, per-weapon cooldown flashes.
+5. **Same for shield, light and smoke** only if wanted (they are objects, not lists, today).
+Open questions: does a weapon the script did not aim fire on its own target (nearest enemy in its reach) or hold fire? Do two weapons share the cargo bay's matter? Is the limit by chassis size?
+
+# New weapons and modules W-A to W-F (decided with the owner 2026-10-31; ALL BUILT 2026-10-31, see `PROGRESS.md` for what differs from the text below: AIR detect kind, no cloud drift, drones are micro or light and are records not entities, no Rail or Point Defence tower, no sounds or bot use yet; looks and balance await a person, see `TODO.md`)
+
+Six additions, to be built one at a time in this order (each one is a separate, finished change: tests, typecheck, docs, `PROGRESS.md`, changelog). They also serve P3 (counters): flak gets an air role, the railgun punishes massed units, point defence and smoke counter missiles, shells and lasers, and the drone bay gives big hulls a reason to exist. All numbers below are **first guesses**: put them in `rules.ts` (`PART_TUNING` and named constants), never inline, so they can be tuned later. If a step needs a design decision this plan does not cover, stop and ask the owner rather than guessing.
+
+## How every new part is added (checklist for each step)
+
+Read the code named here before writing anything; copy the closest existing part rather than inventing a new pattern.
+
+1. **Rules**: tuning in `PART_TUNING` (`engine/src/game/rules.ts`, around line 525) plus any named constants near the related ones (e.g. next to `FLAK_BURST_RADIUS`, `TESLA_*`).
+2. **Catalogue**: an entry in `CATALOGUE` (`engine/src/game/parts.ts`) with a player-facing `description` built from the tuning values (see how `flak.cannon` and `shield.emitter` do it). A new weapon kind goes in the `WeaponKind` union; a new module type needs a new `PartSlot`, a new number at the end of `SLOT_CODES` (never renumber existing codes: scripts use them), and an entry in `SWITCHABLE` if it uses energy.
+3. **Blueprint stats** (`engine/src/game/blueprint.ts`, `statsFor`, around line 270): add the fields the systems need. **A blueprint has only one `weapon` stat** (the last weapon module wins), so anything that must work alongside a weapon (point defence, smoke, drone bay) is its own slot, not a weapon.
+4. **System**: the game logic, in `systems.ts` or a new file beside it when it is more than a few dozen lines (follow `light.ts`, `shield.ts`, `flame.ts`, `shell.ts`, `missile.ts`: a header comment explaining the rule, state that does not replicate in a side table on `Simulation`, state the client must draw in a small replicated component in `components.ts`). Register the system in the tick in `simulation.ts` with a small, focused edit.
+5. **Hot path rules** (`AGENTS.md`, "Performance goals"): no new arrays, objects or closures per unit per tick; use `sim.spatial.forEachInRadius`, never all-pairs; do expensive work only when a cooldown is ready or a projectile/effect exists. Randomness only from `sim.rng` (determinism). Hard caps on anything that spawns entities (like `MAX_FLAMES`).
+6. **Script API** (`engine/src/game/api.ts`, `flow/blocks.ts`, `flow/check.ts`): any new call gets a cycle cost and its docs string; actions go in the action list, settings in `SETTINGS` and are called as `config.x(...)`. Keep the checker and the sandbox in step. A starter block for the common use (like the ShieldGuard and Spotlight blocks) is welcome.
+7. **Network**: new replicated fields are encoded compactly like the existing components; nothing big per tick. Validate anything new arriving from clients (`net/protocol.ts`).
+8. **Client**: a turret/glyph per new weapon kind in `client/src/art.ts` (the `weapon` union around line 44 and the `case` list around line 574: one readable shape per weapon kind, see P2 step 4), shot effects (`beams.ts`, `blasts.ts`, or a new file like `spotBeam.ts`), sounds (`gameSounds.ts`, with `cooldownMs`/`maxVoices`), Reduce motion respected (`STYLE.md`). Do not rebuild Pixi objects per frame.
+9. **Content**: at least one stock design using the part in `engine/src/game/content.ts` (with a short program, like `FLAK_PROGRAM_TEXT`), so the Dev Options Spawn tab and the factory list can produce it.
+10. **Dev tools** (`AGENTS.md` rule 9): a `DevCommand` in `engine/src/net/dev.ts` handled in `Match.dev` where the effect can be forced (named in each step below), a control on the matching tab of `client/src/devTools.ts`, and a test in `server/test/dev.test.ts`.
+11. **Docs**: the in-game Docs (`client/src/docs.ts`), the Manual (`client/src/manual.ts`) and `docs/game.md`.
+12. **Tests**: an engine test file per step in `engine/test/` (e.g. `railgun.test.ts`) covering the rule and its edge cases; `npm test` and `npm run typecheck` pass, including `engine/test/perf.test.ts` (do not loosen a budget; add one if the step adds a per-unit per-tick system).
+13. **Record**: `PROGRESS.md`, a `TODO.md` entry for what only a person can check in a browser (looks, feel, balance), and a player changelog bullet (`AGENTS.md`, "Player-facing changelog"). Rebalances that change what an existing unit does (W-A) are disruptive: say so plainly in the changelog.
+14. **Bots** (`engine/src/game/ai.ts`, `bot.ts`): optional per step, noted where it matters.
+
+## W-A. Flak hits flying units
+
+Flak today damages only missiles (`systems.ts` `combatSystem`: the target check around line 737 drops any target that is not a missile, and the air-burst around line 760 only hurts missiles). New rule: **flak also hits enemy flying units** (`sim.stats(t).flying`, never structures or ground units).
+
+1. Target check: allow a target that is a missile **or** an enemy flying unit.
+2. Air-burst: inside `FLAK_BURST_RADIUS` of the target, damage every enemy missile (as now, `stats.damage`) and every enemy flying unit by a new `FLAK_AIR_DAMAGE` (first guess 8 per burst; flak fires every 3 ticks, so about 27 damage per second against each flier caught in the burst). Never misses, as now. Flak still ignores shields (`shell.ts` `rangeBonus` and the shield code treat flak as special: keep that).
+3. Sensing: check `sensor.ts` (`DetectKind`, around line 103) for a way to detect only fliers. If there is none, add a `FLIER` detect kind (enemy flying units only) to the Detected block and the API constants, with docs.
+4. Programs: update `FLAK_PROGRAM_TEXT` and the Flak Turret program (`content.ts` around lines 197 to 205) to engage missiles first, then fliers.
+5. Descriptions: the `flak.cannon` description in `parts.ts` ("Harmless to units and buildings" becomes "harmless to ground units and buildings").
+6. Bots: `ai.ts` builds Flak Turrets/Trucks when it has seen missiles (`seenMissiles`, around lines 522, 547, 737); make seeing enemy fliers count too.
+7. Dev tools: none needed beyond spawning a Flak Truck and a helicopter (already possible).
+8. Tests: flak damages an enemy flier in the burst; does not damage an enemy ground unit or building beside it; does not damage own or allied fliers; still kills missiles as before.
+9. Changelog: this changes what an existing unit does, so say it plainly (Flak Trucks and Turrets now also shoot aircraft).
+
+## W-B. Smoke launcher (module, slot `smoke`)
+
+A module any unit or building can carry (any chassis size, including micro; one per class). It **uses no matter**, costs some energy per volley, has a **long cooldown**, and each use throws a **volley of 3 canisters**.
+
+1. **Firing**: script action `smoke(degrees)` (and a block, e.g. "Pop smoke when hit" using the existing damage event). Three canisters thrown at the heading ±`SMOKE_SPREAD` (first guess 25 degrees; the middle one straight), each landing `SMOKE_THROW` tiles out (4), costing `use` energy for the volley (60), then `SMOKE_COOLDOWN` ticks (300 = 30 s). A switched-off or broken launcher cannot fire.
+2. **Clouds**: each canister makes a cloud entity (replicated `Smoke` component: position, radius, age, for drawing) of radius `SMOKE_RADIUS` (1.5 tiles) lasting `SMOKE_TICKS` (150 = 15 s). Drifts slowly with the weather's wind (`sim.weatherNow()`), deterministic. Rain may shorten it (optional). Cap with `MAX_SMOKE`.
+3. **Effect**: smoke **blocks sight** like rock does: sensors, vision and fog (`vision.ts`: the `VisionGrid` shadowcaster treats a wall tile as blocking; add a per-tile smoke grid, e.g. a `Uint16Array` of "smoky until tick" per tile, filled when a cloud lands or moves, so the shadowcaster can test it cheaply), weapon sight cones, spotlight beams (`light.ts`) and laser links. Radar and radio are **not** blocked (they are the counter). Lasers that cross smoke do `SMOKE_LASER_FACTOR` (0.5) damage. Check whether `combatSystem` needs the shooter to see its target today (it does not appear to): if not, smoke stops **new** targets being found by sensors and the Detected block, and a locked target that disappears into smoke is dropped once the shooter's owner can no longer see it. Decide this with the owner if it turns out larger than that.
+4. **Client**: soft grey drifting puffs (pooled sprites, no per-frame rebuilds), canister arcs, a pop sound; with Reduce motion, static fading discs. Smoke over fog must not reveal anything (clouds in fog are hidden like other entities).
+5. **Dev tools**: a "Smoke at point" control (Combat tab) that drops a volley at a clicked spot.
+6. **Tests**: three clouds per volley; no matter spent; cooldown respected; a unit behind a cloud is not seen and not detected; radar still sees it; laser damage halved through smoke; clouds expire; the cap holds.
+
+## W-C. Point defence (module, slot `defence`)
+
+An automatic close-in turret that shoots down **incoming enemy missiles and cannon shells** (and optionally fireballs in flight). No script needed, unlike flak (which must be aimed with `fire()`): it is the passive alternative. Not a weapon slot, so it works alongside the class's real weapon.
+
+1. **Tuning** (first guesses): range `PD_RANGE` 3 tiles, cooldown 4 ticks, `use` 3 energy per shot, mass 2, any chassis size.
+2. **Rule**: when the module's cooldown is ready **and at least one enemy missile or shell exists in the match** (keep a cheap count; do no work otherwise), find the nearest enemy missile (`sim.missile`) or shell (`sim.shell`; shells are entities with a position, see `shell.ts` `launchShell`) within range with `sim.spatial.forEachInRadius`. Shoot it: a missile is hit with its own `hitChance` (`missile.ts` `shotHitsMissile`) and takes `PD_DAMAGE` (4); a shell is destroyed with `PD_SHELL_HIT_CHANCE` (0.35, drawn from `sim.rng`). Pay energy per shot; a flat battery means no shots. More than one module: more shots per cooldown (one each).
+3. Shields: point defence shoots out from inside its own shield fine (the projectile is the target, not a unit).
+4. Script: `setModule` can switch it off; no new API needed. Optionally a sensing call for "shots fired by my point defence" is not needed: skip it.
+5. **Client**: a small twin-barrel glyph, short bright tracers (reuse `beams.ts` gun shots), a puff where a shell is stopped; sound with a low `maxVoices`.
+6. **Content**: a stock design (e.g. an escort truck) and a point-defence building.
+7. **Dev tools**: none new needed (spawn a Rocket Truck and the escort); add one if testing proves awkward.
+8. **Tests**: shoots an incoming enemy missile and shell in range; ignores own and allied ones and anything out of range; spends energy; does nothing with no battery or when switched off; deterministic for a seed. Add a perf check: a 256-a-side fight with point defence on many units stays within the existing budgets.
+
+## W-D. Railgun (weapon kind `rail`)
+
+A heavy line weapon with a **long charge-up**: very high damage that pierces through several targets, but the carrier is exposed while it charges, so a swarm can kill or interrupt it before it ever fires.
+
+1. **Tuning** (first guesses): `minSize` 3 (heavy and bigger hulls, and buildings), mass 8, range 18 tiles, damage 120, charge `RAIL_CHARGE_TICKS` 50 (5 s), cooldown 60 ticks after a shot, `use` 400 energy taken **when the charge starts** (lost if the charge is broken).
+2. **Charge**: when the weapon is ready and has a target in range, it starts charging (side table on `Simulation`, e.g. a charge counter per entity; do not reuse `weapon.power`, which the laser and flamethrower use). The charge **breaks** (energy lost, cooldown starts) if, during it: the carrier takes at least `RAIL_BREAK_DAMAGE_FRACTION` (0.15) of its max hit points, or is stunned (tesla, lightning), or the weapon module is switched off or broken, or the target leaves range. A mobile carrier cannot move while charging (it stops; a move order cancels the charge).
+3. **Shot**: an instant line from the muzzle to full range along the aim at release. It damages every enemy unit and building the line passes through, up to `RAIL_PIERCE` (4) targets, each one after the first taking `RAIL_PIERCE_FALLOFF` (0.6) of the previous one's damage. Rock stops it (trace the terrain like the shell code does). An enemy shield across the line takes the whole remaining hit (`shieldAbsorb`) and stops it. Own units on the line are not hurt (a first guess; ask the owner if friendly fire seems better). Ignores missiles.
+4. **Telegraph**: a replicated "charging" state (start tick and heading) so every client sees a glint at the muzzle and a faint aim line for the whole charge, and so enemy programs can react: a sensing call `charging(h)` (1 if a known unit is charging a railgun, else 0), with a cycle cost.
+5. **Client**: a long barrel glyph, growing glow during the charge, a bright straight beam with a fading trail on release, a heavy crack sound; with Reduce motion, no flicker.
+6. **Content**: one stock heavy design (e.g. "Lancer"-style naming is taken: pick a new name) and a railgun tower.
+7. **Dev tools**: "Charge railguns instantly" or a "Fire selected railgun" control (Combat tab) so the shot can be seen at once.
+8. **Tests**: the charge takes the full time; energy is taken at the start; damage to 1, 2 and 4 targets in a line with falloff; the fifth is not hit; rock and an enemy shield stop it; each break condition (damage threshold, stun, switched off, target out of range, move order) cancels the charge and loses the energy; the `charging(h)` call.
+
+## W-E. Ion gun (weapon kind `ion`)
+
+A single-target hit-scan weapon that **switches one of the target's modules off for a while** instead of doing damage. It must be **expensive in energy** so it is a deliberate choice, not something that keeps a player's units permanently disabled.
+
+1. **Tuning** (first guesses): `minSize` 2, mass 4, range 9 tiles, `use` 350 energy per shot, cooldown 80 ticks (8 s), disable time `ION_TICKS` 60 (6 s), immunity after an ion effect ends `ION_IMMUNITY_TICKS` 40 (4 s: the target cannot be ion-disabled again in that time, by anyone).
+2. **Which module**: the one `config.aim(M_...)` points at if the target has a working switchable one of that kind, else a random working switchable module (draw from `sim.rng`; use the same pick rule as module damage in `simulation.ts` around lines 790 to 830). Passive modules (chassis, armour, batteries, memory) cannot be disabled. Only one module per target at a time; hitting a target that is already disabled or immune wastes the shot (it still costs energy).
+3. **State**: a third module mask alongside `modules.f.off` and `modules.f.broken`, combined into the stats the same way (`simulation.ts` around line 883: `off | broken | ion`), with the existing "working modules changed" refresh (around line 864) called when it starts and ends. Keep a short list of active ion effects and check only those each tick (never sweep all units). Networked like the broken bit so the Modules list can show it. Scripts see the module as unusable while it lasts (as for a broken module), and a sensing call (e.g. `ionOf(slot)` beside `brokenOf`) says how long is left.
+4. Shields block it like any shot: the shot stops at the arc and the shield's battery loses a flat `ION_SHIELD_DRAIN` (100) energy. Point defence ignores it.
+5. **Client**: a blue-violet bolt, crackle on the target, and a clear "disabled" look on the module glyph (it can share the planned broken-module look, Open work 7).
+6. **Dev tools**: "Ion selected" (Combat tab): disables a module of the selected units or buildings.
+7. **Tests**: the aimed module is disabled for exactly `ION_TICKS`, then works again; a random pick when nothing is aimed; passive modules never chosen; immunity window; energy cost and cooldown; a shield stops it and drains energy; a disabled motor stops a unit and a disabled weapon stops it firing.
+
+## W-F. Drone bay (module, slot `hangar`)
+
+A carrier module for heavy and bigger **mobile** hulls (buildings later, if wanted). It builds, carries, launches and recalls a few **micro** units, each a full unit with its own program. This is the largest step: build it last, and split it into sub-steps (carrying, then building, then launch/recall, then UI) with tests for each.
+
+1. **Tuning** (first guesses): `minSize` 3, mass 6, `mobileOnly`, capacity `DRONE_BAY_CAPACITY` 2 per module, recharge docked drones 10 energy per tick from the carrier's battery, repair docked drones 1 hit point per tick, launch one drone every 5 ticks.
+2. **Which drone**: a script setting naming a micro class, following how `queueUnit` names a class (check `api.ts`); only micro chassis (tier 0) classes are accepted. The designer can show the chosen class later.
+3. **Building**: the bay builds its drones itself, as a micro factory would, paying the class's matter from the carrier's cargo and its energy from the battery, at `DRONE_BUILD_FACTOR` (1.5) times the normal build time. Drones count against the unit cap.
+4. **Carrying**: a docked drone is a real unit that is not on the map: out of the spatial index, vision and collision, cannot be targeted or seen, and its position follows the carrier (side table `carrier[e]`). Its program keeps running but cannot move or fire while docked (or is paused: pick the simpler one and say which). If the carrier dies, docked drones die with it.
+5. **Launch and recall**: actions `launchDrones()` and `recallDrones()` (with cycle costs and caps), and events for the drone's program (e.g. a Visitor-style "launched" and "docked", see `Simulation.addVisitor`). A recalled drone drives or flies back and docks when it reaches the carrier.
+6. **Client**: a hatch on the carrier hull, drones fly out of and into it; the selection panel shows docked drones.
+7. **Content**: one stock carrier and one stock drone design.
+8. **Dev tools**: "Fill drone bays" and "Launch/recall selected drones" (Spawn or Combat tab).
+9. **Tests**: build up to capacity and no further; matter and energy paid; docked drones invisible and untargetable; launch and recall; recharge and repair while docked; carrier death kills docked drones; unit cap respected; deterministic. A perf case in `engine/test/perf-scaling.test.ts` with many carriers.
+10. Bots: not required in this step.

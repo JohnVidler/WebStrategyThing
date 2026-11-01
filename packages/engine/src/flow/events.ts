@@ -28,7 +28,7 @@ export interface EventDef {
 }
 
 /** Sensor kinds a `Detected` block can watch, in constants form. */
-export const DetectKind = { Enemy: 1, Resource: 2, DamagedAlly: 3, Missile: 4 } as const;
+export const DetectKind = { Enemy: 1, Resource: 2, DamagedAlly: 3, Missile: 4, Flier: 5, Air: 6 } as const;
 /** Order policy constants. */
 export const OrderPolicy = { Queue: 0, Replace: 1 } as const;
 /** Which kind of link carried a Message. */
@@ -45,6 +45,8 @@ export const FLOW_CONSTANT_DOCS: readonly (readonly [string, number, string])[] 
   ['RESOURCE', DetectKind.Resource, 'Detected kind: a resource field with matter left'],
   ['DAMAGED_ALLY', DetectKind.DamagedAlly, 'Detected kind: an own unit or building missing hit points'],
   ['MISSILE', DetectKind.Missile, 'Detected kind: an enemy missile in flight (ENEMY reports them too, among everything else)'],
+  ['FLIER', DetectKind.Flier, 'Detected kind: an enemy flying unit (ENEMY reports them too, among everything else); flak can shoot these'],
+  ['AIR', DetectKind.Air, 'Detected kind: an enemy missile or enemy flying unit, whichever is nearest (what flak shoots; one kind, so even a basic sensor sees both)'],
   ['NEAREST', DetectSort.Nearest, 'Detected sort: closest first'],
   ['WEAKEST', DetectSort.Weakest, 'Detected sort: fewest hit points first (better sensors)'],
   ['STRONGEST', DetectSort.Strongest, 'Detected sort: most hit points first (better sensors)'],

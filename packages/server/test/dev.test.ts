@@ -94,6 +94,16 @@ describe('developer commands', () => {
     expect(spawned.every((e) => !match.sim.isSite(e))).toBe(true);
   });
 
+  it('spawn a Spotlight Tower that is lit and lends its owner a beam of sight', () => {
+    const { match, id, run } = startMatch(true);
+    run({ kind: 'spawn', owner: id, template: 'Spotlight Tower', x: 30, y: 30, count: 1 });
+    ticks(match, 2);
+    const tower = match.sim.unit.dense.find((e) => match.sim.unit.f.owner[e] === id && match.sim.blueprintOf(e)?.name === 'Spotlight Tower')!;
+    expect(tower).toBeDefined();
+    expect(match.sim.isSite(tower)).toBe(false);
+    expect(match.sim.light.f.power[tower]).toBeGreaterThan(0);
+  });
+
   it('refuse unknown teams and classes without changing anything', () => {
     const { match, run, last } = startMatch(true);
     const total = match.sim.unit.dense.length;
@@ -191,6 +201,38 @@ describe('developer commands', () => {
     expect(match.sim.unit.has(a)).toBe(false);
   });
 
+  it('weapons: smoke at a point, an ion hold, an instant railgun shot and drone bays on demand', () => {
+    const { match, id, run } = startMatch(true);
+    const sim = match.sim;
+    run({ kind: 'weapons', action: 'smoke', ids: [], x: 30, y: 30 });
+    expect(sim.smoke.dense.length).toBe(3);
+    // spawn the units that use the other actions
+    run({ kind: 'spawn', owner: id, template: 'Disruptor', x: 20, y: 20, count: 1 });
+    run({ kind: 'spawn', owner: id, template: 'Longbow', x: 24, y: 20, count: 1 });
+    run({ kind: 'spawn', owner: id, template: 'Hive', x: 28, y: 20, count: 1 });
+    const mine = (name: string) => sim.unit.dense.find((u) => sim.unit.f.owner[u] === id && sim.blueprintOf(u)?.name === name)!;
+    const tank = mine('Disruptor');
+    run({ kind: 'weapons', action: 'ion', ids: [tank], x: 0, y: 0 });
+    expect(sim.modules.f.ion[tank]).not.toBe(0);
+    const hive = mine('Hive');
+    run({ kind: 'weapons', action: 'fill', ids: [hive], x: 0, y: 0 });
+    expect(sim.bays.get(hive)!.docked.length).toBeGreaterThan(0);
+    run({ kind: 'weapons', action: 'launch', ids: [hive], x: 0, y: 0 });
+    ticks(match, 12);
+    expect(sim.bays.get(hive)!.out.length).toBeGreaterThan(0);
+    run({ kind: 'weapons', action: 'recall', ids: [hive], x: 0, y: 0 });
+    const bow = mine('Longbow');
+    const foe = sim.spawnUnit(sim.blueprints.define(id + 1, 'Dummy', ['chassis.heavy', 'cpu.basic']), sim.pos.f.x[bow] + 8 * 1024, sim.pos.f.y[bow]);
+    // its own program may already be charging at something else: start afresh at the dummy
+    sim.rails.delete(bow);
+    if (sim.charge.has(bow)) sim.charge.remove(bow);
+    sim.weapon.f.target[bow] = sim.world.handle(foe);
+    const hp = sim.health.f.hp[foe];
+    run({ kind: 'weapons', action: 'rail', ids: [bow], x: 0, y: 0 });
+    ticks(match, 2);
+    expect(sim.health.f.hp[foe]).toBeLessThan(hp);
+  });
+
   it('paint terrain: liquid and rock, sent to clients as a patch, skipping buildings, and applied by a late joiner', () => {
     const { match, socket, run, last } = startMatch(true);
     const t = match.sim.terrain;
@@ -251,6 +293,10 @@ describe('developer commands', () => {
       { t: 'dev', cmd: { kind: 'damage', ids: [-1], amount: 5 } },
       { t: 'dev', cmd: { kind: 'damage', ids: Array(501).fill(1), amount: 5 } },
       { t: 'dev', cmd: { kind: 'damage', ids: 'all', amount: 5 } },
+      { t: 'dev', cmd: { kind: 'weapons', action: 'nuke', ids: [], x: 1, y: 1 } },
+      { t: 'dev', cmd: { kind: 'weapons', action: 'ion', ids: Array(501).fill(1), x: 1, y: 1 } },
+      { t: 'dev', cmd: { kind: 'weapons', action: 'smoke', ids: [-1], x: 1, y: 1 } },
+      { t: 'dev', cmd: { kind: 'weapons', action: 'smoke', ids: [], x: -1, y: 1 } },
       { t: 'dev', cmd: null },
       { t: 'dev' },
     ];

@@ -112,6 +112,15 @@ export const RADAR_TOWER_CLASS: ClassTemplate = template('Radar Tower', ['frame.
 use(RadarPing, { energy: 500 });
 `);
 
+/** A lamp on a stick: its beam is 4 tiles long for each point of energy it is paid every tick, so it sees far beyond any sensor. */
+export const SPOTLIGHT_TOWER_CLASS: ClassTemplate = template('Spotlight Tower', ['frame.small', 'cpu.basic', 'sensor.long', 'light.spot', 'battery.bank'], `// Spotlight tower: a narrow beam lights up whatever it falls on, 20 tiles out at the 5 energy a tick it starts with
+// (4 tiles for every point, up to 10; set it with config.lightPower). It follows the nearest enemy its sensor finds and
+// otherwise pans left and right across the way out from home (away from your own units and buildings), lighting the
+// edge of the fog and turning back rather than shining on your own units. The light costs its power every tick, so link
+// it to a power network (or it runs on its battery bank). The slider in the side panel sets the power.
+use(Spotlight, { interval: 3, sweep: 6 });
+`);
+
 export const PYLON_CLASS: ClassTemplate = template('Power Pylon', ['frame.small', 'antenna.large'], '');
 
 // --- Units ---------------------------------------------------------------------------
@@ -185,20 +194,78 @@ export const ROCKET_CLASS: ClassTemplate = template('Rocket Truck', ['chassis.me
 export const ARTILLERY_CLASS: ClassTemplate = template('Rocket Artillery', ['chassis.long.medium', 'cpu.basic', 'motor.large', 'sensor.long', 'missile.huge', 'cargo.bay', 'cargo.bay', 'cargo.bay', 'battery.cell', 'battery.cell'], FIGHTER_PROGRAM_TEXT + resupply(60));
 
 /** Anti-missile cover: the fighter program, but its sensor watches for incoming missiles and it fires at nothing else. */
-const FLAK_PROGRAM_TEXT = `// Flak: shoots incoming missiles only (its burst is harmless to everything else). Follows MOVE / ATTACK / STOP / CHARGE orders.
+const FLAK_PROGRAM_TEXT = `// Flak: shoots incoming missiles and enemy aircraft (its burst is harmless to ground units and buildings). Follows MOVE / ATTACK / STOP / CHARGE orders.
 ${BASICS(25)}
 use(ReviveFlatUnits);
-use(EngageEnemies, { watch: [MISSILE], interval: 2, holdFireKey: 'F' });
+use(EngageEnemies, { watch: [AIR], interval: 2, holdFireKey: 'F' });
 `;
 
 export const FLAK_CLASS: ClassTemplate = template('Flak Truck', ['chassis.medium', 'cpu.basic', 'motor.small', 'sensor.short', 'flak.cannon', 'battery.cell'], FLAK_PROGRAM_TEXT);
 
-export const FLAK_TURRET_CLASS: ClassTemplate = template('Flak Turret', ['frame.small', 'cpu.basic', 'sensor.short', 'flak.cannon', 'battery.bank'], `// Flak turret: bursts any incoming enemy missile its sensor finds. Each shot costs a little energy,
+/** Screens itself: when hit, throws smoke towards whoever hurt it (one volley every 30 s). */
+export const SMOKE_CLASS: ClassTemplate = template('Smoke Screen', ['chassis.medium', 'cpu.basic', 'motor.small', 'sensor.short', 'gun.light', 'smoke.launcher', 'battery.cell'], FIGHTER_PROGRAM_TEXT + `// When hit it throws smoke towards whoever hurt it, blinding their sensors for 15 seconds.
+use(SmokeScreen, { minAmount: 5 });
+`);
+
+/** An escort: its point defence shoots down missiles and shells aimed at it and its neighbours; the light gun deals with the rest. */
+export const GUARDIAN_CLASS: ClassTemplate = template('Guardian', ['chassis.medium', 'cpu.basic', 'motor.small', 'sensor.short', 'gun.light', 'defence.point', 'battery.cell'], FIGHTER_PROGRAM_TEXT);
+
+/** Disables a module of whatever it hits for 6 seconds (aim it with config.aim): expensive, so it carries a lot of battery. */
+export const DISRUPTOR_CLASS: ClassTemplate = template('Disruptor', ['chassis.medium', 'cpu.basic', 'motor.small', 'sensor.short', 'ion.gun', 'battery.cell', 'battery.cell'], `// Disruptor: holds down one module of the nearest enemy (a random one; use config.aim(M_WEAPON) to choose) for 6 seconds.
+// 350 energy a shot, so it empties its batteries in a few shots: pair it with a charging pad.
+${BASICS(25)}
+use(ReviveFlatUnits);
+use(EngageEnemies, { watch: [ENEMY], interval: 5, holdFireKey: 'F' });
+`);
+
+/** Heavy railgun tank: it must stand still to charge, so it wants an escort. */
+export const LONGBOW_CLASS: ClassTemplate = template('Longbow', ['chassis.heavy', 'cpu.basic', 'motor.large', 'sensor.long', 'rail.gun', 'battery.large', 'battery.large'], FIGHTER_PROGRAM_TEXT + `// It stops to charge its railgun (5 seconds, in plain sight) and fires a line through up to four enemies.
+`);
+
+/** A small flying drone: the carrier's bay builds, launches and recalls it. It flies at the nearest enemy it sees. */
+export const WASP_CLASS: ClassTemplate = template('Wasp', ['chassis.drone', 'cpu.basic', 'rotor', 'sensor.long', 'gun.light'], `// Wasp: a drone. Launched from a carrier, it flies at the nearest enemy it sees and shoots it; the carrier calls it
+// home to recharge and mend.
+${BASICS(25)}
+use(EngageEnemies, { watch: [ENEMY], interval: 5, holdFireKey: '' });
+use(Hunt, { interval: 20 });
+`);
+
+/** A heavy carrier: its bay builds Wasps from the cargo it hauls, launches them at enemies and calls them home. */
+export const HIVE_CLASS: ClassTemplate = template('Hive', ['chassis.heavy', 'cpu.basic', 'motor.large', 'sensor.long', 'hangar.bay', 'cargo.hold', 'battery.large'], `// Hive: a drone carrier. Its bay builds Wasps from the matter in its cargo hold and the energy in its batteries,
+// launches them when its sensor finds an enemy, and calls them home when the enemy has gone.
+${BASICS(25)}
+use(ReviveFlatUnits);
+use(DroneBay, { class: 'Wasp', interval: 10, calm: 8 });
+` + resupply(80));
+
+export const FLAK_TURRET_CLASS: ClassTemplate = template('Flak Turret', ['frame.small', 'cpu.basic', 'sensor.short', 'flak.cannon', 'battery.bank'], `// Flak turret: bursts any incoming enemy missile or aircraft its sensor finds. Each shot costs a little energy,
 // so link it to a power network (or it runs on its battery bank).
-use(EngageEnemies, { watch: [MISSILE], interval: 2, orders: 0, holdFireKey: '' });
+use(EngageEnemies, { watch: [AIR], interval: 2, orders: 0, holdFireKey: '' });
 `);
 
 /** The counter to missiles and shells: an arc of energy that swings to face the nearest incoming fire. It costs power every tick, so it wants a grid. */
+/** Close-in cover against missiles and shells: no program, the modules shoot by themselves. Link it to a grid or let its bank run down. */
+export const POINT_DEFENCE_TOWER_CLASS: ClassTemplate = template('Point Defence Tower', ['frame.small', 'defence.point', 'defence.point', 'battery.bank'], '');
+
+/** A railgun on a post: very long reach and a charge everyone can see. It stands still, so only damage or a stun spoils its aim. */
+export const RAIL_TOWER_CLASS: ClassTemplate = template('Rail Tower', ['frame.small', 'cpu.basic', 'sensor.long', 'rail.gun', 'battery.bank', 'battery.bank'], `// Rail tower: when its sensor finds an enemy it charges for 5 seconds (in plain sight), then fires a piercing line
+// along it. A charge spoils if the tower takes a beating, is stunned, or loses its target. Each shot costs 400
+// energy, taken when the charge starts, so link it to a power network (or it runs on its battery banks).
+use(EngageEnemies, { watch: [ENEMY], interval: 5, orders: 0, holdFireKey: '' });
+`);
+
+/** Switches off a module of whatever comes near: expensive, so it wants a grid. */
+export const ION_TOWER_CLASS: ClassTemplate = template('Ion Tower', ['frame.small', 'cpu.basic', 'sensor.long', 'ion.gun', 'battery.bank', 'battery.bank'], `// Ion tower: holds one module of the nearest enemy its sensor finds down for 6 seconds (a random one; use
+// config.aim(M_WEAPON) to choose). 350 energy a shot, so link it to a power network.
+use(EngageEnemies, { watch: [ENEMY], interval: 5, orders: 0, holdFireKey: '' });
+`);
+
+/** A smoke screen for a base: when something hurts it, it hides itself from whoever did it. */
+export const SMOKE_TOWER_CLASS: ClassTemplate = template('Smoke Tower', ['frame.small', 'cpu.basic', 'sensor.long', 'smoke.launcher', 'battery.bank'], `// Smoke tower: when it is hit it throws a volley of smoke towards whoever hurt it (or the nearest enemy its
+// sensor finds), hiding the area from their sensors for 15 seconds. It rests 30 seconds between volleys.
+use(SmokeScreen, { minAmount: 5 });
+`);
+
 export const SHIELD_TOWER_CLASS: ClassTemplate = template('Shield Tower', ['frame.small', 'cpu.basic', 'sensor.long', 'shield.emitter', 'battery.bank', 'battery.bank'], `// Shield tower: points its energy shield at the nearest incoming shell or missile, else at the nearest enemy
 // its sensor finds. The shield costs power every tick, so link it to a power network (or it runs on its battery banks).
 use(ShieldGuard, { interval: 3 });
@@ -293,6 +360,7 @@ export const STARTER_CLASSES: readonly ClassTemplate[] = [
   TOWER_CLASS,
   LASER_TURRET_CLASS,
   RADAR_TOWER_CLASS,
+  SPOTLIGHT_TOWER_CLASS,
   HARVESTER_CLASS,
   BUILDER_CLASS,
   REPAIR_CLASS,
@@ -308,6 +376,16 @@ export const STARTER_CLASSES: readonly ClassTemplate[] = [
   PATHFINDER_CLASS,
   FLAK_CLASS,
   FLAK_TURRET_CLASS,
+  SMOKE_CLASS,
+  GUARDIAN_CLASS,
+  DISRUPTOR_CLASS,
+  LONGBOW_CLASS,
+  WASP_CLASS,
+  HIVE_CLASS,
+  POINT_DEFENCE_TOWER_CLASS,
+  RAIL_TOWER_CLASS,
+  ION_TOWER_CLASS,
+  SMOKE_TOWER_CLASS,
   SHIELD_TOWER_CLASS,
   AEGIS_CLASS,
   MITE_CLASS,

@@ -80,7 +80,8 @@ describe('size tiers', () => {
       placed++;
     }
     expect(sim.blueprints.find(1, 'Titan Works')?.stats.factoryTiers).toBe(0b110000);
-    expect(STARTER_CLASSES.length).toBeLessThanOrEqual(48);
+    // Players need room under MAX_DESIGNS (80) for their own classes: raised from 48 to 52 for the four weapon towers.
+    expect(STARTER_CLASSES.length).toBeLessThanOrEqual(52);
     const colossus = sim.blueprints.find(1, 'Colossus')!;
     const heavy = sim.spawnStructure(sim.blueprints.find(1, 'Heavy Factory')!, 30, 30);
     expect(() => sim.enqueueProduction(1, heavy, colossus.id)).toThrow(/no colossus factory module/);

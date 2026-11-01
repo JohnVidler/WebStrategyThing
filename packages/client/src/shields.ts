@@ -8,7 +8,7 @@ import type { Graphics } from 'pixi.js';
  */
 
 /** A hit on the arc lights up the part of it that was struck for this long. */
-export const FLASH_MS = 380;
+export const FLASH_MS = 520;
 /** Most hit flashes kept at once. */
 export const MAX_FLASHES = 64;
 /** More shields than this on screen and the interference between them is not worked out (it is pairwise). */
@@ -135,17 +135,35 @@ export function drawShield(g: Graphics, s: ShieldDraw, flashes: readonly ShieldF
   for (const f of flashes) {
     const age = (now - f.born) / FLASH_MS;
     if (f.e !== s.e || age < 0 || age >= 1) continue;
-    const spread = 0.12 + 0.35 * age + 0.2 * f.power;
+    const spread = 0.15 + 0.5 * age + 0.3 * f.power;
     const a0 = Math.max(from, f.angle - spread);
     const a1 = Math.min(to, f.angle + spread);
     if (a1 <= a0) continue;
-    const fade = (1 - age) * (0.55 + 0.45 * f.power);
-    arcPath(g, s, a0, a1).stroke({ width: thickness * (9 - 5 * age), color: s.colour, alpha: 0.16 * fade, cap: 'round' });
-    arcPath(g, s, a0, a1).stroke({ width: thickness * (4 - 2 * age), color: s.colour, alpha: 0.4 * fade, cap: 'round' });
-    arcPath(g, s, a0, a1).stroke({ width: thickness * 1.5, color: 0xffffff, alpha: 0.9 * fade, cap: 'round' });
+    const fade = (1 - age) * (0.65 + 0.35 * f.power);
+    const swell = (1 - age) ** 2;
+    // The whole shield jolts: the dome and the full border flare, hardest in the first instant.
+    const jolt = swell * (0.4 + 0.6 * f.power);
+    g.moveTo(s.x, s.y);
+    for (let i = 0; i <= 12; i++) g.lineTo(s.x + Math.cos(from + ((to - from) * i) / 12) * s.r, s.y + Math.sin(from + ((to - from) * i) / 12) * s.r);
+    g.closePath().fill({ color: s.colour, alpha: 0.2 * jolt * lv });
+    arcPath(g, s, from, to).stroke({ width: thickness * (2 + 3 * jolt), color: core, alpha: 0.5 * jolt * lv, cap: 'round' });
+    arcPath(g, s, a0, a1).stroke({ width: thickness * (14 - 8 * age), color: s.colour, alpha: 0.22 * fade, cap: 'round' });
+    arcPath(g, s, a0, a1).stroke({ width: thickness * (6 - 3 * age), color: s.colour, alpha: 0.5 * fade, cap: 'round' });
+    arcPath(g, s, a0, a1).stroke({ width: thickness * 2, color: 0xffffff, alpha: fade, cap: 'round' });
+    if (!reduce) {
+      // A ripple runs out along the arc from the point struck, both ways, and a ring of the field pulses outwards.
+      const run = 1 - (1 - age) ** 3;
+      const reach = s.arc * 0.5 * run;
+      for (const dir of [-1, 1]) {
+        const c = f.angle + dir * reach;
+        const p0 = Math.max(from, Math.min(to, c - dir * 0.06));
+        const p1 = Math.max(from, Math.min(to, c + dir * 0.06));
+        if (p0 !== p1) arcPath(g, s, p0, p1).stroke({ width: thickness * 4, color: 0xffffff, alpha: 0.8 * (1 - age) * f.power, cap: 'round' });
+      }
+      arcPath(g, s, a0, a1, s.r + thickness * 10 * run).stroke({ width: thickness * 1.2, color: core, alpha: 0.6 * (1 - age) ** 2 * f.power, cap: 'round' });
+    }
     // The bloom: a glow that swells at the point struck, then dies back.
     const at = Math.max(from, Math.min(to, f.angle));
-    const swell = (1 - age) ** 2;
-    drawBloom(g, s.x + Math.cos(at) * s.r, s.y + Math.sin(at) * s.r, thickness * (7 + 14 * f.power) * (0.6 + 0.4 * age), s.colour, (reduce ? 0.6 : 1.3) * swell * (0.5 + 0.5 * f.power) * lv);
+    drawBloom(g, s.x + Math.cos(at) * s.r, s.y + Math.sin(at) * s.r, thickness * (10 + 20 * f.power) * (0.6 + 0.4 * age), s.colour, (reduce ? 0.8 : 2) * swell * (0.5 + 0.5 * f.power) * lv);
   }
 }

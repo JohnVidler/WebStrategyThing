@@ -3,6 +3,7 @@ import { DetectKind, DetectSort } from '../flow/events';
 import type { BlueprintStats } from './blueprint';
 import { TILE } from './rules';
 import type { Simulation } from './simulation';
+import { smokeBlocks } from './smoke';
 
 /**
  * The sensor is configured on the `Detected` block (what to watch, how far, how often, in
@@ -100,12 +101,20 @@ export function sensorSweep(sim: Simulation, e: number, sweep: Sweep): number[] 
     };
     sim.spatial.forEachInRadius(x, y, sweep.range, (o) => {
       if (o === e) return;
+      // Smoke hides units and buildings, but not missiles, resources or friends.
+      if (sim.smokeCount > 0 && sim.unit.has(o) && kind !== DetectKind.DamagedAlly && smokeBlocks(sim, x, y, sim.pos.f.x[o], sim.pos.f.y[o])) return;
       if (kind === DetectKind.Enemy) {
         if (sim.unit.has(o) && !sim.allied(sim.unit.f.owner[o], owner)) add(o, sim.health.f.hp[o], sim.stats(o).hp);
         // Incoming missiles are enemies too, so a sentry can shoot them down.
         else if (sim.missile.has(o) && !sim.allied(sim.missile.f.owner[o], owner)) add(o, sim.health.f.hp[o], sim.flights[o]?.hp ?? 1);
       } else if (kind === DetectKind.Missile) {
         if (sim.missile.has(o) && !sim.allied(sim.missile.f.owner[o], owner)) add(o, sim.health.f.hp[o], sim.flights[o]?.hp ?? 1);
+      } else if (kind === DetectKind.Flier) {
+        if (sim.unit.has(o) && !sim.allied(sim.unit.f.owner[o], owner) && sim.stats(o).flying) add(o, sim.health.f.hp[o], sim.stats(o).hp);
+      } else if (kind === DetectKind.Air) {
+        if (sim.unit.has(o)) {
+          if (!sim.allied(sim.unit.f.owner[o], owner) && sim.stats(o).flying) add(o, sim.health.f.hp[o], sim.stats(o).hp);
+        } else if (sim.missile.has(o) && !sim.allied(sim.missile.f.owner[o], owner)) add(o, sim.health.f.hp[o], sim.flights[o]?.hp ?? 1);
       } else if (kind === DetectKind.Resource) {
         if (sim.resource.has(o) && sim.resource.f.amount[o] > 0) add(o, sim.resource.f.amount[o], sim.resource.f.amount[o]);
       } else if (kind === DetectKind.DamagedAlly) {

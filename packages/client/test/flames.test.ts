@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fireStrength, flicker, hash01, lobHeight, LOB_HEIGHT } from '../src/flames';
+import { damageCounts, fireStrength, flicker, hash01, lobHeight, LOB_HEIGHT } from '../src/flames';
 
 describe('flame effects', () => {
   it('lobs up and comes down: no height at either end, highest in the middle', () => {
@@ -32,5 +32,15 @@ describe('flame effects', () => {
     expect(hash01(5, 2)).toBe(hash01(5, 2));
     expect(hash01(5, 2)).not.toBe(hash01(6, 2));
     for (let i = 0; i < 100; i++) expect(hash01(i, 7)).toBeLessThan(1);
+  });
+
+  it('smokes a damaged building first, then sets it alight, and worsens with damage', () => {
+    expect(damageCounts(1, 3)).toEqual({ smokes: 0, fires: 0 });
+    expect(damageCounts(0.88, 3).fires).toBe(0);
+    expect(damageCounts(0.88, 3).smokes).toBeGreaterThan(0);
+    expect(damageCounts(0.3, 3).fires).toBeGreaterThan(0);
+    expect(damageCounts(0.05, 3).fires).toBeGreaterThanOrEqual(damageCounts(0.3, 3).fires);
+    expect(damageCounts(0.05, 3).smokes).toBeGreaterThanOrEqual(damageCounts(0.8, 3).smokes);
+    expect(damageCounts(0.05, 1).smokes).toBeGreaterThanOrEqual(2);
   });
 });

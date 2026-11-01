@@ -23,6 +23,8 @@ import {
   LIST_MAX,
   LIST_OPS,
   MAX_BUTTON_LABEL,
+  MAX_CONTROL_LABEL,
+  MAX_CONTROLS,
   MAX_BUTTONS,
   MAX_PARTS,
   MAX_TEXT,
@@ -43,6 +45,8 @@ import {
   WIND_GENERATION_MULTIPLIER,
   BUILDING_TRANSFER_RANGE,
   CHARGE_RANGE,
+  callSignature,
+  callSyntax,
 } from '@wst/engine';
 
 /*
@@ -57,10 +61,10 @@ const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-');
 const tiles = (sub: number) => sub / TILE;
 const fnLink = (name: string) => {
   const b = UNIT_API.find((f) => f.name === name);
-  return b ? `<a href="#/api/${slug(b.group ?? '')}#${name}"><code>${b.kind === 'config' ? 'config.' : ''}${name}()</code></a>` : `<code>${name}</code>`;
+  return b ? `<a href="#/api/${slug(b.group ?? '')}#${name}"><code>${callSignature({ ...b, args: [] })}</code></a>` : `<code>${name}</code>`;
 };
 const KIND_LABEL = { query: 'query', action: 'action', config: 'runtime setting' } as const;
-const callName = (b: { name: string; kind: string }) => (b.kind === 'config' ? `config.${b.name}` : b.name);
+const callName = callSyntax;
 const configText = (f: { name: string; type: string; default: unknown }) =>
   `<code>${f.name}</code> <span class="note">(${f.type === 'ints' ? 'list' : f.type}${Array.isArray(f.default) ? '' : `, default ${f.default === '' ? "''" : String(f.default)}`})</span>`;
 
@@ -166,6 +170,24 @@ on(Detected, { watch: [ENEMY], range: 6, interval: 5 }, (kind, h) => {
         <tr><td><b>Event source settings</b></td><td>How an event's source behaves: the sensor sweep, filters, intervals, a button's label. Fixed when you upload; costs nothing to run.</td><td>The settings object of an event block.</td><td><code>{ watch: [ENEMY], range: 6 }</code> <code>{ types: [MOVE] }</code> <code>{ interval: 4 }</code></td></tr>
       </table>
       <p class="note">An action inside an expression, such as <code>if (fire(h))</code>, is an error: write <code>const hit = fire(h); if (hit) { ... }</code>.</p>
+      <h2>self and its modules</h2>
+      <p>Everything about the unit running the program hangs off one object, <code>self</code>. Its readings are properties
+      (<code>self.hp</code>, <code>self.hpMax</code>, <code>self.energy</code>, <code>self.energyMax</code>, <code>self.x</code>, <code>self.y</code>, <code>self.cargo</code>, <code>self.id</code>, ...),
+      its orders are methods (<code>self.moveTo(x, y)</code>, <code>self.goTo(x, y)</code>, <code>self.stop()</code>, <code>self.alert('Hi', 1000)</code>, ...), and each module
+      has an object of its own under <code>self.modules</code>, named by kind and looked up by name:</p>
+      ${code(`
+if (self.hp < self.hpMax / 2) {
+  self.modules['shield'].angle(90);   // or self.modules.shield.angle(90)
+}
+self.modules['weapon'].fire(foe);     // 'gun' also works for 'weapon'
+const n = self.modules.radar.pulse(50);
+
+// Weapons are a list (bigger chassis carry more): count them, index them, pick one by kind.
+const lasers = self.modules.weapon.filter(w => self.modules.weapon[w].kind === W_LASER).count();
+self.modules.weapon[0].fire(foe);     // weapon 0 only; self.modules.weapon.fire(foe) locks every weapon`)}
+      <p>A unit without that module simply gets the call's usual "no module" answer (-1 or 0). World queries such as <code>findResources(10)</code>
+      and <code>scan()</code>, and helpers such as <code>rand(n)</code>, stay plain functions. The old flat names (<code>fire(h)</code>, <code>hp()</code>,
+      <code>config.rest(5)</code>) still work, and the formatter writes the <code>self</code> form. The <a href="#/api">function reference</a> shows both.</p>
       <p>The one place text exists is where a function takes it, such as <code>alert('Enemy!', 2000)</code>, a speech bubble over the unit
       for 2 seconds (up to ${MAX_TEXT} characters; each distinct text takes one memory slot). Join text, whole numbers and true/false values with <code>+</code>,
       as <code>alert('HP: ' + hp() + ' low=' + (hp() &lt; 20), 2000)</code>: the text is built when the call runs and cut at ${MAX_TEXT} characters. Joined text is only allowed where a function takes text.
@@ -464,6 +486,29 @@ on(Button, { label: 'Lay mine', aim: true }, (px, py, target) => {
         <li>Up to ${MAX_BUTTONS} buttons per class. Keys are single letters;
         ${COMMON_ACTIONS.map((a) => `<kbd>${a.key}</kbd>`).join(' ')} belong to the common actions (by default; players can change those keys in Options, and a class button key is never changed).</li>
       </ul>
+      <h2>Sliders and toggles</h2>
+      <p>A class can also put a <b>slider</b> or an on/off <b>toggle</b> in the side panel's Controls section, bound to one of its variables. Moving the control sets
+      the variable in every selected unit of that class, and the program just reads it. The variable's <code>let</code> value is where the control starts.</p>
+      ${code(`
+let power = 5;
+let lamp = 1;
+slider(power, { label: 'Light power', min: 0, max: 10, step: 1 });
+toggle(lamp, { label: 'Lamp on' });
+
+on(Every, { ticks: 5 }, () => {
+  if (lamp) {
+    config.lightPower(power);
+  } else {
+    config.lightPower(0);
+  }
+});`)}
+      <ul>
+        <li><code>slider</code> settings: <code>label</code> (up to ${MAX_CONTROL_LABEL} characters, default the variable name), <code>min</code> (default 0), <code>max</code> (default 100) and <code>step</code> (default 1). Whole numbers only.</li>
+        <li><code>toggle</code> sets the variable to 1 or 0, so it must start as 1 or 0. Its only setting is <code>label</code>.</li>
+        <li>Write them at the top level, after the <code>let</code> they refer to. Up to ${MAX_CONTROLS} per class.</li>
+        <li>With several classes selected, every control is listed. One that only some of the selected units have is marked <b>(affects n units)</b>, and a control whose units disagree shows <i>mixed</i>.</li>
+        <li>For a push button (an event), use a <code>Button</code> block as above.</li>
+      </ul>
       <p class="note">The starter fighters have a <b>Hold fire</b> toggle (<kbd>F</kbd>), and the energy storage has
       <b>Hold charge</b> / <b>Automatic</b> (<kbd>K</kbd>/<kbd>U</kbd>).</p>`,
   },
@@ -681,7 +726,7 @@ const apiPages: Page[] = API_GROUPS.map((group) => ({
       .map(
         (b) => `<div class="fn" id="${b.name}">
           <span class="meta">${KIND_LABEL[b.kind]}${b.cost ? ` · +${b.cost} cycles` : ''}</span>
-          <div class="sig">${callName(b)}(${(b.args ?? []).join(', ')})</div>
+          <div class="sig">${callSignature(b)}</div>
           <p>${esc(b.doc ?? '')}</p>
         </div>`,
       )
@@ -698,7 +743,7 @@ const reference: Page[] = [
       <tr><th>Function</th><th>Kind</th><th>Extra cycles</th><th>Group</th><th>Description</th></tr>
       ${[...UNIT_API]
         .sort((a, b) => a.name.localeCompare(b.name))
-        .map((b) => `<tr><td><a href="#/api/${slug(b.group ?? '')}#${b.name}"><code>${callName(b)}(${(b.args ?? []).join(', ')})</code></a></td>
+        .map((b) => `<tr><td><a href="#/api/${slug(b.group ?? '')}#${b.name}"><code>${callSignature(b)}</code></a></td>
           <td>${KIND_LABEL[b.kind]}</td><td>${b.cost}</td><td>${esc(b.group ?? '')}</td><td>${esc(b.doc ?? '')}</td></tr>`)
         .join('')}
     </table></div>`,
@@ -755,7 +800,7 @@ function renderNav(active: string, filter: string): void {
     : [];
   nav.innerHTML = `<h1>Manual</h1>
     <input id="search" type="search" placeholder="Search functions…" value="${esc(filter)}">
-    ${filter ? `<h2>Matches</h2>${matches.map((b) => `<a href="#/api/${slug(b.group ?? '')}#${b.name}">${callName(b)}()</a>`).join('') || '<p class="note">None</p>'}` : ''}
+    ${filter ? `<h2>Matches</h2>${matches.map((b) => `<a href="#/api/${slug(b.group ?? '')}#${b.name}">${callSyntax(b)}${b.prop ? '' : '()'}</a>`).join('') || '<p class="note">None</p>'}` : ''}
     ${sections
       .map(
         (s) => `<h2>${s}</h2>${pages

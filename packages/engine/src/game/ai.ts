@@ -449,8 +449,8 @@ export class AiPlayer implements BotController {
       return site;
     } catch (err) {
       if (!(err instanceof CommandError)) throw err;
-      // Fog: you can only build where you can see. Walk a builder over, and try again next time.
-      if (/vision/.test(err.message)) {
+      // Fog: you can only build on ground that has been explored. Walk a builder over, and try again next time.
+      if (/explored/.test(err.message)) {
         this.blind = true;
         const scout = crew[0] ?? this.builders[0];
         if (scout !== undefined) this.move(scout, spot[0], spot[1]);
@@ -556,7 +556,9 @@ export class AiPlayer implements BotController {
   }
 
   private seenMissiles(): boolean {
-    return this.sim.missile.dense.some((m) => !this.allies.has(this.sim.missile.f.owner[m]));
+    const sim = this.sim;
+    if (sim.missile.dense.some((m) => !this.allies.has(sim.missile.f.owner[m]))) return true;
+    return sim.unit.dense.some((u) => !this.allies.has(sim.unit.f.owner[u]) && sim.stats(u).flying);
   }
 
   // --- expansion: a pylon chain, a silo and turrets at a new field -------------------------

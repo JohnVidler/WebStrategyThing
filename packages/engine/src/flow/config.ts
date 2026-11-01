@@ -6,14 +6,14 @@ import { FlowError, type ConfigValue } from './ir';
 
 /** Named constants shown (and accepted) for an event setting, by `Event.field`. */
 export const CONFIG_NAMES: Readonly<Record<string, readonly string[]>> = {
-  'Detected.watch': ['ENEMY', 'RESOURCE', 'DAMAGED_ALLY', 'MISSILE'],
+  'Detected.watch': ['ENEMY', 'RESOURCE', 'DAMAGED_ALLY', 'MISSILE', 'FLIER', 'AIR'],
   'Detected.sort': ['NEAREST', 'WEAKEST', 'STRONGEST', 'MOST_DAMAGED'],
   'Order.types': ['MOVE', 'ATTACK', 'HARVEST', 'DOCK', 'STOP', 'CHARGE', 'BUILD', 'SUPPLY', 'REPAIR'],
   'Order.from': ['FROM_PLAYER', 'FROM_BUILDING'],
   'Order.urgent': ['QUEUE', 'REPLACE'],
   'TakeOrders.types': ['MOVE', 'STOP', 'CHARGE'],
   'TakeOrders.urgent': ['QUEUE', 'REPLACE'],
-  'EngageEnemies.watch': ['ENEMY', 'RESOURCE', 'DAMAGED_ALLY', 'MISSILE'],
+  'EngageEnemies.watch': ['ENEMY', 'RESOURCE', 'DAMAGED_ALLY', 'MISSILE', 'FLIER', 'AIR'],
   'Message.link': ['RADIO', 'LASER'],
   'Visitor.reasons': ['PRODUCED', 'DOCKED'],
 };

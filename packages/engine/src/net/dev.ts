@@ -33,6 +33,8 @@ export type DevCommand =
   | { kind: 'heal'; owner: number }
   /** Hurt the listed units or buildings (entity ids, as selected on the map) by `amount` hit points each; enough kills them. */
   | { kind: 'damage'; ids: number[]; amount: number }
+  /** The new weapons and modules, on demand. `smoke` drops a volley of clouds round tile (x, y); the rest act on the listed units or buildings: `ion` holds a random module of each down for a few seconds, `rail` makes a railgun with a target fire at once, `fill` fills drone bays, `launch` and `recall` send the drones out and home. */
+  | { kind: 'weapons'; action: DevWeaponAction; ids: number[]; x: number; y: number }
   /** Finish every construction site of an owner (-1 = everyone's) without paying for it. */
   | { kind: 'finish'; owner: number }
   /** Set fires: `ground` starts `count` fires scattered round tile (x, y); `burst` throws `count` fireballs all round it, like a dying flamethrower unit. */
@@ -49,6 +51,9 @@ export type DevCommand =
   | { kind: 'defeat' }
   /** Let the normal victory check end the match again after a dev "end". */
   | { kind: 'reopen' };
+
+export const DEV_WEAPON_ACTIONS = ['smoke', 'ion', 'rail', 'fill', 'launch', 'recall'] as const;
+export type DevWeaponAction = (typeof DEV_WEAPON_ACTIONS)[number];
 
 export const DEV_LIMITS = { spawnCount: 50, removeRadius: 200, amount: 1_000_000, coordinate: 4096, damageIds: 500, paintRadius: 20 } as const;
 
@@ -90,6 +95,10 @@ export function parseDevCommand(raw: unknown): DevCommand | null {
     case 'damage':
       if (!Array.isArray(m.ids) || m.ids.length > DEV_LIMITS.damageIds || !m.ids.every((id) => inRange(id, 0, 1_000_000)) || !inRange(m.amount, 1, DEV_LIMITS.amount)) return null;
       return { kind: 'damage', ids: m.ids as number[], amount: m.amount };
+    case 'weapons':
+      if (typeof m.action !== 'string' || !(DEV_WEAPON_ACTIONS as readonly string[]).includes(m.action) || !isTile(m.x) || !isTile(m.y)) return null;
+      if (!Array.isArray(m.ids) || m.ids.length > DEV_LIMITS.damageIds || !m.ids.every((id) => inRange(id, 0, 1_000_000))) return null;
+      return { kind: 'weapons', action: m.action as DevWeaponAction, ids: m.ids as number[], x: m.x, y: m.y };
     case 'heal':
     case 'finish':
       return inRange(m.owner, -1, 1_000_000) ? { kind: m.kind, owner: m.owner } : null;

@@ -31,6 +31,19 @@ describe('liquid outlines', () => {
     expect([...xs]).toEqual([2]);
   });
 
+  it('a shore against tall rock stays a hard line while one against open ground is rounded', () => {
+    const hard = map(['#####', '#...#', '#.1.#', '#...#', '#####']);
+    const soft = map(['.....', '.....', '..1..', '.....', '.....']);
+    const withHeight = (t: Terrain) => ({ ...src(t), heightAt: (x: number, y: number) => t.heightAt(x, y) });
+    // A pond walled in by rock keeps its square outline: 3 x 1 tiles exactly.
+    const wall = map(['#####', '#111#', '#####']);
+    const [loop] = outline(withHeight(wall), 1, 5, false);
+    expect(Math.abs(loopArea(loop))).toBeCloseTo(3, 5);
+    expect(Math.abs(loopArea(outline(src(wall), 1, 5, false)[0]))).toBeLessThan(2.9);
+    expect(outline(withHeight(hard), 1, 5, false)).toHaveLength(1);
+    expect(outline(withHeight(soft), 1, 5, false)[0].length).toBe(outline(src(soft), 1, 5, false)[0].length);
+  });
+
   it('every liquid cell centre is inside and every dry one outside, on generated maps', () => {
     for (const id of ['lakeland', 'twin-rivers', 'cinder-fields', 'the-rift']) {
       const t = createMatch(7, id).terrain;

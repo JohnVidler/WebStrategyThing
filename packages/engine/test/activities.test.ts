@@ -7,6 +7,9 @@ import {
   printText,
   serialize,
   STARTER_CLASSES,
+  BUILDER_CLASS,
+  CHARGING_PAD_CLASS,
+  defineClass,
   Simulation,
   TaskFlag,
   TaskType,
@@ -31,7 +34,7 @@ describe('outcome chains in the language', () => {
     'let n = 0;',
     '',
     'on(Order, { types: [MOVE], urgent: REPLACE }, (type, tx, ty) => {',
-    '  const started = goTo(tx, ty, {',
+    '  const started = self.goTo(tx, ty, {',
     '    arrived: () => {',
     '      n = n + tx;',
     '    },',
@@ -224,5 +227,29 @@ describe('starter programs', () => {
     expect([sim.tasks[b]!.x(0), sim.tasks[b]!.y(0)]).toEqual([22, 18]);
     run(sim, 2);
     expect(sim.flows[b]!.mem[0]).toBe(22);
+  });
+});
+
+describe('charging pads', () => {
+  it('a unit does not wait for ever at a pad with no energy', () => {
+    const sim = world();
+    const e = sim.spawnUnit(defineClass(sim, 1, BUILDER_CLASS), at(5), at(5));
+    const pad = sim.spawnStructure(defineClass(sim, 1, CHARGING_PAD_CLASS), 9, 5);
+    sim.energy.f.amount[pad] = 0;
+    sim.commit();
+    sim.energy.f.amount[e] = Math.floor(sim.stats(e).energyCapacity * 0.2);
+    let charging = false;
+    let gaveUp = false;
+    for (let t = 0; t < 400; t++) {
+      run(sim, 1);
+      const kind = sim.activities[e]?.kind;
+      if (kind === ActivityKind.Charge) charging = true;
+      else if (charging) gaveUp = true;
+    }
+    expect(charging).toBe(true);
+    expect(gaveUp).toBe(true);
+    sim.energy.f.amount[pad] = 5000;
+    run(sim, 400);
+    expect(sim.energyView.f.pct[e]).toBeGreaterThanOrEqual(95);
   });
 });

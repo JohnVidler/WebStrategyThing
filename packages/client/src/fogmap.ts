@@ -14,11 +14,56 @@ export function fogDarkness(level: number): number {
   return level === 2 ? 0 : level === 1 ? FOG_SEEN_ALPHA : FOG_UNSEEN_ALPHA;
 }
 
+/**
+ * Never-seen ground gets darker the further it is from anything seen or in view, until the map cannot be made out at all.
+ * `FOG_DEEP_ALPHA` is the darkness (0..1) it reaches (1 = black), `FOG_DEEP_START` the distance in tiles from known ground
+ * before it starts to deepen, `FOG_DEEP_FALLOFF` how many more tiles it takes to reach full depth (smaller = quicker), and
+ * `FOG_DEEP_CURVE` the shape (1 = steady, above 1 = slow at first then sharp, below 1 = quick at first then gentle).
+ */
+export const FOG_DEEP_ALPHA = 1;
+export const FOG_DEEP_START = 2;
+export const FOG_DEEP_FALLOFF = 10;
+export const FOG_DEEP_CURVE = 1;
+
 /** The colour fogged ground turns in mist: a pale grey-white instead of near black. */
 export const MIST_FOG_COLOUR = [196, 205, 212] as const;
 
 let scratchA = new Float32Array(0);
 let scratchB = new Float32Array(0);
+let scratchD = new Float32Array(0);
+
+/** Distance in tiles (a chamfer approximation) from each tile to the nearest tile that has been seen; 0 on seen tiles. */
+function distanceFromKnown(vision: Uint8Array, width: number, height: number, dist: Float32Array): void {
+  const far = width + height;
+  const DIAG = Math.SQRT2;
+  for (let i = 0, n = width * height; i < n; i++) dist[i] = vision[i] === 1 || vision[i] === 2 ? 0 : far;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = y * width + x;
+      let d = dist[i];
+      if (x > 0) d = Math.min(d, dist[i - 1] + 1);
+      if (y > 0) {
+        d = Math.min(d, dist[i - width] + 1);
+        if (x > 0) d = Math.min(d, dist[i - width - 1] + DIAG);
+        if (x < width - 1) d = Math.min(d, dist[i - width + 1] + DIAG);
+      }
+      dist[i] = d;
+    }
+  }
+  for (let y = height - 1; y >= 0; y--) {
+    for (let x = width - 1; x >= 0; x--) {
+      const i = y * width + x;
+      let d = dist[i];
+      if (x < width - 1) d = Math.min(d, dist[i + 1] + 1);
+      if (y < height - 1) {
+        d = Math.min(d, dist[i + width] + 1);
+        if (x < width - 1) d = Math.min(d, dist[i + width + 1] + DIAG);
+        if (x > 0) d = Math.min(d, dist[i + width - 1] + DIAG);
+      }
+      dist[i] = d;
+    }
+  }
+}
 
 /** One 3x3 weighted blur (centre 4, sides 2, corners 1) of `src` into `dst`; tiles past the edge count as the nearest tile. */
 function blur(src: Float32Array, dst: Float32Array, width: number, height: number): void {
@@ -44,8 +89,18 @@ export function fogImage(vision: Uint8Array, width: number, height: number, out:
   if (scratchA.length < n) {
     scratchA = new Float32Array(n);
     scratchB = new Float32Array(n);
+    scratchD = new Float32Array(n);
   }
-  for (let i = 0; i < n; i++) scratchA[i] = fogDarkness(vision[i]);
+  distanceFromKnown(vision, width, height, scratchD);
+  const deepen = Math.max(0, FOG_DEEP_ALPHA - FOG_UNSEEN_ALPHA);
+  for (let i = 0; i < n; i++) {
+    let a = fogDarkness(vision[i]);
+    if (a === FOG_UNSEEN_ALPHA && deepen > 0) {
+      const t = Math.min(1, Math.max(0, (scratchD[i] - FOG_DEEP_START) / Math.max(0.01, FOG_DEEP_FALLOFF)));
+      a += deepen * (FOG_DEEP_CURVE === 1 ? t : Math.pow(t, FOG_DEEP_CURVE));
+    }
+    scratchA[i] = a;
+  }
   blur(scratchA, scratchB, width, height);
   let dark = scratchB;
   if (mist > 0.02) {

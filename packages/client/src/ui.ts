@@ -6,12 +6,12 @@ import {
   DEFAULT_BOT_LEVEL,
   MAX_UNITS_PER_PLAYER,
   Caps,
+  type ProgramControl,
   Construction,
   Sky,
   type Blueprint,
   EnergyView,
   factoryCanBuild,
-  FACTORY_TIER_NAMES,
   MAX_PRODUCTION_QUEUE,
   Modules,
   PARTS,
@@ -54,6 +54,10 @@ export interface UiActions {
   /** Remove the item at `index` (0 = being built) from a factory's queue. */
   dequeue(building: number, index: number): void;
   setModule(entity: number, index: number, on: boolean): void;
+  /** Set a slider or toggle of a class program on these units (`slider(...)` / `toggle(...)`). */
+  setControl(units: number[], name: string, value: number): void;
+  /** Ask the server for the current values of these units' controls (answered with a controlValues message). */
+  requestControlValues(units: number[]): void;
   /** Start placing a building blueprint. */
   place(blueprint: number): void;
   /** Image for a class, drawn with the game's own sprite art. */
@@ -77,6 +81,13 @@ export interface UiActions {
   leave(): void;
   /** Ask the server where an own unit's CPU goes (answered with a cpuProfile message). */
   requestCpuProfile(unit: number): void;
+}
+
+/** The selected units that share one control: they are set together. `index` is the control's place among each unit's own. */
+interface ControlGroup {
+  readonly control: ProgramControl;
+  readonly units: number[];
+  readonly index: number[];
 }
 
 const el = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -116,6 +127,8 @@ export class Ui {
   private queueSlots: { btn: HTMLButtonElement; img: HTMLImageElement; fill: HTMLSpanElement; bp: number }[] = [];
   private queueIcons = new Map<number, string>();
   private queueFor = -1;
+  private readonly controlsBox = el<HTMLElement>('controls-box');
+  private readonly controlsPanel = el<HTMLDivElement>('controls');
   private readonly modulesPanel = el<HTMLDivElement>('modules');
   private readonly modulesBox = el<HTMLElement>('modules-box');
   /** Modal sections of the left pane: each is shown only while the selection needs it. */
@@ -159,8 +172,12 @@ export class Ui {
   private readonly batteryClass = new Map<number, boolean>();
   /** Rebuild buttons/toggles only when these change, so clicks aren't lost to DOM churn. */
   private productionKey = '';
-  private productionCosts: { btn: HTMLButtonElement; cost: number; fits: boolean }[] = [];
+  private productionCosts: { btn: HTMLButtonElement; cost: number }[] = [];
   private modulesKey = '';
+  private controlsKey = '';
+  /** One entry per control shown: its inputs, refreshed from the unit values every tick. */
+  private controlRows: { group: ControlGroup; input: HTMLInputElement; value: HTMLElement }[] = [];
+  private controlsAskedAt = -Infinity;
 
   constructor(
     private readonly state: ClientState,
@@ -823,7 +840,7 @@ export class Ui {
     const has = (...s: string[]) => s.some((x) => slots.has(x as never));
     if (has('factory')) return 'Production';
     if (has('builder', 'repair')) return 'Construction';
-    if (has('weapon', 'radar', 'shield')) return 'Defence';
+    if (has('weapon', 'radar', 'shield', 'light', 'smoke', 'defence')) return 'Defence';
     if (has('generator')) return 'Power';
     if (has('depot', 'charger')) return 'Logistics';
     if (has('battery', 'antenna')) return 'Power';
@@ -1212,6 +1229,7 @@ export class Ui {
 
     const single = ids.length === 1 && this.state.isMine(ids[0]) ? ids[0] : -1;
     this.renderModules(single);
+    this.renderControls(ids.filter((e) => world.isAlive(e) && unit.has(e) && this.state.isMine(e) && !this.state.isSite(e)));
     this.renderProduction(single);
 
     // Modal pane: building options only while a builder is selected, details only while there are some.
@@ -1224,13 +1242,133 @@ export class Ui {
     this.selectionSection.hidden = this.resourceList.hidden;
   }
 
+  /**
+   * Sliders and toggles the selected classes declare, merged by name and shape. A control some of the selected
+   * units lack is annotated "affects n units", since it only reaches those. Rebuilt only when the controls or the
+   * selection change (so dragging is not interrupted); values are refreshed from the server's reports every tick.
+   */
+  private renderControls(own: number[]): void {
+    const unit = this.state.world.store(Unit);
+    const groups = new Map<string, ControlGroup>();
+    const withControls: number[] = [];
+    for (const e of own) {
+      const declared = this.state.controlsOf(unit.f.blueprint[e]);
+      if (declared.length) withControls.push(e);
+      declared.forEach((c, i) => {
+        const key = `${c.kind}|${c.name}|${c.label}|${c.min}|${c.max}|${c.step}`;
+        let g = groups.get(key);
+        if (!g) groups.set(key, (g = { control: c, units: [], index: [] }));
+        g.units.push(e);
+        g.index.push(i);
+      });
+    }
+    const list = [...groups.values()];
+    this.controlsBox.hidden = list.length === 0;
+    if (!list.length) {
+      this.controlsKey = '';
+      return;
+    }
+    // Poll about twice a second: the program may change its own variables too.
+    const now = performance.now();
+    if (now - this.controlsAskedAt > 500) {
+      this.controlsAskedAt = now;
+      this.actions.requestControlValues(withControls);
+    }
+    const key = `${own.length}|${list.map((g) => `${g.control.kind}:${g.control.name}:${g.control.label}:${g.control.min}:${g.control.max}:${g.control.step}:${g.units.join(',')}`).join('|')}`;
+    if (key !== this.controlsKey) {
+      this.controlsKey = key;
+      this.controlsPanel.innerHTML = '';
+      this.controlRows = list.map((g) => this.buildControl(g, own.length));
+    }
+    for (const row of this.controlRows) this.refreshControl(row.group, row.input, row.value);
+  }
+
+  private buildControl(g: ControlGroup, selected: number): { group: ControlGroup; input: HTMLInputElement; value: HTMLElement } {
+    const c = g.control;
+    const plural = g.units.length > 1 ? 's' : '';
+    const row = document.createElement(c.kind === 'toggle' ? 'label' : 'div');
+    row.className = `control ${c.kind}`;
+    const input = document.createElement('input');
+    const label = document.createElement('span');
+    label.className = 'label';
+    label.textContent = c.label;
+    const value = document.createElement('span');
+    value.className = 'value';
+    const scope = document.createElement('span');
+    scope.className = 'scope';
+    scope.textContent = g.units.length < selected ? `(affects ${g.units.length} unit${plural})` : '';
+    row.title = `${c.label}: sets '${c.name}' in the program of ${g.units.length} unit${plural}${g.units.length < selected ? ` (not the other ${selected - g.units.length} selected)` : ''}`;
+    if (c.kind === 'toggle') {
+      input.type = 'checkbox';
+      input.dataset.sound = 'module';
+      input.onchange = () => {
+        input.indeterminate = false;
+        this.actions.setControl(g.units, c.name, input.checked ? 1 : 0);
+        this.rememberControl(g, input.checked ? 1 : 0);
+      };
+      row.append(input, label);
+    } else {
+      input.type = 'range';
+      input.min = String(c.min);
+      input.max = String(c.max);
+      input.step = String(c.step);
+      let sentAt = 0;
+      const send = (): void => {
+        const v = Number(input.value);
+        value.textContent = String(v);
+        this.actions.setControl(g.units, c.name, v);
+        this.rememberControl(g, v);
+        sentAt = performance.now();
+      };
+      // Follow the slider while it moves (about ten times a second), and always send where it ends.
+      input.oninput = () => {
+        if (performance.now() - sentAt > 100) send();
+        else value.textContent = input.value;
+      };
+      input.onchange = send;
+      row.append(label, value, input);
+    }
+    if (scope.textContent) row.append(scope);
+    this.controlsPanel.appendChild(row);
+    return { group: g, input, value };
+  }
+
+  /** Keeps the value just set, so the panel does not flick back before the server's next report. */
+  private rememberControl(g: ControlGroup, v: number): void {
+    g.units.forEach((e, k) => {
+      const values = this.state.controlValues.get(e);
+      if (values) values[g.index[k]] = v;
+    });
+  }
+
+  /** Shows the units' current values; units that disagree show as "mixed" (the slider rests at the first one's value). */
+  private refreshControl(g: ControlGroup, input: HTMLInputElement, value: HTMLElement): void {
+    if (document.activeElement === input) return; // being dragged: leave it alone
+    const seen: number[] = [];
+    g.units.forEach((e, k) => {
+      const v = this.state.controlValues.get(e)?.[g.index[k]];
+      if (v !== undefined) seen.push(v);
+    });
+    if (!seen.length) return;
+    const mixed = seen.some((v) => v !== seen[0]);
+    if (g.control.kind === 'toggle') {
+      input.checked = seen[0] !== 0;
+      input.indeterminate = mixed;
+      return;
+    }
+    input.value = String(seen[0]);
+    const text = mixed ? 'mixed' : String(seen[0]);
+    if (value.textContent !== text) value.textContent = text;
+  }
+
   private renderModules(e: number): void {
     const bp = e >= 0 ? this.state.blueprints.get(this.state.world.store(Unit).f.blueprint[e]) : undefined;
     this.modulesBox.hidden = !bp;
     if (!bp) return;
     const mask = this.state.world.store(Modules).f.off[e];
     const broken = this.state.world.store(Modules).f.broken[e];
-    const key = `${e}|${bp.id}|${mask}|${broken}`;
+    const ion = this.state.world.store(Modules).f.ion[e];
+    const key = `${e}|${bp.id}|${mask}|${broken}|${ion}`;
     if (key === this.modulesKey) return;
     this.modulesKey = key;
     this.modulesPanel.innerHTML = '<div class="muted">Switch a module off to save energy</div>';
@@ -1244,10 +1382,19 @@ export class Ui {
       const isBroken = ((broken >>> i) & 1) === 1;
       box.checked = !isBroken && !((mask >>> i) & 1);
       box.disabled = isBroken || !SWITCHABLE.has(def.slot);
+      const isHeld = !isBroken && ((ion >>> i) & 1) === 1;
+      if (isHeld) {
+        box.checked = false;
+        box.disabled = true;
+      }
       if (isBroken) label.classList.add('broken');
       box.onchange = () => this.actions.setModule(e, i, box.checked);
-      label.append(box, ` ${i}: ${def.name}${isBroken ? ' (broken: needs repair)' : ''}`);
+      label.append(box, ` ${i}: ${def.name}${isBroken ? ' (broken: needs repair)' : isHeld ? ' (held down by an ion bolt)' : ''}`);
       if (isBroken) label.title = 'Broken by damage: it does nothing until a repair module mends it';
+      else if (isHeld) label.title = 'An ion bolt is holding this module down for a few seconds; it works again by itself';
+      else if (def.slot === 'smoke') label.title = `Uses ${def.use} energy per volley of smoke and rests 30 seconds afterwards (no matter)`;
+      else if (def.slot === 'defence') label.title = `Uses ${def.use} energy per shot at an incoming missile or shell`;
+      else if (def.slot === 'light') label.title = `Uses energy every tick while lit (${def.light!.power} to start, up to ${def.light!.maxPower}); the more it is given, the further the beam reaches`;
       else if (def.slot === 'shield') label.title = `Uses ${def.use} energy every tick while on (more for a wider or longer arc); switching it off drops the shield`;
       else if (def.use) label.title = `Uses ${def.use} energy per ${def.slot === 'sensor' ? 'scan' : def.slot === 'weapon' ? 'shot' : 'tick in use'}`;
       this.modulesPanel.appendChild(label);
@@ -1271,10 +1418,13 @@ export class Ui {
       : 'Idle — choose a class to build';
     this.renderQueue(b);
 
-    const buildable = blueprints.ownedBy(this.state.myId).filter((bp) => !bp.stats.structure && !bp.retired);
+    const tiers = blueprints.get(world.store(Unit).f.blueprint[b])?.stats.factoryTiers ?? 0;
+    // Only units this building can actually produce are listed.
+    const buildable = blueprints
+      .ownedBy(this.state.myId)
+      .filter((bp) => !bp.stats.structure && !bp.retired && factoryCanBuild(tiers, bp.stats.size));
     // The buttons are only rebuilt when the building or the class list changes: rebuilding them as
     // the matter total moves would swallow clicks (the element is replaced between press and release).
-    const tiers = blueprints.get(world.store(Unit).f.blueprint[b])?.stats.factoryTiers ?? 0;
     const key = `${b}|${tiers}|${buildable.map((bp) => bp.id).join(',')}`;
     if (key !== this.productionKey) {
       this.productionKey = key;
@@ -1282,11 +1432,7 @@ export class Ui {
       this.productionCosts = [];
       for (const bp of buildable) {
         const btn = document.createElement('button');
-        const fits = factoryCanBuild(tiers, bp.stats.size);
-        const tier = FACTORY_TIER_NAMES[bp.stats.size] ?? 'this size of';
-        btn.title = !fits
-          ? `${bp.name} is a ${tier} unit: this building has no ${tier} factory module.`
-          : `${bp.name}: ◆${bp.stats.cost} + ϟ${bp.stats.buildEnergy}, ${(bp.stats.buildTime / 10).toFixed(1)}s. Click to queue one.`;
+        btn.title = `${bp.name}: ◆${bp.stats.cost} + ϟ${bp.stats.buildEnergy}, ${(bp.stats.buildTime / 10).toFixed(1)}s. Click to queue one.`;
         const img = document.createElement('img');
         img.alt = '';
         this.actions.iconFor(bp.id).then((src) => (img.src = src)).catch(() => img.remove());
@@ -1300,7 +1446,7 @@ export class Ui {
           this.actions.produce(b, bp.id, controls.modifierHeld('fillQueue', ev) ? Math.max(1, free) : 1);
         };
         this.productionButtons.appendChild(btn);
-        this.productionCosts.push({ btn, cost: bp.stats.cost, fits });
+        this.productionCosts.push({ btn, cost: bp.stats.cost });
       }
     }
     this.updateAffordability();
@@ -1359,7 +1505,7 @@ export class Ui {
 
   /** Greys out production buttons the player can't pay for, in place. */
   private updateAffordability(): void {
-    for (const { btn, cost, fits } of this.productionCosts) btn.disabled = !fits || cost > this.credits;
+    for (const { btn, cost } of this.productionCosts) btn.disabled = cost > this.credits;
   }
 
   updateClasses(): void {

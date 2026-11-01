@@ -1,6 +1,7 @@
 import type { DevGlow, EffectSinks } from './devEffects';
 import { drawShot, SHOT_LIFE_MS, shotKindOf, shotPower, type ShotKind } from './beams';
-import { drawBlast, energyRadius, hasBatteryPart, makeBlast, shieldRadius, type Blast, type BlastKind } from './blasts';
+import { ARC_REACH, drawDischarge, flickerFrame, hopStrength, makeDischarge, type Hop } from './discharge';
+import { drawBlast, energyRadius, hasBatteryPart, makeBlast, SHIELD_IMPLODE, shieldRadius, type Blast, type BlastKind } from './blasts';
 import { buildSparksDone, drawBuildSparks, makeBuildSparks, type BuildSparks } from './buildSparks';
 import {
   Cargo,
@@ -19,6 +20,10 @@ import {
   Shell,
   Aim,
   Shield,
+  Light,
+  Smoke,
+  Charge,
+  Modules,
   Position,
   Production,
   Resource,
@@ -31,6 +36,7 @@ import {
   WHEELS,
   chargeZoneRadius,
   RADAR_FADE_TICKS,
+  LIGHT_TILES_PER_ENERGY,
   RESOURCE_PATCH_AMOUNT,
   Sky,
   TILE,
@@ -51,9 +57,12 @@ import { unit as hash01 } from './precipitation';
 import { fogImage } from './fogmap';
 import { Precipitation, type SkyProbe } from './precipitation';
 import { flashesAllowed, flickerAllowed, reduceMotion, weatherDetail } from './settings';
+import { BEAM_RAYS, BeamHeadings, beamReach, drawBeam } from './spotBeam';
 import { arcIntersections, drawBloom, drawShield, easeAngle, easeBy, FLASH_MS, MAX_CROSSING_BLOOMS, MAX_FLASHES, MAX_INTERFERING, shieldLevel, type ShieldDraw, type ShieldFlash } from './shields';
 import { burstSparks, drawSparks, expireSparks, type Spark } from './sparks';
-import { drawFire, drawFireball, MAX_TONGUES, fireStrength, flicker, FIRE_LIGHT, FIRE_YELLOW, lobHeight } from './flames';
+import { drawIonHold, drawRailBeam, drawRailCharge, drawSmokeCloud, RAIL_BEAM_MS, SMOKE_SWELL_MS } from './weaponFx';
+import { buildField, CrystalDust, DUST_PER_TILE, dustMask, FIELD_SKIRT, glowPoints, scatterShards, type CrystalField, type Shards } from './crystalField';
+import { DAMAGE_SMOKE_BELOW, drawDamage, drawFire, drawFireball, MAX_TONGUES, fireStrength, flicker, FIRE_LIGHT, FIRE_YELLOW, lobHeight } from './flames';
 import { landWrecks, wreckFireMs, wreckFlameSize, wreckThrowsFragments, MAX_WRECKS, shouldCrash, SMOKE_EVERY_MS, startWreck, wreckGround, wreckHeight, wreckProgress, wreckRotation, type Wreck } from './wrecks';
 import { drawShrapnel, emberChance, emberLife, landShrapnel, throwShrapnel, type Shrapnel } from './shrapnel';
 import { renderClassImage, TEX, TEX_RESOLUTION } from './artstudio';
@@ -96,6 +105,8 @@ const GUN_LAMP_ALPHA = 0.5;
 /** Radians per second of a wind turbine rotor in the strongest wind. */
 const ROTOR_MAX_SPEED = 9;
 const ENERGY_COLOUR = 0xf5c542;
+/** The line along the edge of explored ground while placing a building. */
+const EXPLORED_EDGE_COLOUR = 0x5bd68a;
 /** Repair beams, crosses and repair orders. */
 const REPAIR_COLOUR = 0x66ffb8;
 export const TASK_COLOURS: Record<number, number> = {
@@ -133,18 +144,16 @@ const MISSILE_LIFT = 0.32;
 const MISSILE_BODY = 0xdfe5ee;
 const MISSILE_FLAME = 0xffb347;
 const PULSE_MS = 600;
-/** Lightning arcs per tesla discharge, segments per arc, and how often (ms) the crackle re-rolls. */
-const TESLA_BOLTS = 11;
-const TESLA_SEGMENTS = 9;
-const TESLA_FLICKER_MS = 55;
+/** Arcs per tesla discharge and the most hops in each. */
+const TESLA_CHAINS = 6;
+const TESLA_HOPS = 5;
 const TESLA_CORE = 0xf3eaff;
-
-/** Cheap deterministic noise in [-1, 1) from three integers, so a bolt's shape is stable within one flicker frame. */
-const crackle = (a: number, b: number, c: number): number => {
-  let h = Math.imul(a + 0x9e3779b9, 0x85ebca6b) ^ Math.imul(b + 0x7f4a7c15, 0xc2b2ae35) ^ Math.imul(c + 0x1b873593, 0x27d4eb2f);
-  h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d);
-  return ((h ^ (h >>> 13)) >>> 0) / 2147483648 - 1;
-};
+/** The most units and buildings a discharge may jump to (the nearest ones). */
+const DISCHARGE_TARGETS = 24;
+/** The light a live hop of a discharge throws: its radius in tiles (a hit lights more), and its alpha. */
+const HOP_LIGHT_RADIUS = 1.3;
+const HOP_LIGHT_HIT_RADIUS = 2;
+const HOP_LIGHT_ALPHA = 0.7;
 /** A working charging pad sends out a slow green ring this often (see the engine's Charge event). */
 const CHARGE_PULSE_MS = 2000;
 const CHARGE_PULSE_COLOUR = 0x5dff9a;
@@ -212,6 +221,14 @@ const BUBBLE_CAP = 28;
 /** Lava spits: slots tried per frame, and how long a fragment is in the air. */
 const SPIT_SLOTS = 4;
 const SPIT_MS = 1100;
+/** Rain ripples on water: slots tried per frame at full wetness (those that land on water are drawn), and how long a ring lasts. */
+const RIPPLE_CAP = 72;
+const RIPPLE_MS = 1100;
+/** Lava steam: wisps (the mist texture, drawn light) rising off sparse lava cells, their peak alpha dry and the extra when it is raining. */
+const STEAM_CAP = 22;
+const STEAM_ALPHA = 0.07;
+const STEAM_WET_ALPHA = 0.1;
+const STEAM_COLOUR = 0xe9eff2;
 /** Water, by depth step: the first is the shallows' colour, the rest darken what is under them. [colour, alpha] */
 const WATER_TIERS: readonly (readonly [number, number])[] = [[0x2f8a9b, 0.92], [0x123c66, 0.16], [0x0f3260, 0.18], [0x0c2a55, 0.2], [0x0a2248, 0.24]];
 /** Lava, by depth step: crust, glowing rock, white-hot core. */
@@ -270,8 +287,8 @@ interface Pulse {
   e: number;
   born: number;
   colour: number;
-  /** Tesla discharges: the lightning arcs, each with a seed for its crackle. */
-  bolts?: { angle: number; seed: number }[];
+  /** Tesla discharges: the arcs, jumping from point to point (see `makeDischarge`). */
+  hops?: Hop[];
   /** A discharge at a fixed point (tiles) with a radius (tiles), instead of round entity `e` with its weapon's range: where lightning struck. */
   spot?: { x: number; y: number; radius: number };
 }
@@ -352,6 +369,8 @@ export class Renderer {
   private liquidsFor = '';
   private readonly liquidFx = new Container();
   private readonly foamG = new Graphics();
+  /** Every rock cell, as drawn: the liquid effects layer is masked by its inverse so foam, glow and glints never show on rock. */
+  private readonly rockMask = new Graphics();
   private readonly lavaG = new Graphics();
   private readonly glintG = new Graphics();
   /** Contour line segments in tiles (`contours.ts`), and the map they were made for. */
@@ -360,11 +379,29 @@ export class Renderer {
   private readonly zoneLayer = new Graphics();
   private zonesDrawnFor = '';
   private readonly linkLayer = new Graphics();
+  /** Crystals that sit together are tinted into one field: a wide faint skirt under a tighter core, each flattened to one even alpha. Looks only. */
+  private readonly fieldGlow = new Container();
+  /** Small shards strewn over the field, so it looks seeded with crystal and not just tinted. */
+  private readonly fieldShards = new Graphics();
+  private shards: Shards | null = null;
+  private readonly fieldLive = new Map<number, boolean>();
+  private fieldDirty = true;
+  private fieldX: number[] = [];
+  private fieldY: number[] = [];
+  private field: CrystalField | null = null;
+  /** Tiles near a live crystal (where vehicles kick up dust), the dust itself, and how far each unit has driven since its last puff. */
+  private dustTiles: Uint8Array | null = null;
+  private readonly crystalDust = new CrystalDust();
+  // Same starting size as curX: ensureCapacity only grows these together once that is exceeded.
+  private dustOwed = new Float32Array(1024);
   private readonly layer = new Container();
   /** Ore lies flat on the ground, under every unit and building whatever order they appeared in. */
   private readonly groundLayer = new Container();
   /** Steam over the map's vents: above the units, under the night and fog. Redrawn each frame for the vents on screen. */
   private readonly steamLayer = new Graphics();
+  /** Soft steam over lava (`drawLiquidFx`), under the night shade and the fog. */
+  private readonly lavaSteam = new Container();
+  private readonly steamWisps: Sprite[] = [];
   /** Night: a screen-sized white sprite, multiplied over the map and tinted darker as daylight falls. */
   private readonly nightLayer = new Sprite(Texture.WHITE);
   /** Headlights and nav lights, added on top of the night tint. */
@@ -422,6 +459,12 @@ export class Renderer {
   private fogTexture: Texture | undefined;
   /** Energy shields: drawn with added light so overlapping ones burn brighter, under the fog so unseen ones stay hidden. */
   private readonly shieldLayer = new Graphics();
+  /** Spotlight beams: warm light added over the ground, under the fog. */
+  private readonly spotBeamLayer = new Graphics();
+  private readonly beamHeadings = new BeamHeadings();
+  private readonly beamReaches = new Float32Array(BEAM_RAYS);
+  private readonly beamSeen = new Set<number>();
+  private lastBeamFrame = 0;
   private shieldFlashes: ShieldFlash[] = [];
   /** Scratch for drawShields: the shields in sight this frame, and the points where two arcs cross. */
   private readonly shieldsDrawn: ShieldDraw[] = [];
@@ -529,6 +572,12 @@ export class Renderer {
   private launches: { e: number; born: number }[] = [];
   /** Missiles in flight (they are drawn straight from the Missile component, not as sprites, and cannot be selected). */
   private readonly flying = new Set<number>();
+  /** Smoke clouds: drawn on a layer of their own over the units, so they hide what they cover (see weaponFx.ts); when each first appeared, for its swell. */
+  private readonly smokeLayer = new Graphics();
+  private readonly smokeBorn = new Map<number, number>();
+  /** Railgun shots still on screen, and the units that have a module held down by an ion bolt. */
+  private railBeams: { x: number; y: number; heading: number; len: number; born: number }[] = [];
+  private readonly ionHeld = new Set<number>();
   /** Recent positions of each missile in tiles, flat [x, y, ...], oldest first. */
   private readonly trails = new Map<number, number[]>();
   private pulses: Pulse[] = [];
@@ -580,8 +629,11 @@ export class Renderer {
     this.nightLayer.visible = false;
     this.lightLayer.blendMode = 'add';
     this.shieldLayer.blendMode = 'add';
+    this.spotBeamLayer.blendMode = 'add';
     this.liquidFx.addChild(this.foamG, this.lavaG, this.glintG);
-    app.stage.addChild(this.backdrop, this.liquidFx, this.zoneLayer, this.linkLayer, this.shadowLayer, this.groundLayer, this.beamLayer, this.layer, this.steamLayer, this.nightLayer, this.lightLayer, this.shieldLayer, this.fogView, this.precipitation.view, this.radarLayer, this.softLayer, this.glowLayer, this.overlay, this.mistLayer, this.haloLayer, this.damageLayer, this.bubbleLayer, this.powerLabelLayer, this.ghost);
+    this.liquidFx.setMask({ mask: this.rockMask, inverse: true });
+    this.zoneLayer.setMask({ mask: this.rockMask, inverse: true }); // the charge zone lies on the ground, never over rock
+    app.stage.addChild(this.backdrop, this.liquidFx, this.zoneLayer, this.linkLayer, this.shadowLayer, this.fieldGlow, this.fieldShards, this.groundLayer, this.beamLayer, this.layer, this.steamLayer, this.smokeLayer, this.lavaSteam, this.nightLayer, this.lightLayer, this.spotBeamLayer, this.shieldLayer, this.fogView, this.precipitation.view, this.radarLayer, this.softLayer, this.glowLayer, this.overlay, this.mistLayer, this.haloLayer, this.damageLayer, this.bubbleLayer, this.powerLabelLayer, this.ghost);
     app.ticker.add(() => this.frame());
   }
 
@@ -874,6 +926,9 @@ export class Renderer {
       this.batteryDesign.clear();
       this.flying.clear();
       this.trails.clear();
+      this.smokeBorn.clear();
+      this.railBeams.length = 0;
+      this.ionHeld.clear();
     }
     for (const e of world.despawned) {
       this.lampState[e] = 0; // an id that is reused starts afresh
@@ -904,6 +959,8 @@ export class Renderer {
       this.routes.delete(e);
       this.facing.delete(e);
       this.flying.delete(e);
+      this.smokeBorn.delete(e);
+      this.ionHeld.delete(e);
       this.trails.delete(e);
       // Forget what was seen: an entity that comes back (or an id that is reused) starts afresh.
       this.lastHp.delete(e);
@@ -961,6 +1018,17 @@ export class Renderer {
     }
     const shells = world.store(Shell);
     for (const e of shells.changed) if (shells.has(e)) this.flying.add(e); // interpolated like missiles
+    const smokes = world.store(Smoke);
+    for (const e of smokes.changed) {
+      if (!smokes.has(e)) continue;
+      this.flying.add(e); // tracked for its position like a missile; clouds do not move, so nothing is interpolated
+      if (!this.smokeBorn.has(e)) this.smokeBorn.set(e, performance.now());
+    }
+    const modules = world.store(Modules);
+    for (const e of modules.changed) {
+      if (modules.has(e) && modules.f.ion[e] !== 0) this.ionHeld.add(e);
+      else this.ionHeld.delete(e);
+    }
     const flames = world.store(Flame);
     for (const e of flames.changed) {
       if (!flames.has(e)) continue;
@@ -994,6 +1062,10 @@ export class Renderer {
       const full = Math.max(amount, patches.has(e) ? patches.f.maximum[e] : RESOURCE_PATCH_AMOUNT);
       const stage = amount <= 0 ? -1 : Math.min(4, Math.floor((amount / full) * 5));
       this.ensureSprite(e, this.resourceTexture(stage), this.groundLayer);
+      if (this.fieldLive.get(e) !== amount > 0) {
+        this.fieldLive.set(e, amount > 0);
+        this.fieldDirty = true;
+      }
     }
 
     const features = world.store(Feature);
@@ -1059,25 +1131,21 @@ export class Renderer {
         // Lightning struck something we can see: a bolt onto it, and the ring of sparks of a tesla stun round it.
         const a = info.events[i + 1];
         if (!this.sprites.has(a)) continue;
-        const at = this.tileToScreen(this.curX[a] / TILE, this.curY[a] / TILE);
+        const at = this.tileToScreen(this.curX[a], this.curY[a]);
         this.precipitation.strikeAt(at.x, at.y, now);
         // The bolt always lands; the ring of sparks round the point of impact only shows on some strikes.
         if (Math.random() < LIGHTNING_RING_CHANCE) {
-          const bolts = Array.from({ length: TESLA_BOLTS }, (_, i) => ({
-            angle: ((i + Math.random() * 0.8) / TESLA_BOLTS) * Math.PI * 2,
-            seed: Math.floor(Math.random() * 100000),
-          }));
-          this.pulses.push({ e: a, born: now, colour: 0xdfe9ff, bolts, spot: { x: this.curX[a] / TILE, y: this.curY[a] / TILE, radius: LIGHTNING_RADIUS / TILE } });
+          const x = this.curX[a], y = this.curY[a], reach = (LIGHTNING_RADIUS / TILE) * ARC_REACH;
+          const hops = makeDischarge(x, y, reach, this.dischargeTargets(x, y, reach, a), TESLA_CHAINS, Math.random, { maxHops: TESLA_HOPS });
+          this.pulses.push({ e: a, born: now, colour: 0xdfe9ff, hops, spot: { x, y, radius: reach / ARC_REACH } });
         }
         continue;
       }
       if (info.events[i] === SimEvent.Pulse) {
         const a = info.events[i + 1];
-        const bolts = Array.from({ length: TESLA_BOLTS }, (_, i) => ({
-          angle: ((i + Math.random() * 0.8) / TESLA_BOLTS) * Math.PI * 2,
-          seed: Math.floor(Math.random() * 100000),
-        }));
-        this.pulses.push({ e: a, born: now, colour: ownerColour(unit.f.owner[a]), bolts });
+        const x = this.curX[a], y = this.curY[a], reach = ((this.state.stats(a)?.weapon?.range ?? 0) / TILE) * ARC_REACH;
+        const hops = makeDischarge(x, y, reach, this.dischargeTargets(x, y, reach, a), TESLA_CHAINS, Math.random, { maxHops: TESLA_HOPS });
+        this.pulses.push({ e: a, born: now, colour: ownerColour(unit.f.owner[a]), hops });
         continue;
       }
       if (info.events[i] === SimEvent.Death) {
@@ -1089,7 +1157,8 @@ export class Renderer {
         if (kind === 'energy') {
           // A battery bank lets go of what it holds: the fuller it was, the bigger the discharge.
           const power = this.blastCharge.get(a) ?? 0.5;
-          this.explosions.push(makeBlast('energy', this.curX[a], this.curY[a], energyRadius(radius / 0.75, power), now, { power }));
+          const r = energyRadius(radius / 0.75, power);
+          this.explosions.push(makeBlast('energy', this.curX[a], this.curY[a], r, now, { power, targets: this.dischargeTargets(this.curX[a], this.curY[a], r * (1.2 + 0.8 * power) * ARC_REACH, a) }));
         } else {
           this.explosions.push(makeBlast(kind, this.curX[a], this.curY[a], radius, now));
         }
@@ -1153,6 +1222,35 @@ export class Renderer {
         if (!reduceMotion() && this.state.world.store(Flame).has(f)) burstSparks(this.sparks, this.curX[f], this.curY[f], 6, now, { colour: FIRE_YELLOW, reach: [0.2, 0.6], ms: [200, 420] });
         continue;
       }
+      if (info.events[i] === SimEvent.Smoke) {
+        // The volley leaves in a puff of grey from the launcher; the clouds swell where they land.
+        const a = info.events[i + 1];
+        if (this.sprites.has(a) && !reduceMotion()) burstSparks(this.sparks, this.curX[a], this.curY[a], 7, now, { colour: 0xc8ced8, reach: [0.3, 0.8], ms: [240, 520], width: 2.4 });
+        continue;
+      }
+      if (info.events[i] === SimEvent.Intercept) {
+        // Point defence: a stitch of green darts from the defender to the missile or shell, and a small puff where it is hit.
+        const a = info.events[i + 1], b = info.events[i + 2];
+        if (this.sprites.has(a)) this.fireShot('pd', 1, a, b, { x: this.curX[a], y: this.curY[a] }, { x: this.curX[b], y: this.curY[b] }, 0x9dffb4, now);
+        continue;
+      }
+      if (info.events[i] === SimEvent.RailShot) {
+        // The beam is drawn from the Charge the carrier still holds this tick (heading and length of the line).
+        const a = info.events[i + 1];
+        const charge = world.store(Charge);
+        if (this.sprites.has(a) && charge.has(a) && this.railBeams.length < 16) {
+          const heading = (charge.f.heading[a] / 256) * Math.PI * 2;
+          this.railBeams.push({ x: this.curX[a], y: this.curY[a], heading, len: charge.f.len[a] / 10, born: now });
+          if (!reduceMotion()) burstSparks(this.sparks, this.curX[a] + Math.cos(heading), this.curY[a] + Math.sin(heading), 14, now, { colour: 0xcdeeff, heading, spread: 0.5, reach: [0.5, 1.6], ms: [200, 480], width: 2.6 });
+        }
+        continue;
+      }
+      if (info.events[i] === SimEvent.DroneLaunch || info.events[i] === SimEvent.DroneDock) {
+        // Amber sparks round the carrier's hatch as a drone leaves or comes home.
+        const a = info.events[i + 1];
+        if (this.sprites.has(a) && !reduceMotion()) burstSparks(this.sparks, this.curX[a], this.curY[a], 6, now, { colour: 0xffc247, reach: [0.25, 0.7], ms: [200, 420] });
+        continue;
+      }
       if (info.events[i] !== SimEvent.Shot) continue;
       const a = info.events[i + 1];
       this.aimAt.set(a, { target: info.events[i + 2], until: now + AIM_LINGER_MS });
@@ -1192,6 +1290,11 @@ export class Renderer {
     this.shots.push({ a, b, from, to, born: now, kind, damage, ms, seed: Math.floor(Math.random() * 1000), colour, end });
     const sx = from ? from.x : this.curX[a], sy = from ? from.y : this.curY[a];
     const tx = end ? end.x : to ? to.x : this.curX[b], ty = end ? end.y : to ? to.y : this.curY[b];
+    if (kind === 'pd') {
+      if (!reduceMotion()) burstSparks(this.sparks, tx, ty, 3, now + ms * 0.4, { colour: 0x9dffb4, reach: [0.1, 0.35], ms: [120, 240] });
+      if (this.explosions.length < MAX_EXPLOSIONS) this.explosions.push(makeBlast('flak', tx, ty, 0.35, now + ms * 0.4));
+      return;
+    }
     if (kind === 'flak') {
       // The shell is a string of puffs that takes most of the shot's life to arrive, then bursts.
       if (this.explosions.length < MAX_EXPLOSIONS) this.explosions.push(makeBlast('flak', tx, ty, 0.7, now + ms * 0.55));
@@ -1199,6 +1302,10 @@ export class Renderer {
     }
     if (end || reduceMotion()) return;
     const back = Math.atan2(sy - ty, sx - tx);
+    if (kind === 'ion') {
+      burstSparks(this.sparks, tx, ty, 9, now + ms * 0.1, { colour: 0xc27bff, reach: [0.2, 0.7], ms: [200, 420], width: 2 });
+      return;
+    }
     if (kind === 'laser') {
       burstSparks(this.sparks, tx, ty, 6, now, { colour: SHIELD_SPARK_COLOURS[1], heading: back, spread: 1.2, reach: [0.15, 0.55], ms: [180, 380] });
     } else {
@@ -1239,14 +1346,16 @@ export class Renderer {
     const y = this.curY[e] + Math.sin(angle) * reach;
     if (this.shieldFlashes.length < MAX_FLASHES) this.shieldFlashes.push({ e, angle, born: now, power });
     const owner = this.state.world.store(Unit).f.owner[e];
-    burstSparks(this.sparks, x, y, 4 + Math.round(power * 8), now, {
+    burstSparks(this.sparks, x, y, 8 + Math.round(power * 14), now, {
       colour: SHIELD_SPARK_COLOURS[Math.floor(Math.random() * SHIELD_SPARK_COLOURS.length)] ?? ownerColour(owner),
       heading: angle,
-      spread: 1.3,
-      reach: [0.2, 0.7],
-      ms: [160, 360],
-      width: 1.8,
+      spread: 1.6,
+      reach: [0.3, 1.1],
+      ms: [200, 480],
+      width: 2.2,
     });
+    // A hard hit also throws a few white-hot sparks straight out from the point struck.
+    if (power > 0.3) burstSparks(this.sparks, x, y, 3 + Math.round(power * 5), now, { colour: 0xffffff, heading: angle, spread: 0.5, reach: [0.6, 1.5], ms: [140, 280], width: 2.6 });
     return { x, y };
   }
 
@@ -1256,7 +1365,7 @@ export class Renderer {
     const capacity = this.state.stats(e)?.energyCapacity ?? 600;
     const radius = shieldRadius(capacity);
     const colour = ownerColour(this.state.world.store(Unit).f.owner[e]);
-    if (this.explosions.length < MAX_EXPLOSIONS) this.explosions.push(makeBlast('shield', this.curX[e], this.curY[e], radius, now, { colour }));
+    if (this.explosions.length < MAX_EXPLOSIONS) this.explosions.push(makeBlast('shield', this.curX[e], this.curY[e], radius, now, { colour, targets: this.dischargeTargets(this.curX[e], this.curY[e], radius * 1.3 * ARC_REACH, e) }));
     burstSparks(this.sparks, this.curX[e], this.curY[e], 24, now, { colour: SHIELD_SPARK_COLOURS[0], reach: [0.5, radius + 0.5], ms: [300, 700], width: 2 });
     if (!reduceMotion()) throwShrapnel(this.shrapnel, this.curX[e], this.curY[e], radius * 0.6, now);
   }
@@ -1354,6 +1463,76 @@ export class Renderer {
     }
   }
 
+  /** Smoke clouds in view: soft billows over the units, swelling out when new and thinning as they run out. */
+  private drawSmoke(now: number): void {
+    const g = this.smokeLayer.clear();
+    const store = this.state.world.store(Smoke);
+    if (store.dense.length === 0) return;
+    const still = reduceMotion();
+    const { width, height } = this.app.screen;
+    for (const e of store.dense) {
+      if (!this.flying.has(e)) continue;
+      const p = this.tileToScreen(this.curX[e], this.curY[e]);
+      const radius = (store.f.radius[e] / 10) * this.scale;
+      if (p.x + radius < 0 || p.y + radius < 0 || p.x - radius > width || p.y - radius > height) continue;
+      const born = this.smokeBorn.get(e) ?? now;
+      drawSmokeCloud(g, p.x, p.y, radius, store.f.life[e] / 255, (now - born) / SMOKE_SWELL_MS, e, this.state.daylight, now, still);
+    }
+  }
+
+  /** The railgun's aim line and gathering glint while it charges, its beam after it fires, and the violet crackle on a unit with a module held down. */
+  private drawWeaponFx(g: Graphics, now: number, still: boolean): void {
+    const charges = this.state.world.store(Charge);
+    for (const e of charges.dense) {
+      if (charges.f.state[e] !== 0 || !this.sprites.has(e)) continue;
+      const p = this.screenOf(e);
+      const reach = ((this.state.stats(e)?.weapon?.range ?? 0) / TILE) * this.scale;
+      drawRailCharge(g, p.x, p.y, (charges.f.heading[e] / 256) * Math.PI * 2, charges.f.pct[e] / 255, reach, this.scale, now, still);
+    }
+    if (this.railBeams.length > 0) {
+      this.railBeams = this.railBeams.filter((b) => now - b.born < RAIL_BEAM_MS);
+      for (const b of this.railBeams) {
+        const p = this.tileToScreen(b.x, b.y);
+        drawRailBeam(g, p.x, p.y, b.heading, b.len * this.scale, (now - b.born) / RAIL_BEAM_MS, this.scale, still);
+      }
+    }
+    for (const e of this.ionHeld) {
+      if (!this.sprites.has(e)) continue;
+      const p = this.screenOf(e);
+      const s = this.state.stats(e);
+      drawIonHold(g, p.x, p.y, (s?.structure ? s.footprint / 2 : Math.max(0.3, (s?.radius ?? 300) / TILE)) * this.scale, e, now, still);
+    }
+  }
+
+  /** Every spotlight that is lit and in sight: a soft wedge, cut short where rock or a building stops the light, brighter as the sky darkens. */
+  private drawSpotBeams(now: number): void {
+    const g = this.spotBeamLayer.clear();
+    const store = this.state.world.store(Light);
+    const seen = this.beamSeen;
+    seen.clear();
+    if (store.dense.length === 0) {
+      this.beamHeadings.retain(seen);
+      return;
+    }
+    const k = easeBy((now - (this.lastBeamFrame || now)) / 1000);
+    this.lastBeamFrame = now;
+    const strength = 0.35 + 0.65 * (1 - this.state.daylight / 100);
+    const { width, height } = this.app.screen;
+    for (const e of store.dense) {
+      if (store.f.power[e] === 0 || !this.sprites.has(e)) continue;
+      seen.add(e);
+      const head = this.beamHeadings.ease(e, store.f.heading[e], k);
+      const length = (store.f.power[e] / 10) * LIGHT_TILES_PER_ENERGY;
+      const p = this.screenOf(e);
+      const r = length * this.scale;
+      if (p.x + r < 0 || p.y + r < 0 || p.x - r > width || p.y - r > height) continue;
+      const skip = (this.state.stats(e)?.footprint ?? 1) / 2 + 0.6;
+      beamReach(this.state.terrain, this.tileX(e), this.tileY(e), head, length, skip, this.beamReaches);
+      drawBeam(g, { x: p.x, y: p.y, scale: this.scale, head, reach: this.beamReaches, skip, strength: strength * (store.f.dim[e] / 255) });
+    }
+    this.beamHeadings.retain(seen);
+  }
+
   /** The shield on `e` as drawn now: its replicated heading, arc and radius, eased so they glide between ticks (a new shield starts where it is). */
   private easedShield(e: number, heading: number, arc: number, range: number, k: number): { head: number; arc: number; r: number } {
     const wantHead = (heading / 256) * Math.PI * 2;
@@ -1399,6 +1578,22 @@ export class Renderer {
       }
       const age = (now - m.born) / m.ms;
       drawFire(g, this.softBlob, this.offX + m.x * this.scale, this.offY + m.y * this.scale, this.scale * m.size, 1 - age, now, m.seed, still);
+    }
+    if (this.dustTiles) this.crystalDust.draw(now, this.softBlob, this.offX, this.offY, this.scale);
+    // Damaged buildings and units smoulder, then burn. Drawn last so a crowded screen drops these before the fires of a fight.
+    const health = this.state.world.store(Health);
+    const w = this.app.screen.width;
+    const h = this.app.screen.height;
+    for (const e of health.dense) {
+      if (this.softsUsed >= SOFT_CAP) break;
+      if (!this.sprites.has(e) || this.state.isSite(e)) continue;
+      const s = this.state.stats(e);
+      if (!s || health.f.hp[e] >= s.hp * DAMAGE_SMOKE_BELOW || health.f.hp[e] <= 0) continue;
+      const p = this.screenOf(e);
+      const size = s.structure ? s.footprint : Math.max(1, (s.radius * 2) / TILE);
+      const reach = size * this.scale;
+      if (p.x < -reach || p.y < -reach * 2 || p.x > w + reach || p.y > h + reach) continue;
+      drawDamage(g, this.softBlob, p.x, p.y, this.scale, size, health.f.hp[e] / s.hp, now, e, still, this.softsUsed > SOFT_CAP / 2 ? 0.5 : 1);
     }
     this.hideSofts();
   }
@@ -1754,6 +1949,90 @@ export class Renderer {
     });
   }
 
+  /**
+   * Rebuilds the crystal field when a crystal appears or is used up, and draws it for the nodes on screen: a disc round each
+   * crystal that has a neighbour and a thick bridge between each pair, so a cluster fills in as one patch of lit ground.
+   * Only the look; spent crystals drop out, so a field shrinks as it is mined.
+   */
+  private drawCrystalField(): void {
+    const world = this.state.world;
+    if (this.fieldDirty) {
+      this.fieldDirty = false;
+      const res = world.store(Resource);
+      const debris = world.store(Debris);
+      this.fieldX = [];
+      this.fieldY = [];
+      for (const e of res.dense) {
+        if (debris.has(e) || res.f.amount[e] <= 0 || !this.sprites.has(e)) continue;
+        this.fieldX.push(this.tileX(e));
+        this.fieldY.push(this.tileY(e));
+      }
+      this.field = this.fieldX.length > 1 ? buildField(this.fieldX, this.fieldY) : null;
+      this.shards = this.field ? scatterShards(this.fieldX, this.fieldY, this.field) : null;
+      this.buildFieldGlow();
+      const t = this.state.terrain;
+      this.dustTiles = this.fieldX.length > 0 ? dustMask(this.fieldX, this.fieldY, t.width, t.height) : null;
+    }
+    // The glow sprites live in tile coordinates, so panning and zooming only moves their parent.
+    this.fieldGlow.position.set(this.offX, this.offY);
+    this.fieldGlow.scale.set(this.scale);
+    const sg = this.fieldShards.clear();
+    const field = this.field;
+    if (!field || field.links.length === 0) return;
+    const s = this.scale;
+    const w = this.app.screen.width, h = this.app.screen.height;
+    const pad = FIELD_SKIRT * s;
+    const sh = this.shards;
+    if (!sh) return;
+    for (let i = 0; i < sh.x.length; i++) {
+      const x = this.offX + sh.x[i] * s, y = this.offY + sh.y[i] * s;
+      if (x < -pad || y < -pad || x > w + pad || y > h + pad) continue;
+      // A little two-tone shard like the ones on the crystals themselves: a lit side and a dark side.
+      const len = sh.size[i] * 1.8 * s, wid = sh.size[i] * 0.5 * s;
+      const dx = Math.cos(sh.angle[i]), dy = Math.sin(sh.angle[i]);
+      const tx = x + dx * len, ty = y + dy * len;
+      sg.poly([x - dy * wid, y + dx * wid, tx, ty, x, y]).fill({ color: RESOURCE_COLOUR, alpha: 0.85 });
+      sg.poly([x + dy * wid, y - dx * wid, tx, ty, x, y]).fill({ color: 0x2a8f6c, alpha: 0.85 });
+    }
+  }
+
+  /** One soft glow sprite for each crystal and along each bridge (see `glowPoints`): built when the field changes, then only moved with the camera. */
+  private buildFieldGlow(): void {
+    const g = glowPoints(this.fieldX, this.fieldY, this.field);
+    const kids = this.fieldGlow.children as Sprite[];
+    for (let i = 0; i < g.x.length; i++) {
+      let sp = kids[i];
+      if (!sp) {
+        sp = new Sprite(this.glowTexture);
+        sp.anchor.set(0.5);
+        sp.tint = RESOURCE_COLOUR;
+        this.fieldGlow.addChild(sp);
+      }
+      sp.visible = true;
+      sp.position.set(g.x[i], g.y[i]);
+      sp.scale.set((g.radius[i] * 2) / GLOW_SIZE);
+      sp.alpha = g.alpha[i];
+    }
+    for (let i = g.x.length; i < kids.length; i++) kids[i].visible = false;
+  }
+
+  /** A ground vehicle on crystal ground leaves puffs of dust as it moves, a few per tile driven. Flyers, buildings and anything unseen leave none. */
+  private kickDust(e: number, s: Sprite, dt: number, now: number): void {
+    if (!s.visible || !this.state.world.store(Unit).has(e)) return;
+    const stats = this.state.stats(e);
+    if (!stats || stats.structure || stats.flying) return;
+    const moved = Math.hypot(this.curX[e] - this.prevX[e], this.curY[e] - this.prevY[e]) / (this.tickMs / 1000) * dt; // tiles this frame
+    if (moved < 1e-4) return;
+    const t = this.state.terrain;
+    const x = this.tileX(e), y = this.tileY(e);
+    const tx = Math.floor(x), ty = Math.floor(y);
+    if (tx < 0 || ty < 0 || tx >= t.width || ty >= t.height || !this.dustTiles![ty * t.width + tx]) return;
+    const size = Math.min(2, Math.max(0.6, (stats.radius * 2) / TILE));
+    let owed = this.dustOwed[e] + moved * DUST_PER_TILE * size;
+    for (; owed >= 1; owed--) this.crystalDust.puff(x, y, now, Math.random(), Math.random(), size);
+    this.dustOwed[e] = owed;
+  }
+
   /** Keeps the drop shadow under a sprite: the same art in black, nudged away from the light; bigger things cast longer shadows. */
   private updateShadow(e: number, s: Sprite, k: number, dt: number): void {
     if (this.state.world.store(Resource).has(e)) return; // ore lies flat on the ground
@@ -1907,6 +2186,7 @@ export class Renderer {
       const p = this.screenOf(e);
       s.position.set(p.x, p.y);
       s.scale.set(k);
+      if (this.dustTiles) this.kickDust(e, s, dt, now);
       const want = this.facing.get(e);
       if (want !== undefined) {
         // Shortest way round.
@@ -1915,6 +2195,7 @@ export class Renderer {
       }
       this.updateShadow(e, s, k, dt);
     }
+    this.drawCrystalField();
     this.drawWrecks(now, k);
     this.drawLiquidFx(now);
     this.halosUsed = 0;
@@ -1925,6 +2206,8 @@ export class Renderer {
     this.drawSteam(now);
     this.drawChargeZones();
     this.drawLinks();
+    this.drawSpotBeams(now);
+    this.drawSmoke(now);
     this.drawShields(now);
     this.drawFog();
     this.drawRadar();
@@ -1993,8 +2276,8 @@ export class Renderer {
   }
 
   /**
-   * A tesla discharge: a ring of sparking charge races out from the coil to the edge of its range,
-   * trailing jagged lightning arcs that crackle (re-rolled every TESLA_FLICKER_MS) and shed sparks.
+   * A tesla discharge: a ring of charge races out from the coil to the edge of its range while arcs jump from point to
+   * point ahead of it, preferring units and buildings in reach (see `makeDischarge`); each hop flashes and lights its surroundings.
    */
   private drawTesla(g: Graphics, p: Pulse, now: number): void {
     const c = p.spot ? this.tileToScreen(p.spot.x, p.spot.y) : this.screenOf(p.e);
@@ -2002,42 +2285,42 @@ export class Renderer {
     const reach = (p.spot ? p.spot.radius : (this.state.stats(p.e)?.weapon?.range ?? 0) / TILE) * this.scale;
     const front = reach * (1 - (1 - Math.min(1, age * 1.6)) ** 2); // the ring eases out and arrives at ~60% of the time
     const fade = 1 - age;
-    const frame = Math.floor((now - p.born) / TESLA_FLICKER_MS);
     g.circle(c.x, c.y, front).fill({ color: p.colour, alpha: 0.12 * fade });
     g.circle(c.x, c.y, front).stroke({ width: 3, color: p.colour, alpha: 0.9 * fade });
     g.circle(c.x, c.y, front * 0.93).stroke({ width: 1.5, color: TESLA_CORE, alpha: 0.7 * fade });
-    for (const b of p.bolts ?? []) {
-      const dx = Math.cos(b.angle);
-      const dy = Math.sin(b.angle);
-      // The arc reaches as far as the ring has; sideways kicks grow with distance and shake each flicker.
-      let px = c.x;
-      let py = c.y;
-      for (let i = 1; i <= TESLA_SEGMENTS; i++) {
-        const along = (i / TESLA_SEGMENTS) * front;
-        const kick = (i === TESLA_SEGMENTS ? 0.4 : 1) * crackle(b.seed, i, frame) * this.scale * 0.45;
-        const x = c.x + dx * along - dy * kick;
-        const y = c.y + dy * along + dx * kick;
-        g.moveTo(px, py).lineTo(x, y);
-        px = x;
-        py = y;
-      }
-      g.stroke({ width: 2.5, color: p.colour, alpha: 0.55 * fade });
-      px = c.x;
-      py = c.y;
-      for (let i = 1; i <= TESLA_SEGMENTS; i++) {
-        const along = (i / TESLA_SEGMENTS) * front;
-        const kick = (i === TESLA_SEGMENTS ? 0.4 : 1) * crackle(b.seed, i, frame) * this.scale * 0.45;
-        const x = c.x + dx * along - dy * kick;
-        const y = c.y + dy * along + dx * kick;
-        g.moveTo(px, py).lineTo(x, y);
-        px = x;
-        py = y;
-      }
-      g.stroke({ width: 1, color: TESLA_CORE, alpha: 0.9 * fade });
-      // A spark flies off the tip.
-      const sx = c.x + dx * front + crackle(b.seed, 77, frame) * this.scale * 0.25;
-      const sy = c.y + dy * front + crackle(b.seed, 78, frame) * this.scale * 0.25;
-      g.circle(sx, sy, Math.max(1.5, this.scale * 0.07)).fill({ color: 0xffffff, alpha: fade });
+    if (p.hops) drawDischarge(g, p.hops, age, p.colour, TESLA_CORE, flickerFrame(p.born, now, reduceMotion()), this.offX, this.offY, this.scale);
+  }
+
+  /**
+   * Where the units and buildings in sight stand within `reach` tiles of a point (not entity `skip`), as a flat list of
+   * x, y pairs, nearest first and at most DISCHARGE_TARGETS: the places a discharge may jump to. Runs once per discharge.
+   */
+  private dischargeTargets(x: number, y: number, reach: number, skip: number): number[] {
+    const units = this.state.world.store(Unit);
+    const found: { d: number; x: number; y: number }[] = [];
+    const limit = reach * reach;
+    for (const e of this.sprites.keys()) {
+      if (e === skip || !units.has(e)) continue;
+      const dx = this.curX[e] - x, dy = this.curY[e] - y;
+      const d = dx * dx + dy * dy;
+      if (d <= limit) found.push({ d, x: this.curX[e], y: this.curY[e] });
+    }
+    found.sort((a, b) => a.d - b.d);
+    if (found.length > DISCHARGE_TARGETS) found.length = DISCHARGE_TARGETS;
+    const flat: number[] = [];
+    for (const f of found) flat.push(f.x, f.y);
+    return flat;
+  }
+
+  /** The light of a discharge's live hops: a glow where each arc runs, and a bigger one where it lands on a unit or building. */
+  private hopGlows(hops: readonly Hop[], t: number, colour: number, level: number): void {
+    const sc = this.scale;
+    for (let i = 0; i < hops.length; i++) {
+      const h = hops[i];
+      const s = hopStrength(h, t);
+      if (s <= 0) continue;
+      this.glow(this.offX + ((h.x0 + h.x1) / 2) * sc, this.offY + ((h.y0 + h.y1) / 2) * sc, (HOP_LIGHT_RADIUS * 0.6 + Math.hypot(h.x1 - h.x0, h.y1 - h.y0) * 0.35) * sc, colour, HOP_LIGHT_ALPHA * level * s);
+      if (h.hit) this.glow(this.offX + h.x1 * sc, this.offY + h.y1 * sc, HOP_LIGHT_HIT_RADIUS * sc, colour, HOP_LIGHT_ALPHA * level * s);
     }
   }
 
@@ -2522,6 +2805,7 @@ export class Renderer {
       this.glow(cx, cy, r * (x.lightScale - 0.8 * t), x.palette.light, 0.9 * level * (1 - t) ** 1.6);
       const flash = Math.max(0, 1 - t / 0.25);
       this.glow(cx, cy, r * 1.6, 0xffffff, 0.8 * level * flash);
+      if (x.discharge.length > 0) this.hopGlows(x.discharge, x.kind === 'shield' ? (t - SHIELD_IMPLODE) / (1 - SHIELD_IMPLODE) : t, x.kind === 'shield' ? x.colour : x.palette.ring, level);
     }
     // Lava lights the night: a faint orange pool over every few cells of it.
     const lava = this.liquids?.lava;
@@ -2563,6 +2847,7 @@ export class Renderer {
     }
     for (const p of this.pulses) {
       const age = (now - p.born) / PULSE_MS;
+      if (p.hops) this.hopGlows(p.hops, age, p.colour, level);
       const range = p.spot ? p.spot.radius * TILE : this.state.stats(p.e)?.weapon?.range ?? 0;
       const c = p.spot ? this.tileToScreen(p.spot.x, p.spot.y) : this.screenOf(p.e);
       this.glow(c.x, c.y, Math.min(3, Math.max(1, (range / TILE) * 0.3)) * sc, p.colour, 0.8 * level * (1 - age) ** 2);
@@ -2622,6 +2907,51 @@ export class Renderer {
     view.visible = true;
     view.position.set(this.offX, this.offY);
     view.scale.set(this.scale);
+  }
+
+  /** The straight runs (x0, y0, x1, y1 in tiles) along the border of explored ground; rebuilt when vision changes. */
+  private exploredEdge: number[] = [];
+  private exploredEdgeFor = '';
+
+  /** A hard green line along the limit of the explored ground, drawn while placing a building: nothing can be built past it. */
+  private drawExploredEdge(g: Graphics): void {
+    const v = this.state.vision;
+    const { width, height } = this.state.terrain;
+    if (!this.state.fog || v.length !== width * height) return;
+    const key = `${this.state.visionVersion}|${width}x${height}`;
+    if (key !== this.exploredEdgeFor) {
+      this.exploredEdgeFor = key;
+      const seg: number[] = (this.exploredEdge = []);
+      for (let y = 1; y < height; y++) {
+        let start = -1;
+        for (let x = 0; x <= width; x++) {
+          const edge = x < width && v[(y - 1) * width + x] > 0 !== v[y * width + x] > 0;
+          if (edge && start < 0) start = x;
+          else if (!edge && start >= 0) {
+            seg.push(start, y, x, y);
+            start = -1;
+          }
+        }
+      }
+      for (let x = 1; x < width; x++) {
+        let start = -1;
+        for (let y = 0; y <= height; y++) {
+          const edge = y < height && v[y * width + x - 1] > 0 !== v[y * width + x] > 0;
+          if (edge && start < 0) start = y;
+          else if (!edge && start >= 0) {
+            seg.push(x, start, x, y);
+            start = -1;
+          }
+        }
+      }
+    }
+    const seg = this.exploredEdge;
+    if (seg.length === 0) return;
+    const { offX, offY, scale } = this;
+    for (let i = 0; i < seg.length; i += 4) {
+      g.moveTo(offX + seg[i] * scale, offY + seg[i + 1] * scale).lineTo(offX + seg[i + 2] * scale, offY + seg[i + 3] * scale);
+    }
+    g.stroke({ width: 2, color: EXPLORED_EDGE_COLOUR, alpha: 0.95 });
   }
 
   /** Redraw links (e.g. when network reports arrive). */
@@ -2728,6 +3058,7 @@ export class Renderer {
         (size + 2 * reach) * this.scale,
       ).stroke({ width: 1, color: ENERGY_COLOUR, alpha: 0.35 });
       this.drawGhostLinks(g);
+      this.drawExploredEdge(g);
     }
 
     // Factory progress, harvester cargo and low-energy warnings for your own things.
@@ -2833,6 +3164,7 @@ export class Renderer {
     this.drawMissiles(g, now);
     this.drawShells(g);
     this.drawFlames(g, now, still);
+    this.drawWeaponFx(g, now, still);
 
     this.shots = this.shots.filter((s) => now - s.born < s.ms && (s.from !== undefined || (this.sprites.has(s.a) && this.sprites.has(s.b))));
     for (const s of this.shots) {
@@ -3072,7 +3404,7 @@ export class Renderer {
     const PI = Math.PI;
     const open = (x: number, y: number) => !t.isRock(x, y); // liquid is open to the eye: only rock is drawn solid
     this.drawLiquids(g, t);
-    const fillShape = (inShape: (x: number, y: number) => boolean) => {
+    const fillShape = (inShape: (x: number, y: number) => boolean, out: Graphics = g) => {
       for (let y = 0; y < t.height; y++) {
         for (let x = 0; x < t.width; x++) {
           if (!inShape(x, y)) continue;
@@ -3089,23 +3421,26 @@ export class Renderer {
           const br = down && rt ? rad : 0;
           const bl = down && lf ? rad : 0;
           if (!(tl || tr || br || bl)) {
-            g.rect(l, top, this.scale + 0.5, this.scale + 0.5);
+            out.rect(l, top, this.scale + 0.5, this.scale + 0.5);
             continue;
           }
-          g.moveTo(l + tl, top).lineTo(r - tr, top);
-          if (tr) g.arc(r - tr, top + tr, tr, -PI / 2, 0);
-          g.lineTo(r, b - br);
-          if (br) g.arc(r - br, b - br, br, 0, PI / 2);
-          g.lineTo(l + bl, b);
-          if (bl) g.arc(l + bl, b - bl, bl, PI / 2, PI);
-          g.lineTo(l, top + tl);
-          if (tl) g.arc(l + tl, top + tl, tl, PI, PI * 1.5);
-          g.closePath();
+          out.moveTo(l + tl, top).lineTo(r - tr, top);
+          if (tr) out.arc(r - tr, top + tr, tr, -PI / 2, 0);
+          out.lineTo(r, b - br);
+          if (br) out.arc(r - br, b - br, br, 0, PI / 2);
+          out.lineTo(l + bl, b);
+          if (bl) out.arc(l + bl, b - bl, bl, PI / 2, PI);
+          out.lineTo(l, top + tl);
+          if (tl) out.arc(l + tl, top + tl, tl, PI, PI * 1.5);
+          out.closePath();
         }
       }
     };
     fillShape((x, y) => !open(x, y));
     g.fill(0x343b47);
+    this.rockMask.clear();
+    fillShape((x, y) => !open(x, y), this.rockMask);
+    this.rockMask.fill(0xffffff);
 
     // Rock height (the terrain's height map: 1 at an outcrop's rim, higher inside it, cliffs high from
     // the edge) shown as lighter tiers. The map edge counts as solid.
@@ -3266,10 +3601,14 @@ export class Renderer {
   private drawLiquidFx(now: number): void {
     const gl = this.glintG.clear();
     const t = this.state.terrain;
-    if (!this.liquids || this.liquids.tiers.length === 0) return;
+    if (!this.liquids || this.liquids.tiers.length === 0) {
+      this.lavaSteam.visible = false;
+      return;
+    }
     const still = reduceMotion();
     this.foamG.alpha = still ? 0.85 : 0.7 + 0.2 * Math.sin(now / 900);
     this.lavaG.alpha = still ? 0.85 : 0.65 + 0.35 * Math.sin(now / 650 + 1);
+    this.lavaSteam.visible = false;
     if (still || weatherDetail() !== 'fancy') return;
     const s = this.scale;
     const X = (tx: number) => this.offX + tx * s;
@@ -3304,6 +3643,57 @@ export class Renderer {
         else gl.circle(x, y, s * 0.06 * (phase - 0.7) * 6).fill({ color: 0xfff0b0, alpha: 0.5 * (1 - phase) * 5 });
       }
     }
+    // Rain ripples: while it rains, rings spread on water cells in view. Not tied to the streaks, only to how wet it is.
+    const wet = Math.min(1, this.state.weather.wetness / 100);
+    const ripples = Math.floor(RIPPLE_CAP * wet);
+    for (let k = 0; k < ripples; k++) {
+      const period = RIPPLE_MS * (0.8 + 0.5 * ((k * 7) % 5) / 5);
+      const u = now / period + k * 0.41;
+      const phase = u % 1;
+      const h = cellHash(k + 211, Math.floor(u));
+      const cx = x0 + (h % cols);
+      const cy = y0 + (Math.floor(h / cols) % rows);
+      const d = t.depthAt(cx, cy);
+      if (d < 1 || d > 5) continue;
+      const x = X(cx + ((h >>> 8) % 100) / 100);
+      const y = Y(cy + ((h >>> 16) % 100) / 100);
+      const fade = (1 - phase) * 0.5;
+      gl.circle(x, y, s * (0.06 + 0.34 * phase)).stroke({ width: Math.max(1, s * 0.04), color: 0xe3f6fa, alpha: fade });
+      if (phase > 0.3) gl.circle(x, y, s * (0.34 * (phase - 0.3))).stroke({ width: Math.max(1, s * 0.03), color: 0xe3f6fa, alpha: fade * 0.6 });
+    }
+    // Lava steam: the mist's soft wisps again, a few at a time, rising and widening off sparse lava cells and fading as they go; thicker in rain.
+    const lamps = this.liquids.lava;
+    const lampCount = lamps.length / 2;
+    if (lampCount > 0) {
+      this.lavaSteam.visible = true;
+      const peak = STEAM_ALPHA + STEAM_WET_ALPHA * wet;
+      const wind = this.state.wind / 100;
+      for (let k = 0; k < STEAM_CAP; k++) {
+        let sp = this.steamWisps[k];
+        if (!sp) {
+          sp = new Sprite(this.mistTexture);
+          sp.anchor.set(0.5);
+          sp.tint = STEAM_COLOUR;
+          this.lavaSteam.addChild(sp);
+          this.steamWisps[k] = sp;
+        }
+        const period = 5500 + (k % 5) * 1300;
+        const u = now / period + k * 0.37;
+        const phase = u % 1;
+        const h = cellHash(k + 401, Math.floor(u));
+        const li = (h % lampCount) * 2;
+        const cx = lamps[li], cy = lamps[li + 1];
+        if (cx < x0 - 2 || cx > x1 + 2 || cy < y0 - 2 || cy > y1 + 2) {
+          sp.visible = false;
+          continue;
+        }
+        const r = (0.9 + 1.1 * phase) * s;
+        sp.visible = true;
+        sp.position.set(X(cx + ((h >>> 12) % 100) / 100 - 0.5 + wind * phase * 1.5), Y(cy - phase * 1.6));
+        sp.scale.set((r * 2.4) / GLOW_SIZE, (r * 2) / GLOW_SIZE);
+        sp.alpha = peak * Math.sin(phase * Math.PI);
+      }
+    }
     // Spat fragments, very occasionally: a few slots, each firing on roughly one cycle in four and only if its cell is lava. A glowing
     // fleck lobs up and over, cooling from orange to dark as it falls.
     for (let k = 0; k < SPIT_SLOTS; k++) {
@@ -3314,9 +3704,8 @@ export class Renderer {
       if (phase >= flight) continue;
       const h = cellHash(k + 91, Math.floor(u));
       if (h % 4 !== 0) continue;
-      const lamps = this.liquids.lava;
-      if (lamps.length === 0) continue;
-      const li = ((h >>> 4) % (lamps.length / 2)) * 2; // one of the sparse lava cells kept for lighting
+      if (lampCount === 0) continue;
+      const li = ((h >>> 4) % lampCount) * 2; // one of the sparse lava cells kept for lighting
       const cx = Math.floor(lamps[li]);
       const cy = Math.floor(lamps[li + 1]);
       if (cx < x0 || cx > x1 || cy < y0 || cy > y1) continue;
@@ -3392,8 +3781,8 @@ export class Renderer {
    * same art as in-game sprites, at `pxPerTile` pixels per map tile.
    * `owner` picks the team colour (default: the local player).
    */
-  async previewImage(parts: readonly string[], pxPerTile: number, owner = this.state.myId): Promise<string> {
-    return renderClassImage(this.app.renderer, parts, ownerColour(owner), () => pxPerTile / TEX);
+  async previewImage(parts: readonly string[], pxPerTile: number, owner = this.state.myId, fit?: number): Promise<string> {
+    return renderClassImage(this.app.renderer, parts, ownerColour(owner), fit ? (w, h) => fit / Math.max(w, h, 1) : () => pxPerTile / TEX);
   }
 
   /** Class art in texture space (TEX pixels per tile). */
@@ -3413,35 +3802,12 @@ export class Renderer {
       const rich = Math.max(0, stage) / 4; // 0 .. 1
       // Deterministic wobble, so every node (and every reload) looks the same.
       const wob = (a: number, k: number) => Math.sin(a * 3 + k) * 0.5 + Math.sin(a * 5 + k * 2.3) * 0.3 + Math.sin(a * 2 + k * 0.7) * 0.2;
-      // The patch is a slab: a square with chamfered corners and slightly uneven sides, to match the square-ish art.
-      const blob = (half: number, k: number): number[] => {
-        const top = half * (1 + 0.08 * wob(0, k)), right = half * (1 + 0.08 * wob(1, k)), bottom = half * (1 + 0.08 * wob(2, k)), left = half * (1 + 0.08 * wob(3, k));
-        const c = half * 0.2;
-        return [-left + c, -top, right - c, -top, right, -top + c, right, bottom - c, right - c, bottom, -left + c, bottom, -left, bottom - c, -left, -top + c];
-      };
-      /** Spreads index `i` over a square instead of a disc: a point at "radius" `rr` (Chebyshev distance) at the golden angle. */
-      const onSquare = (i: number, rr: number): [number, number] => {
-        const a = i * 2.399963;
-        const cx = Math.cos(a), cy = Math.sin(a);
-        const m = Math.max(Math.abs(cx), Math.abs(cy));
-        return [(cx / m) * rr, (cy / m) * rr];
-      };
-      g.poly(blob(1.3 * TEX, 0)).fill({ color: RESOURCE_COLOUR, alpha: 0.02 + 0.03 * rich });
-      g.poly(blob(0.95 * TEX, 1.7)).fill({ color: RESOURCE_COLOUR, alpha: 0.03 + 0.04 * rich }).stroke({ width: 1, color: RESOURCE_COLOUR, alpha: 0.08 + 0.08 * rich });
-      // Faint ripples and grit: the ground looks cracked and lit from below around the crystals. The ripples are
-      // square corner brackets (some corners missing), the grit small squares.
-      for (let ring = 0; ring < (stage >= 3 ? 3 : stage >= 1 ? 2 : 1); ring++) {
-        const rad = (0.55 + ring * 0.27) * TEX;
-        for (let i = 0; i < 4; i++) {
-          if ((i + ring) % 4 === 3) continue; // a gap in the pattern
-          const sx = i % 2 === 0 ? -1 : 1, sy = i < 2 ? -1 : 1;
-          const rr = rad * (1 + 0.06 * wob(i, ring + 3));
-          const arm = (0.22 + 0.08 * Math.sin(i * 2 + ring)) * TEX;
-          g.moveTo(sx * rr, sy * (rr - arm)).lineTo(sx * rr, sy * rr).lineTo(sx * (rr - arm), sy * rr).stroke({ width: 1, color: RESOURCE_COLOUR, alpha: 0.18 - ring * 0.04 });
-        }
-      }
+      /** Spreads index `i` round a disc: a point at distance `rr` at the golden angle. */
+      const onDisc = (i: number, rr: number): [number, number] => [Math.cos(i * 2.399963) * rr, Math.sin(i * 2.399963) * rr];
+      // No slab or brackets round the crystals: the soft glow of the field (see drawCrystalField) lights the ground instead, so no square edge shows.
       for (let i = 0; i < 8 + Math.round(14 * rich); i++) {
-        const [gx, gy] = onSquare(i, (0.5 + 0.75 * ((i * 0.618) % 1)) * TEX);
+        const ga = i * 2.399963, gr = (0.5 + 0.5 * ((i * 0.618) % 1)) * TEX;
+        const [gx, gy] = [Math.cos(ga) * gr, Math.sin(ga) * gr];
         const sz = 1.2 + (i % 3) * 0.6;
         g.rect(gx - sz / 2, gy - sz / 2, sz, sz).fill({ color: i % 4 === 0 ? 0xffffff : RESOURCE_COLOUR, alpha: 0.22 });
       }
@@ -3478,7 +3844,7 @@ export class Renderer {
       const subs = stage < 0 ? 0 : [3, 7, 11, 15, 19][stage];
       for (let i = 0; i < subs; i++) {
         const t = i / 19;
-        const [sx, sy] = onSquare(i + 0.25, (0.42 + 0.7 * t + 0.05 * wob(i, 5)) * TEX);
+        const [sx, sy] = onDisc(i + 0.25, (0.42 + 0.7 * t + 0.05 * wob(i, 5)) * TEX);
         const size = (0.17 - 0.06 * t + 0.03 * wob(i, 2)) * TEX;
         shard(sx, sy, i * 2.399963 + 0.6 + 1.9 * Math.sin(i * 1.3 + 1), size, size * 0.3);
       }
@@ -3514,6 +3880,7 @@ export class Renderer {
     this.flameDirX = grow(this.flameDirX);
     this.flameDirY = grow(this.flameDirY);
     this.flameArcCur = grow(this.flameArcCur);
+    this.dustOwed = grow(this.dustOwed);
     const state = new Uint8Array(n);
     state.set(this.lampState);
     this.lampState = state;

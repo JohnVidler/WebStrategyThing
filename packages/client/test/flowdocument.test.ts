@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { FLOW_HOST, parseDoc, serialize } from '@wst/engine';
 import { FlowDocument, sourceToText } from '../src/flow/FlowDocument';
 
-const PROGRAM = 'let n = 0;\n\non(Idle, () => {\n  n = n + 1;\n  fire(0);\n});\n';
+const PROGRAM = 'let n = 0;\n\non(Idle, () => {\n  n = n + 1;\n  self.modules.weapon.fire(0);\n});\n';
 
 const make = (text = PROGRAM) => {
   const d = new FlowDocument(FLOW_HOST);

@@ -2,6 +2,7 @@ import { compileProgram, type FlowProgram } from '../flow/compile';
 import type { FlowHost } from '../flow/host';
 import { SCRIPT_CONSTANTS, UNIT_API } from './api';
 import { Caps, type BlueprintStats } from './blueprint';
+import { MODULE_ALIASES } from './members';
 import { TaskType } from './tasks';
 
 /**
@@ -79,7 +80,7 @@ export const RESERVED_KEYS: ReadonlyMap<string, string> = new Map([
 ]);
 
 /** What the flow compiler and the editors need to know about the game: its API, constants and button hotkeys. */
-export const FLOW_HOST: FlowHost = { api: UNIT_API, constants: SCRIPT_CONSTANTS, reservedKeys: RESERVED_KEYS };
+export const FLOW_HOST: FlowHost = { api: UNIT_API, constants: SCRIPT_CONSTANTS, reservedKeys: RESERVED_KEYS, moduleAliases: MODULE_ALIASES };
 
 /** Compiles a class program (stored JSON) exactly as the server does: game API, constants and button rules. */
 export function compileUnitProgram(source: string): FlowProgram {

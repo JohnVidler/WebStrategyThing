@@ -5,6 +5,69 @@
 # one "- " line per change. Write for players: no file names or internals.
 # Other lines starting with # and blank lines are ignored.
 
+## 2026-11-01
+### More than one weapon
+Bigger hulls and buildings can now carry several weapons, each locking on and firing for itself. A micro hull still takes just one, light and medium hulls take two, heavy hulls three, and the very largest four; a building takes as many as its footprint is wide, up to four. All of a unit's weapons draw on the same cargo bay and battery, so a unit with a cannon and a flamethrower pays matter for both from the one hold.
+
+Programs can see them as a list: count them, pick one by its kind (a laser, say) and aim it alone, or order the plain fire(target) to put every weapon on the target. For now the unit picture still shows a single turret however many weapons it carries.
+- Hulls carry more weapons as they grow: micro 1, light 2, medium 2, heavy 3, super-heavy and colossus 4.
+- Hive drones now fly out and attack the enemies the Hive spots, and Wasps have a new, smaller drone hull so swarms look the part.
+- Buildings carry as many weapons as their footprint is wide, up to 4.
+- Every weapon on a unit pays for its own shots, but they all draw on the same cargo bay and battery.
+- The Designer's stats panel lists each weapon with its damage, range and energy per shot.
+- Programs: fire(target) and the engage order now put every weapon on the target; the unit closes in until even its shortest-ranged weapon reaches.
+- Programs: self.modules.weapon.length counts the weapons, self.modules.weapon[i].fire(target) locks just weapon i, and a filter by kind (W_LASER, W_CANNON and so on) picks one.
+
+## 2026-10-31
+### Railguns, ion guns, smoke, point defence and drone carriers, plus faster units, a tidier Designer and Spotlight Towers
+Five new ways to fight arrive today. The Longbow charges a railgun that fires a line through up to four enemies, the Disruptor's ion gun holds one module of its target down for a few seconds, the Smoke Screen throws a volley of sight-blocking clouds, the Guardian's point defence shoots missiles and shells out of the air, and the Hive carrier launches and recalls its own Wasp drones. Flak now shoots down enemy aircraft too. Alongside them, every unit has twice its old top speed (and has to work up to it), damaged buildings smoke and burn, and the Spotlight Tower lights up the dark.
+
+Every unit now has twice its old top speed, but they have to work up to it: small hulls pull away quickly, big ones take their time, and sharp turns make everything ease off before speeding up again. Damaged buildings now smoke and burn, so you can see how a fight is going at a glance, and new building sites only reveal the map once they are finished. The new Spotlight Tower throws a long beam of light into the dark and shows you everything it falls on. The more power you feed it, the further it sees, and a Light power slider in the side panel lets you choose how much it gets.
+
+Programs can now put their own sliders and on/off switches in the side panel, so any class you design can offer live controls for the things you want to tune mid-match. Select several kinds of unit and you see every control they offer, each marked with how many units it affects.
+
+You no longer need a unit watching a spot to build there: any ground you have already explored is fair game for new buildings. Ground you have never seen now fades to black the further it lies from anything you know, so the deep unknown really is unknown.
+
+The Designer is easier to find your way around: search the module catalogue or jump between categories, start from a full-screen library of your units and buildings, spot modules by their icons, and give your programs the whole screen on the Code tab.
+
+Programs now read more naturally. A unit's own readings and orders hang off a single `self` object (`self.hp`, `self.energy`, `self.moveTo(x, y)`), and each module has an object of its own under `self.modules`, such as `self.modules['weapon'].fire(foe)` or `self.modules.shield.angle(90)`. Programs you have already written keep working unchanged; the text view simply shows them in the new form, and `self` can no longer be used as a variable name.
+
+Please note the speed change: the same designs now cover ground twice as fast at full tilt, so journeys, chases and attack timings will feel different, and a program that counts on a unit arriving after a fixed delay may need adjusting. Planes now begin circling their landing spot from twice as far out, to suit their speed. Harvesters have also changed: they now spend more time at a matter source, and the bigger the hull, the faster it gathers. Existing harvester designs take longer to fill up than before, so expect slower deliveries until you add larger hulls or more cargo modules.
+
+Mass crystals now glitter as proper fields where they cluster, and ground vehicles driving across them kick up clouds of crystal dust.
+
+Electrical discharges look the part too: tesla blasts, lightning rings and failing batteries and shields now arc from target to target, lighting up the night and the mist as they go.
+- New Railgun module and the Longbow, a heavy railgun tank. It spends 400 energy and charges for five seconds in plain sight, with a blue aim line and a glint that grows at the muzzle, then fires a bright beam through up to four enemies in a line (each one after the first takes less), stopped by rock and shields. A charge spoils if the carrier takes a beating, is stunned, loses its target or starts to move, so a railgun wants an escort. Scripts can ask `charging(unit)` to see one coming.
+- New Ion gun module and the Disruptor. Its violet bolt does no damage: it holds one working module of its target down for six seconds (pick which with `config.aim`, or it chooses at random), then the target cannot be ion-struck again for four. It costs 350 energy a shot, so it empties its batteries in a few shots. A shield stops the bolt, and the Modules list shows what is held down.
+- New Smoke launcher module and the Smoke Screen unit. A volley of three smoke canisters (no matter, a 30-second rest) makes soft grey clouds that block sight for 15 seconds: sensors, the fog and spotlights cannot see into or through them, and lasers lose half their damage crossing them. Radar and radio see straight through. The `SmokeScreen` block throws smoke towards whoever hits the unit, and scripts can call `smoke(degrees)`.
+- New Point defence module and the Guardian escort. It shoots down enemy missiles and cannon shells that come within three tiles, by itself, for 3 energy a shot, and sits beside the unit's normal weapon.
+- New Drone bay module and the Hive carrier. The bay builds small drones (the stock Wasp) from the carrier's cargo and battery, keeps them safe, recharged and mended while docked, launches them when an enemy appears and calls them home afterwards. New script calls: `config.droneClass("Wasp")`, `launchDrones()`, `recallDrones()`, `dronesDocked()` and `dronesOut()`, plus the `DroneBay` and `Hunt` blocks.
+- Four new default buildings to match: the Rail Tower, the Ion Tower, the Smoke Tower and the Point Defence Tower, all in the Defence section of the build menu. Link them to a power network, since the railgun and ion gun are thirsty.
+- Flak Trucks and Flak Turrets now shoot down enemy aircraft as well as missiles (8 damage to every aircraft in the burst), and still do nothing to ground units and buildings. Their programs now watch for the new `AIR` kind in a `Detected` block (`FLIER` finds only aircraft); computer opponents build flak when they see aircraft too. If you wrote your own flak programs, add `AIR` to what they watch.
+- Scripts: the unit is now `self`, with its own readings (`self.hp`, `self.energy`, `self.x`) and orders (`self.moveTo(x, y)`), and every module has an object under `self.modules` (`self.modules['weapon'].fire(foe)`). Existing programs keep working and are shown in the new form.
+- Shields put on a much bigger show when they take a hit: the whole field flares, ripples run along the arc from the point struck, and a shower of sparks flies off.
+- Designer: search the module catalogue, jump between categories (each shows how many modules it holds) and hide modules your chassis cannot carry.
+- Designer: it now opens on a full-screen library of your units and buildings, split into tabs and sorted by size, with search; pick one to start working, and use the class name in the top bar to return to it.
+- Designer: every module in the catalogue has its own coloured icon, and the unit preview is much larger.
+- Designer: headline stats sit beside the preview with the full list one click away, and installed modules show how many slots are left.
+- Designer: the graph editor's block palette can be hidden for more canvas, and the view switch, memory meter and version history now sit in the top bar.
+- Harvesters now take their time at a matter source. Gathering is slower and proportional to hull size: a light harvester takes about 2 seconds to fill a cargo bay, and larger hulls gather more per second.
+- Every unit's top speed is doubled. Units now accelerate: tiny hulls reach full speed in about half a second, the biggest take nearly two, so heavy armour is slow to get going.
+- Cornering now matters: a unit eases off before a sharp turn in its route (down to a quarter of its top speed for a right angle or worse) and accelerates again afterwards; straight routes are unaffected.
+- Damaged buildings and units now smoulder: below 90% health they give off smoke, and badly hurt ones burn with tall flames, with more smoke and flames the worse they get.
+- A building site no longer lights up the map the moment you place it; it only sees once it is finished.
+- New default building: the Spotlight Tower. Its beam follows the nearest enemy it senses and otherwise pans left and right across the way out from your base, lighting up the edge of the fog and the night, and turns back rather than shine on your own units.
+- New Spotlight module for your own designs: its beam is 4 tiles long for every point of energy it is given each tick (20 tiles to start, up to 40), so more power peers further. Rock and buildings still cast shadows. When the energy stored in the building drops below 100 the light dims and shortens smoothly, going out at 30 units of stored energy instead of flickering (full strength needs 100).
+- Class programs can add sliders and on/off switches to a new Controls section in the side panel; the Docs explain how. Controls are shared across a mixed selection, and one that only some of the selected units have says how many it affects.
+- Every Spotlight Tower now has a Light power slider (0 to 10) in the side panel.
+- A lit spotlight shows its beam as soft warm light that glides as it turns, brighter at night, and ends where rock or a building blocks it.
+- Buildings can now be placed anywhere you or your team have explored, not only where you can see right now.
+- While placing a building, a clear green line now marks the edge of the ground you can build on.
+- Never-explored ground grows darker the further it is from known territory, until the map cannot be made out at all.
+- Mass crystals that sit close together are now joined by a soft glow that fades smoothly into the ground, forming one crystal field, scattered with small shards across the whole area, which shrinks back as the crystals are mined out. Harvesting works exactly as before: units still go to each crystal.
+- Ground vehicles and walkers driving over crystals kick up puffs of crystal dust; aircraft fly over without disturbing it.
+- Electrical discharges from tesla coils, lightning strikes, bursting battery banks and failing shields now leap from point to point instead of fanning out in straight spokes, preferring to jump to nearby units and buildings. Every arc flashes with its own light, glowing on the ground and in the mist.
+
 ## 2026-10-30
 ### Lakes, rivers, lava and chasms to fight across, plus clearer building alerts, opponent skill levels, the flamethrower, rain and thunderstorms
 The battlefield now has depth. Maps can hold shallow and deep water, winding rivers with bridged crossings, pools of lava and bottomless chasms, drawn with smooth, curving shores, foam on the water and a hot glow on the lava. Ground units wade the shallows slowly, new amphibious and hover drives take you across deep water and lava, and the same day brings clear alerts when a building cannot go where you wanted it, opponent skill levels, the flamethrower, rain and thunderstorms, bolder blasts and some gentler-on-the-eyes options.
@@ -26,6 +89,8 @@ Explosions and gunfire have more character too. Cannon hits, missiles, falling u
 
 Please note: the game now shows a photosensitivity warning the first time you load any part of the game, whether the main menu or a join link (once you accept it, it stays away), because lightning and flickering lamps can be a problem for people with photosensitive epilepsy. Nothing flashes or flickers while that message is open. In Options you can now turn off full-screen flashes and light flicker, and choose Simple or Fancy weather; the Reduce motion option still turns all of it off at once.
 
+- Rain now ripples the water, and lava gives off soft rising steam, thicker in the wet.
+- Shores meet cliffs and tall rock with a crisp, straight edge, and foam and lava glow no longer spill onto the rock.
 - Lakeland now has far more lakes, scattered wherever the land took them
 - The Rift now has a vast bottomless void at its heart: only fliers cross the middle, so the lanes around it matter more
 - When a building cannot be placed, an alert now tells you why (something in the way, rock, water, lava, a chasm, the map edge, no vision there, or too many construction sites), and each reason has its own sound cue.

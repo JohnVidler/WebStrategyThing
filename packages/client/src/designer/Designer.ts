@@ -4,6 +4,7 @@ import { placeMusic } from '../music';
 import type { ClientState } from '../state';
 import { isShown, setShown } from '../transition';
 import { CodeTab } from './CodeTab';
+import { ClassLibrary } from './ClassLibrary';
 import { DesignTab } from './DesignTab';
 import { ProgramHistory, type DesignerActions, type DesignerModel } from './shared';
 
@@ -32,9 +33,16 @@ export class Designer implements DesignerModel {
   private readonly copyBtn: HTMLButtonElement;
   private readonly retireBtn: HTMLButtonElement;
   private readonly tabButtons: HTMLButtonElement[];
+  private readonly classChip: HTMLButtonElement;
+  private readonly library: ClassLibrary;
+  private readonly filesMenu: HTMLDetailsElement;
   private readonly designTab: DesignTab;
   private readonly codeTab: CodeTab;
   private tab: TabName = loadTab();
+  /** The full-screen class grid, or the Design/Code workspace. */
+  private view: 'library' | 'work' = 'library';
+  /** True once a class or new design has been opened, so the library can offer a way back. */
+  private hasWork = false;
   /** A design sent to the server; its program is uploaded once the class arrives. */
   private awaiting: { name: string; source: string; draft: Draft } | null = null;
 
@@ -65,31 +73,45 @@ export class Designer implements DesignerModel {
     this.root.id = 'designer-overlay';
     this.root.hidden = true;
     this.root.innerHTML = `
-      <div class="designer-bar">
-        <strong>Class designer</strong>
-        <nav class="designer-tabs" role="tablist">
-          <button role="tab" data-tab="design" data-sound="menu.click">Design</button>
-          <button role="tab" data-tab="code" data-sound="menu.click">Code</button>
-        </nav>
-        <span class="muted">The game keeps running underneath.</span>
-        <span class="designer-music"></span>
-        <span class="designer-files" data-role="files" hidden>
-          <button data-role="download" data-sound="ui.design_download" title="Save your unit and building designs and their scripts as a JSON file">⬇ Download designs</button>
-          <button data-role="upload-designs" title="Load designs from a JSON file (asks first)">⬆ Upload designs</button>
-          <button data-role="reset-designs" title="Put every default class back and retire your own (asks first)">Reset to defaults…</button>
-          <input data-role="designs-file" type="file" accept=".json,application/json" hidden>
-        </span>
-        <button data-role="close" data-sound="ui.panel_close" title="Close (Esc / F2)">✕</button>
+      <div class="designer-bar" aria-label="Class designer">
+        <div class="designer-left">
+          <strong class="designer-title">Designer</strong>
+          <nav class="designer-tabs" role="tablist">
+            <button role="tab" data-tab="design" data-sound="menu.click">Design</button>
+            <button role="tab" data-tab="code" data-sound="menu.click">Code</button>
+          </nav>
+          <div class="class-chip-wrap">
+            <button data-role="class-chip" class="class-chip" title="Back to all your classes"><span aria-hidden="true">▦</span><img alt=""><span class="class-chip-name"></span></button>
+          </div>
+        </div>
+        <div class="designer-centre" data-role="context"></div>
+        <div class="designer-right">
+          <span data-role="meta"></span>
+          <span class="designer-music"></span>
+          <details class="designer-files" data-role="files" hidden>
+            <summary title="Download, upload or reset your saved designs">Files</summary>
+            <div class="designer-files-menu">
+              <button data-role="download" data-sound="ui.design_download" title="Save your unit and building designs and their scripts as a JSON file">⬇ Download designs</button>
+              <button data-role="upload-designs" title="Load designs from a JSON file (asks first)">⬆ Upload designs</button>
+              <button data-role="reset-designs" title="Put every default class back and retire your own (asks first)">Reset to defaults…</button>
+            </div>
+            <input data-role="designs-file" type="file" accept=".json,application/json" hidden>
+          </details>
+          <button data-role="close" class="designer-close" data-sound="ui.panel_close" title="Close (F2). The game keeps running underneath." aria-label="Close the designer">✕</button>
+        </div>
       </div>
       <div class="designer-body"></div>
       <div class="designer-footer">
-        <div data-role="status" class="status"></div>
+        <div data-role="status" class="status" role="status"></div>
         <button data-role="retire" title="Retired classes can't be produced or placed; units already built carry on">Retire class</button>
         <button data-role="copy">Copy as new design</button>
         <button data-role="upload" class="primary" data-sound="ui.confirm">Upload program</button>
         <button data-role="create" class="primary" data-sound="ui.confirm">Create class</button>
       </div>`;
-    this.root.querySelector('.designer-body')!.append(this.designTab.panel, this.codeTab.panel);
+    this.library = new ClassLibrary(this, () => this.showWork(), () => this.showWork());
+    this.root.querySelector('.designer-body')!.append(this.library.element, this.designTab.panel, this.codeTab.panel);
+    this.root.querySelector('[data-role="context"]')!.append(this.codeTab.toolbar);
+    this.root.querySelector('[data-role="meta"]')!.append(this.codeTab.meta);
     host.appendChild(this.root);
 
     const q = <T extends HTMLElement>(role: string) => this.root.querySelector<T>(`[data-role="${role}"]`)!;
@@ -98,17 +120,25 @@ export class Designer implements DesignerModel {
     this.uploadBtn = q('upload');
     this.copyBtn = q('copy');
     this.retireBtn = q('retire');
+    this.classChip = q('class-chip');
+    this.filesMenu = q('files');
+    this.classChip.onclick = () => this.showLibrary();
+    // Click outside the Files menu to close it.
+    this.root.addEventListener('pointerdown', (ev) => {
+      const t = ev.target as HTMLElement;
+      if (!t.closest('.designer-files')) this.filesMenu.open = false;
+    });
     this.tabButtons = [...this.root.querySelectorAll<HTMLButtonElement>('.designer-tabs button')];
 
     for (const btn of this.tabButtons) btn.onclick = () => this.setTab(btn.dataset.tab as TabName);
     q<HTMLButtonElement>('close').onclick = () => this.toggle(false);
     const files = actions.designFiles;
     if (files) {
-      q('files').hidden = false;
+      this.filesMenu.hidden = false;
       const input = q<HTMLInputElement>('designs-file');
-      q<HTMLButtonElement>('download').onclick = () => files.download();
-      q<HTMLButtonElement>('upload-designs').onclick = () => input.click();
-      q<HTMLButtonElement>('reset-designs').onclick = () => files.reset();
+      q<HTMLButtonElement>('download').onclick = () => (this.filesMenu.open = false, files.download());
+      q<HTMLButtonElement>('upload-designs').onclick = () => (this.filesMenu.open = false, input.click());
+      q<HTMLButtonElement>('reset-designs').onclick = () => (this.filesMenu.open = false, files.reset());
       input.onchange = () => {
         const file = input.files?.[0];
         input.value = '';
@@ -135,7 +165,16 @@ export class Designer implements DesignerModel {
         ev.preventDefault();
         this.toggle(!this.isOpen);
       } else if (ev.key === 'Escape' && this.isOpen && !(ev.target as HTMLElement | null)?.closest('.cm-editor')) {
-        this.toggle(false);
+        if (this.filesMenu.open) this.filesMenu.open = false;
+        else if (this.view === 'library' && this.hasWork) this.showWork();
+        else if (this.view === 'work') this.showLibrary();
+        else this.toggle(false);
+      } else if (ev.key === '/' && this.isOpen && this.view === 'library' && !(ev.target as HTMLElement | null)?.closest('input, textarea, select')) {
+        ev.preventDefault();
+        this.library.focusSearch();
+      } else if (ev.key === '/' && this.isOpen && this.view === 'work' && this.tab === 'design' && this.selected < 0 && !(ev.target as HTMLElement | null)?.closest('input, textarea, select, .cm-editor')) {
+        ev.preventDefault();
+        this.designTab.focusSearch();
       }
     });
     this.applyTab();
@@ -159,9 +198,8 @@ export class Designer implements DesignerModel {
       this.onClose?.();
     }
     if (open) {
-      this.designTab.renderClassList();
+      this.showLibrary();
       this.refresh();
-      this.codeTab.shown();
     }
   }
 
@@ -176,16 +214,19 @@ export class Designer implements DesignerModel {
       // not remembered: the designer just opens on Design next time
     }
     this.applyTab();
-    if (tab === 'code') {
-      this.codeTab.renderClassSelect();
-      this.codeTab.shown();
-    }
+    if (tab === 'code') this.codeTab.shown();
+    this.refresh();
   }
 
   private applyTab(): void {
-    this.designTab.panel.hidden = this.tab !== 'design';
-    this.codeTab.panel.hidden = this.tab !== 'code';
-    if (this.tab !== 'code') this.codeTab.hidden();
+    const work = this.view === 'work';
+    this.root.dataset.view = this.view;
+    this.library.element.hidden = work;
+    this.designTab.panel.hidden = !work || this.tab !== 'design';
+    this.codeTab.panel.hidden = !work || this.tab !== 'code';
+    this.codeTab.toolbar.hidden = !work || this.tab !== 'code';
+    this.codeTab.meta.hidden = this.codeTab.toolbar.hidden;
+    if (!work || this.tab !== 'code') this.codeTab.hidden();
     for (const btn of this.tabButtons) {
       const active = btn.dataset.tab === this.tab;
       btn.classList.toggle('active', active);
@@ -210,7 +251,7 @@ export class Designer implements DesignerModel {
       }
     }
     if (this.isOpen) {
-      this.designTab.renderClassList();
+      this.renderLibrary();
       this.refresh();
     }
   }
@@ -225,7 +266,7 @@ export class Designer implements DesignerModel {
     this.edits.clear();
     if (!this.state.blueprints.get(this.selected)) this.selected = -1;
     this.codeTab.loadSelected();
-    this.designTab.renderClassList();
+    this.renderLibrary();
     this.refresh();
   }
 
@@ -262,14 +303,47 @@ export class Designer implements DesignerModel {
     this.retireBtn.hidden = editable;
     this.retireBtn.textContent = bp?.retired ? 'Restore class' : 'Retire class';
     this.designTab.render();
-    this.codeTab.renderClassSelect();
+    this.renderChip();
     this.codeTab.refresh();
+  }
+
+  /** The class named in the top bar; clicking it returns to the library. */
+  private renderChip(): void {
+    const bp = this.state.blueprints.get(this.selected);
+    const name = bp ? bp.name : `${this.draftName || 'New design'} (new)`;
+    this.classChip.querySelector('.class-chip-name')!.textContent = name;
+    const img = this.classChip.querySelector('img')!;
+    img.hidden = !bp;
+    if (bp) this.actions.iconFor(bp.id).then((src) => (img.src = src)).catch(() => (img.hidden = true));
+  }
+
+  private renderLibrary(): void {
+    if (this.view !== 'library') return;
+    const bp = this.state.blueprints.get(this.selected);
+    this.library.render(this.hasWork ? (bp ? bp.name : this.draftName || 'New design') : null);
+  }
+
+  /** Shows the full-screen class grid. */
+  private showLibrary(): void {
+    this.view = 'library';
+    this.applyTab();
+    if (this.hasWork) this.library.showKindOf(this.selected);
+    this.renderLibrary();
+  }
+
+  /** Leaves the library for the Design or Code tab. */
+  private showWork(): void {
+    this.view = 'work';
+    this.hasWork = true;
+    this.applyTab();
+    this.refresh();
+    if (this.tab === 'code') this.codeTab.shown();
   }
 
   select(id: number): void {
     this.selected = id;
     this.codeTab.loadSelected();
-    this.designTab.renderClassList();
+    this.renderLibrary();
     this.refresh();
   }
 
@@ -279,7 +353,7 @@ export class Designer implements DesignerModel {
     if (name) this.draftName = name;
     if (program !== undefined) this.draftProgram = program;
     this.codeTab.loadSelected();
-    this.designTab.renderClassList();
+    this.renderLibrary();
     this.refresh();
   }
 

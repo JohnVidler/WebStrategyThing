@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { FOG_SEEN_ALPHA, FOG_UNSEEN_ALPHA, MIST_FOG_COLOUR, fogDarkness, fogImage } from '../src/fogmap';
+import { FOG_DEEP_ALPHA, FOG_DEEP_FALLOFF, FOG_DEEP_START, FOG_SEEN_ALPHA, FOG_UNSEEN_ALPHA, MIST_FOG_COLOUR, fogDarkness, fogImage } from '../src/fogmap';
 
 describe('fog image', () => {
   const alpha = (out: Uint8ClampedArray, w: number, x: number, y: number): number => out[(y * w + x) * 4 + 3] / 255;
@@ -13,8 +13,8 @@ describe('fog image', () => {
     fogImage(new Uint8Array(w * w).fill(2), w, w, out);
     expect(alpha(out, w, 4, 4)).toBe(0);
     fogImage(new Uint8Array(w * w).fill(0), w, w, out);
-    expect(alpha(out, w, 0, 0)).toBeCloseTo(FOG_UNSEEN_ALPHA, 2); // the border does not fade
-    expect(alpha(out, w, 4, 4)).toBeCloseTo(FOG_UNSEEN_ALPHA, 2);
+    expect(alpha(out, w, 0, 0)).toBeCloseTo(FOG_DEEP_ALPHA, 2); // the border does not fade
+    expect(alpha(out, w, 4, 4)).toBeCloseTo(FOG_DEEP_ALPHA, 2); // nothing known anywhere: as dark as it goes
   });
 
   it('fades across the edge of what you can see instead of stepping', () => {
@@ -25,7 +25,7 @@ describe('fog image', () => {
     fogImage(vision, w, w, out);
     const row = Array.from({ length: w }, (_, x) => alpha(out, w, x, 6));
     expect(row[2]).toBe(0);
-    expect(row[9]).toBeCloseTo(FOG_UNSEEN_ALPHA, 2);
+    expect(row[9]).toBeGreaterThanOrEqual(FOG_UNSEEN_ALPHA - 0.01);
     // Every step across the edge is a fraction of the full change, rising steadily.
     for (let x = 1; x < w; x++) expect(row[x]).toBeGreaterThanOrEqual(row[x - 1]);
     expect(row[5]).toBeGreaterThan(0);
@@ -64,6 +64,20 @@ describe('fog in mist', () => {
       return n;
     };
     expect(band(render(1))).toBeGreaterThan(band(render(0)));
-    expect(render(1)[(7 * w + 13) * 4 + 3] / 255).toBeCloseTo(FOG_UNSEEN_ALPHA, 1);
+    expect(render(1)[(7 * w + 13) * 4 + 3] / 255).toBeGreaterThanOrEqual(FOG_UNSEEN_ALPHA - 0.1);
+  });
+});
+
+describe('deep fog', () => {
+  it('darkens never-seen ground the further it is from known ground, up to the deepest level', () => {
+    const w = 60;
+    const vision = new Uint8Array(w * 3).fill(0);
+    vision[1 * w + 0] = 1; // only the far left of the middle row was ever seen
+    const out = new Uint8ClampedArray(w * 3 * 4);
+    fogImage(vision, w, 3, out);
+    const a = (x: number): number => out[(1 * w + x) * 4 + 3] / 255;
+    expect(a(FOG_DEEP_START + 1)).toBeLessThan(a(FOG_DEEP_START + 1 + FOG_DEEP_FALLOFF / 2));
+    expect(a(FOG_DEEP_START + 1 + FOG_DEEP_FALLOFF / 2)).toBeLessThan(a(w - 1));
+    expect(a(w - 1)).toBeCloseTo(FOG_DEEP_ALPHA, 1);
   });
 });

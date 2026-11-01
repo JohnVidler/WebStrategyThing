@@ -138,7 +138,7 @@ export class LocalDesigns {
           this.save();
         },
         designFiles: { download: () => this.files.download(), upload: (file) => void this.files.upload(file), reset: () => void this.files.reset() },
-        preview: (parts, pxPerTile, rival) => renderClassImage(studio.renderer, parts, ownerColour(rival ? ME + 1 : ME), () => pxPerTile / 32),
+        preview: (parts, pxPerTile, rival, fit) => renderClassImage(studio.renderer, parts, ownerColour(rival ? ME + 1 : ME), fit ? (w, h) => fit / Math.max(w, h, 1) : () => pxPerTile / 32),
         iconFor: (blueprint) => {
           const bp = this.state.blueprints.get(blueprint)!;
           return renderClassImage(studio.renderer, bp.parts, ownerColour(ME), (w, h) => 36 / Math.max(w, h));

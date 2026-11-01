@@ -1,5 +1,6 @@
 import { PARTS } from '@wst/engine';
 import type { Graphics } from 'pixi.js';
+import { ARC_REACH, drawDischarge, makeDischarge, type Hop } from './discharge';
 
 /**
  * Blasts: what a death, a shell, a missile, a collapsing building, a bursting battery bank or a failing shield looks like.
@@ -24,14 +25,6 @@ interface Pop {
   size: number;
   /** When it goes off, as a share of the blast's life. */
   delay: number;
-}
-
-/** A jagged arc of charge leaving the centre. */
-interface Bolt {
-  angle: number;
-  seed: number;
-  /** Length in blast radii. */
-  length: number;
 }
 
 interface Palette {
@@ -65,10 +58,13 @@ export interface Blast {
   debris: Frag[];
   smoke: Frag[];
   pops: Pop[];
-  bolts: Bolt[];
+  /** Charge jumping out from the centre (`energy` and `shield`), in tiles. */
+  discharge: Hop[];
 }
 
 export interface BlastOptions {
+  /** Where units and buildings stand near the blast, as a flat list of x, y pairs (tiles): a discharge prefers to jump to these. */
+  targets?: ArrayLike<number>;
   /** Energy held (0..1) for `energy`; ignored elsewhere. */
   power?: number;
   /** Shield colour for `shield`. */
@@ -156,7 +152,7 @@ export function makeBlast(kind: BlastKind, x: number, y: number, radius: number,
     debris: [],
     smoke: [],
     pops: [],
-    bolts: [],
+    discharge: [],
   };
   switch (kind) {
     case 'fire':
@@ -208,10 +204,7 @@ export function makeBlast(kind: BlastKind, x: number, y: number, radius: number,
       b.palette = ENERGY_PALETTE;
       b.ms = 520 + 300 * radius * (0.4 + 0.6 * power);
       b.sparks = frags(Math.round(8 + power * 16), [0.9, 2.1], [1.2, 2.2]);
-      const arcs = Math.round(5 + power * 9);
-      for (let i = 0; i < arcs; i++) {
-        b.bolts.push({ angle: ((i + rand() * 0.8) / arcs) * Math.PI * 2, seed: Math.floor(rand() * 100000), length: 0.9 + rand() * (0.6 + power * 0.9) });
-      }
+      b.discharge = makeDischarge(x, y, radius * (1.2 + 0.8 * power) * ARC_REACH, o.targets ?? [], Math.round(4 + power * 5), rand, { maxHops: Math.round(4 + power * 2) });
       b.lightScale = 3 + 2 * power;
       break;
     }
@@ -221,10 +214,7 @@ export function makeBlast(kind: BlastKind, x: number, y: number, radius: number,
       b.ms = 750 + 280 * radius;
       b.sparks = frags(Math.round(10 + big * 4), [1, 2.2], [1.2, 2]);
       b.debris = frags(Math.round(8 + big * 4), [0.8, 1.9], [0.8, 1.6]);
-      const arcs = Math.round(4 + big * 2);
-      for (let i = 0; i < arcs; i++) {
-        b.bolts.push({ angle: ((i + rand() * 0.8) / arcs) * Math.PI * 2, seed: Math.floor(rand() * 100000), length: 0.7 + rand() * 0.7 });
-      }
+      b.discharge = makeDischarge(x, y, radius * 1.3 * ARC_REACH, o.targets ?? [], Math.round(3 + big), rand, { maxHops: 4 });
       b.lightScale = 3.6;
       break;
     }
@@ -336,27 +326,6 @@ function drawFire(g: Graphics, b: Blast, t: number, cx: number, cy: number, R: n
   }
 }
 
-/** One jagged arc from the centre, `reach` px long; `frame` re-rolls its kinks. Two strokes: a wide glow and a hot core. */
-function drawBolt(g: Graphics, bolt: Bolt, cx: number, cy: number, reach: number, kinkScale: number, frame: number, glow: number, core: number, alpha: number): void {
-  const SEGMENTS = 7;
-  const dx = Math.cos(bolt.angle);
-  const dy = Math.sin(bolt.angle);
-  for (let pass = 0; pass < 2; pass++) {
-    let px = cx;
-    let py = cy;
-    for (let i = 1; i <= SEGMENTS; i++) {
-      const along = (i / SEGMENTS) * reach;
-      const kick = (i === SEGMENTS ? 0.4 : 1) * noise(bolt.seed, i, frame) * kinkScale;
-      const x = cx + dx * along - dy * kick;
-      const y = cy + dy * along + dx * kick;
-      g.moveTo(px, py).lineTo(x, y);
-      px = x;
-      py = y;
-    }
-    g.stroke(pass === 0 ? { width: 2.5, color: glow, alpha: 0.55 * alpha } : { width: 1, color: core, alpha: 0.9 * alpha });
-  }
-}
-
 /** A battery bank discharging: a blue-white flash, a ring of charge racing out, and arcs that crackle; no smoke. */
 function drawEnergy(g: Graphics, b: Blast, t: number, cx: number, cy: number, R: number, scale: number, frame: number): void {
   const p = b.palette;
@@ -378,15 +347,12 @@ function drawEnergy(g: Graphics, b: Blast, t: number, cx: number, cy: number, R:
   g.circle(cx, cy, R * (0.3 + 1.5 * out)).stroke({ width: 1.2, color: 0xffffff, alpha: 0.6 * fade ** 2 });
   const beads = 12;
   for (let i = 0; i < beads; i++) {
-    const a = (i / beads) * Math.PI * 2 + noise(b.bolts[0]?.seed ?? 1, i, frame) * 0.12;
+    const a = (i / beads) * Math.PI * 2 + noise(b.discharge[0]?.seed ?? 1, i, frame) * 0.12;
     g.circle(cx + Math.cos(a) * ring, cy + Math.sin(a) * ring, Math.max(1.2, scale * 0.05)).fill({ color: 0xffffff, alpha: fade });
   }
 
-  // Arcs reach as far as the ring has, then hold and fade.
-  const reachNow = out;
-  for (const bolt of b.bolts) {
-    drawBolt(g, bolt, cx, cy, R * bolt.length * reachNow, scale * 0.3, frame, p.ring, 0xf3fbff, fade);
-  }
+  // The charge jumps outwards from point to point, each hop flashing and fading in turn.
+  drawDischarge(g, b.discharge, t, p.ring, 0xf3fbff, frame, cx - b.x * scale, cy - b.y * scale, scale);
 
   for (const f of b.sparks) {
     const head = R * f.reach * out;
@@ -399,10 +365,13 @@ function drawEnergy(g: Graphics, b: Blast, t: number, cx: number, cy: number, R:
   }
 }
 
+/** The share of a failing shield's life spent folding in, before it goes out. */
+export const SHIELD_IMPLODE = 0.22;
+
 /** A shield failing: the field folds in on its emitter, then goes out in a ring of the owner's colour and flying shards of it. */
 function drawShieldBurst(g: Graphics, b: Blast, t: number, cx: number, cy: number, R: number, scale: number, frame: number): void {
   const p = b.palette;
-  const IMPLODE = 0.22;
+  const IMPLODE = SHIELD_IMPLODE;
   if (t < IMPLODE) {
     // Everything is drawn in: a ring shrinking to a point, with streaks racing inwards.
     const k = t / IMPLODE;
@@ -445,8 +414,8 @@ function drawShieldBurst(g: Graphics, b: Blast, t: number, cx: number, cy: numbe
       .lineTo(px + Math.cos(spin) * len, py + Math.sin(spin) * len)
       .stroke({ width: 1.6, color: i % 3 === 0 ? 0xffffff : b.colour, alpha: fade ** 1.2 });
   }
-  // The emitter's discharge: a few short arcs.
-  for (const bolt of b.bolts) drawBolt(g, bolt, cx, cy, R * bolt.length * out * 0.8, scale * 0.25, frame, b.colour, 0xffffff, fade ** 1.5);
+  // The emitter's discharge: a few arcs that jump outwards.
+  drawDischarge(g, b.discharge, u, b.colour, 0xffffff, frame, cx - b.x * scale, cy - b.y * scale, scale);
   for (const f of b.sparks) {
     const head = R * f.reach * out;
     const tail = R * f.reach * Math.max(0, out - 0.18);

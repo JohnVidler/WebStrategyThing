@@ -11,7 +11,7 @@ export const PLACEMENT_PROBLEMS: Record<PlacementProblem, { text: string; sound:
   water: { text: 'Cannot build here: that is water', sound: 'build.invalid_terrain' },
   lava: { text: 'Cannot build here: that is lava', sound: 'build.invalid_terrain' },
   void: { text: 'Cannot build here: that is a chasm', sound: 'build.invalid_terrain' },
-  vision: { text: 'Cannot build here: you can only build where you have vision', sound: 'build.invalid_vision' },
+  vision: { text: 'Cannot build here: you can only build on ground you have explored', sound: 'build.invalid_vision' },
   sites: { text: 'Cannot build yet: too many construction sites at once', sound: 'build.invalid_limit' },
 };
 

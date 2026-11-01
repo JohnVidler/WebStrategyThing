@@ -33,10 +33,10 @@ describe('blasts', () => {
     const b = Object.fromEntries(KINDS.map((k) => [k, makeBlast(k, 5, 5, 1.5, 0, { power: 1 }, seeded(3))])) as Record<BlastKind, ReturnType<typeof makeBlast>>;
     expect(b.shell.smoke).toHaveLength(0);
     expect(b.structure.pops.length).toBeGreaterThan(0);
-    expect(b.energy.bolts.length).toBeGreaterThan(0);
+    expect(b.energy.discharge.length).toBeGreaterThan(0);
     expect(b.energy.smoke).toHaveLength(0);
     expect(b.energy.debris).toHaveLength(0);
-    expect(b.shield.bolts.length).toBeGreaterThan(0);
+    expect(b.shield.discharge.length).toBeGreaterThan(0);
     expect(b.shield.debris.length).toBeGreaterThan(0);
     expect(b.structure.ms).toBeGreaterThan(b.fire.ms * 1.2);
     expect(new Set(KINDS.map((k) => b[k].palette.light)).size).toBeGreaterThan(3);
@@ -53,7 +53,7 @@ describe('blasts', () => {
     const flat = makeBlast('energy', 0, 0, energyRadius(2, 0), 0, { power: 0 }, seeded(5));
     const full = makeBlast('energy', 0, 0, energyRadius(2, 1), 0, { power: 1 }, seeded(5));
     expect(full.radius).toBeGreaterThan(flat.radius);
-    expect(full.bolts.length).toBeGreaterThan(flat.bolts.length);
+    expect(full.discharge.length).toBeGreaterThan(flat.discharge.length);
     expect(full.ms).toBeGreaterThan(flat.ms);
     expect(shieldRadius(100000)).toBe(4.5);
   });

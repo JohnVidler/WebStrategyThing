@@ -396,6 +396,87 @@ on(Every, { ticks: ${c.num('interval')} }, () => {
   }
 });`,
   },
+  {
+    name: 'Hunt', group: 'Combat',
+    doc: 'Goes at the nearest enemy its sensor finds, while it is standing still, so a unit that has no orders closes in on what it sees. Pair it with EngageEnemies, which does the shooting. Made for drones.',
+    settings: [int('interval', 20, 1, 200, 'Ticks between looks')],
+    text: (c) => `on(Every, { ticks: ${c.num('interval')} }, () => {
+  const foe = scan();
+  if (foe >= 0 && moving() === 0) {
+    goTo(posx(foe), posy(foe));
+  }
+});`,
+  },
+  {
+    name: 'SmokeScreen', group: 'Combat',
+    doc: 'Throws a volley of smoke towards whoever hurts the unit (or the nearest enemy its sensor finds), hiding it from their sensors for a while. Needs a smoke launcher; it rests 30 seconds between volleys, so the block simply tries each time the unit is hit.',
+    settings: [int('minAmount', 5, 1, 1000, 'Damage in one hit before it reacts')],
+    text: (c) => `on(Damaged, { minAmount: ${c.num('minAmount')} }, (amount, attacker) => {
+  const foe = scan();
+  const toward = bearing(attacker) >= 0 ? bearing(attacker) : (foe >= 0 ? bearing(foe) : -1);
+  if (toward >= 0) {
+    smoke(toward);
+  }
+});`,
+  },
+  {
+    name: 'DroneBay', group: 'Combat',
+    doc: 'Runs a drone bay: it builds the named small unit class (a micro or light unit of yours) and, when its sensor finds an enemy, launches every docked drone. When the enemy has been gone for a while it calls them home to recharge and mend. Needs a drone bay module and a sensor.',
+    settings: [
+      text('class', 'Wasp', 'Name of your unit class the bay builds (a micro or light unit)'),
+      int('interval', 10, 1, 100, 'Ticks between looks'),
+      int('calm', 8, 1, 100, 'Looks without an enemy before the drones are called home'),
+    ],
+    text: (c) => {
+      const quiet = c.v('quiet');
+      return `let ${quiet} = 0;
+on(Every, { ticks: ${c.num('interval')} }, () => {
+  config.droneClass(${quote(c.str('class'))});
+  const foe = scan();
+  if (foe >= 0) {
+    ${quiet} = 0;
+    launchDrones();
+  } else {
+    ${quiet} = ${quiet} + 1;
+    if (${quiet} >= ${c.num('calm')}) {
+      recallDrones();
+    }
+  }
+});`;
+    },
+  },
+  {
+    name: 'Spotlight', group: 'Combat',
+    doc: 'Points the spotlight at the nearest enemy its sensor finds. With none in sight it pans left and right across the way out from home (away from the allied units and buildings round it) to light the edge of the fog, and turns back rather than shine on an allied unit. Gives the player a Light power slider. Needs a spotlight module (and a sensor to follow enemies).',
+    settings: [
+      int('interval', 3, 1, 100, 'Ticks between turns'),
+      int('sweep', 6, 1, 90, 'Degrees to turn each time when panning'),
+      int('span', 60, 10, 180, 'Degrees to pan either side of straight out'),
+      int('power', 5, 0, 10, 'Light power it starts with (the Light power slider in the side panel changes it)'),
+    ],
+    text: (c) => {
+      const [offset, dir] = [c.v('offset'), c.v('dir')];
+      return `let ${c.v('power')} = ${c.num('power')};
+slider(${c.v('power')}, { label: 'Light power', min: 0, max: 10 });
+let ${offset} = 0;
+let ${dir} = 1;
+on(Every, { ticks: ${c.num('interval')} }, () => {
+  config.lightPower(${c.v('power')});
+  const foe = scan();
+  if (foe >= 0) {
+    config.lightAngle(bearing(foe));
+  } else {
+    const next = ${offset} + ${dir} * ${c.num('sweep')};
+    if (next > ${c.num('span')} || next < 0 - ${c.num('span')} || lightBlocked(outwardBearing() + next)) {
+      ${dir} = 0 - ${dir};
+    } else {
+      ${offset} = next;
+    }
+    config.lightAngle(outwardBearing() + ${offset});
+  }
+});`;
+    },
+  },
 ];
 
 export const BLOCK_BY_NAME: ReadonlyMap<string, BlockDef> = new Map(BLOCKS.map((b) => [b.name, b]));

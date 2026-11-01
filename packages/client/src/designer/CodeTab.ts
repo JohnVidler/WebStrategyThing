@@ -24,9 +24,12 @@ function loadMode(): Mode {
  */
 export class CodeTab {
   readonly panel: HTMLDivElement;
+  /** View switch, memory meter and version history: the designer's top bar shows it while this tab is open. */
+  readonly toolbar: HTMLDivElement;
+  /** Memory meter and version history: shown on the right of the bar. */
+  readonly meta: HTMLDivElement;
   /** The program on show, shared by every view of it. */
   readonly doc = new FlowDocument(FLOW_HOST);
-  private readonly classSelect: HTMLSelectElement;
   private readonly historySelect: HTMLSelectElement;
   private readonly memoryMeter: HTMLSpanElement;
   private readonly diffPanel: HTMLDivElement;
@@ -44,19 +47,22 @@ export class CodeTab {
     this.panel.className = 'designer-panel designer-tab-code';
     this.panel.dataset.tab = 'code';
     this.panel.hidden = true;
+    this.toolbar = document.createElement('div');
+    this.toolbar.className = 'code-toolbar';
+    this.toolbar.hidden = true;
+    this.meta = document.createElement('div');
+    this.meta.className = 'code-toolbar';
+    this.meta.hidden = true;
+    this.toolbar.innerHTML = `
+      <span class="mode-switch" role="group" aria-label="How to show the program">
+        <button data-mode="graph" title="Blocks and wires">Graph</button>
+        <button data-mode="split" title="Graph and text side by side">Split</button>
+        <button data-mode="text" title="TypeScript-style text. Ctrl+Space completes; hover a call or event for its docs">Text</button>
+      </span>`;
+    this.meta.innerHTML = `
+      <span data-role="memory" class="memory-meter" title="Memory the program occupies: variables, distinct numbers (other than -1, 0 and 1) and locals. Memory modules add more."></span>
+      <select data-role="history" title="Uploaded versions of this program (kept in this browser): pick one to load it into the editor"></select>`;
     this.panel.innerHTML = `
-      <div class="code-head">
-        <label>Class <select data-role="class-select" title="The class whose program you are editing"></select></label>
-        <span class="mode-switch" role="group" aria-label="How to show the program">
-          <button data-mode="graph" title="Blocks and wires">Graph</button>
-          <button data-mode="split" title="Graph and text side by side">Split</button>
-          <button data-mode="text" title="TypeScript-style text">Text</button>
-        </span>
-        <span data-role="memory" class="memory-meter" title="Memory the program occupies: variables, distinct numbers (other than -1, 0 and 1) and locals. Memory modules add more."></span>
-        <span class="muted">Ctrl+Space completes; hover a call or event for its docs</span>
-        <span class="code-spacer"></span>
-        <select data-role="history" title="Uploaded versions of this program (kept in this browser): pick one to load it into the editor"></select>
-      </div>
       <div class="code-views">
         <div data-role="graph" class="graph-slot"></div>
         <div data-role="editor" class="editor-host"></div>
@@ -80,8 +86,7 @@ export class CodeTab {
         </div>
       </div>`;
 
-    const q = <T extends HTMLElement>(role: string) => this.panel.querySelector<T>(`[data-role="${role}"]`)!;
-    this.classSelect = q('class-select');
+    const q = <T extends HTMLElement>(role: string) => (this.panel.querySelector<T>(`[data-role="${role}"]`) ?? this.meta.querySelector<T>(`[data-role="${role}"]`))!;
     this.historySelect = q('history');
     this.memoryMeter = q('memory');
     this.diffPanel = q('diff');
@@ -89,7 +94,7 @@ export class CodeTab {
 
     this.graphSlot = q('graph');
     this.textSlot = q('editor');
-    this.modeButtons = [...this.panel.querySelectorAll<HTMLButtonElement>('.mode-switch button')];
+    this.modeButtons = [...this.toolbar.querySelectorAll<HTMLButtonElement>('.mode-switch button')];
     for (const b of this.modeButtons) b.onclick = () => this.setMode(b.dataset.mode as Mode);
     this.text = createTextView(q('editor'), this.doc, { stats: () => m.stats });
     this.applyMode();
@@ -101,11 +106,6 @@ export class CodeTab {
       this.renderMemory();
     });
 
-    this.classSelect.onchange = () => {
-      const id = Number(this.classSelect.value);
-      if (id < 0) m.newDesign();
-      else m.select(id);
-    };
     q<HTMLButtonElement>('diff-cancel').onclick = () => (this.diffPanel.hidden = true);
     q<HTMLButtonElement>('diff-confirm').onclick = () => {
       this.diffPanel.hidden = true;
@@ -214,20 +214,6 @@ export class CodeTab {
       this.doc.loadSource(source);
       this.renderHistory();
     }
-  }
-
-  /** Class picker: the draft, then every class of the player's. */
-  renderClassSelect(): void {
-    const { m } = this;
-    const mine = m.state.blueprints.ownedBy(m.state.myId);
-    const group = (label: string, list: typeof mine) =>
-      list.length ? `<optgroup label="${label}">${list.map((b) => `<option value="${b.id}">${esc(b.name)}</option>`).join('')}</optgroup>` : '';
-    this.classSelect.innerHTML =
-      `<option value="-1">${esc(m.draftName || 'New design')} (new design)</option>` +
-      group('Units', mine.filter((b) => !b.stats.structure && !b.retired)) +
-      group('Buildings', mine.filter((b) => b.stats.structure && !b.retired)) +
-      group('Retired', mine.filter((b) => b.retired));
-    this.classSelect.value = String(m.selected);
   }
 
   renderHistory(): void {

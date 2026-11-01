@@ -1,7 +1,7 @@
 import type { World } from '../ecs/world';
 import type { BlueprintStats } from './blueprint';
-import { Aim, Feature, Missile, Position, Resource, Unit } from './components';
-import { BUILDING_VISION, HAZE_MIN_SIGHT, HAZE_VISION_FRACTION, NIGHT_VISION_FRACTION, NIGHT_VISION_LOSS, TILE, UNIT_VISION, WEAPON_CONE_HALF_ANGLE } from './rules';
+import { Aim, Construction, Feature, Light, Missile, Position, Resource, Unit } from './components';
+import { BUILDING_VISION, HAZE_MIN_SIGHT, HAZE_VISION_FRACTION, LIGHT_HALF_ANGLE, LIGHT_TILES_PER_ENERGY, NIGHT_VISION_FRACTION, NIGHT_VISION_LOSS, TILE, UNIT_VISION, WEAPON_CONE_HALF_ANGLE } from './rules';
 import type { Terrain } from './terrain';
 
 /*
@@ -69,9 +69,12 @@ export function viewersOf(
   const unit = world.store(Unit);
   const pos = world.store(Position);
   const aim = world.store(Aim);
+  const light = world.store(Light);
+  const sites = world.store(Construction);
   const out: Viewer[] = [];
   for (const e of unit.dense) {
-    if (!isOwner(owner, unit.f.owner[e]) || !pos.has(e) || skip?.(e)) continue;
+    // An unfinished building sees nothing until it is complete.
+    if (!isOwner(owner, unit.f.owner[e]) || !pos.has(e) || sites.has(e) || skip?.(e)) continue;
     const s = stats(e);
     if (!s) continue;
     const size = s.structure ? s.footprint : 0;
@@ -79,6 +82,10 @@ export function viewersOf(
     // A long-range weapon also sees a thin wedge along its barrel, out to its range.
     const reach = aim.has(e) ? coneRange(s) : 0;
     if (reach > 0) out.push({ x: pos.f.x[e], y: pos.f.y[e], r: reach, air: s.flying, size, heading: (aim.f.heading[e] / 256) * TAU, half: WEAPON_CONE_HALF_ANGLE });
+    // A lit spotlight sees a wedge along its beam, as long as the power it is paid.
+    if (light.has(e) && light.f.power[e] > 0) {
+      out.push({ x: pos.f.x[e], y: pos.f.y[e], r: (light.f.power[e] / 10) * LIGHT_TILES_PER_ENERGY * TILE, air: s.flying, size, heading: (light.f.heading[e] / 256) * TAU, half: LIGHT_HALF_ANGLE });
+    }
   }
   return out;
 }
@@ -127,6 +134,27 @@ export class VisionGrid {
     let g = VisionGrid.cache.get(terrain);
     if (!g) VisionGrid.cache.set(terrain, (g = new VisionGrid(terrain.width, terrain.height)));
     return g;
+  }
+
+  /** Tiles under a smoke cloud (non-zero), which block sight like rock; null while there is none. */
+  private smoke: Uint8Array | null = null;
+
+  /**
+   * Sets the smoke clouds, as a flat list of (x, y, radius) in tiles. The covered tiles are written into `into` (cleared first;
+   * the caller keeps it, e.g. to test for smoke), or a grid-owned array if none is given.
+   */
+  setSmoke(flat: readonly number[], into?: Uint8Array): void {
+    const out = into ?? (this.smoke && this.smoke.length === this.stamp.length ? this.smoke : new Uint8Array(this.stamp.length));
+    out.fill(0);
+    for (let k = 0; k + 2 < flat.length; k += 3) {
+      const cx = flat[k], cy = flat[k + 1], r = flat[k + 2] + 0.3;
+      for (let y = Math.max(0, Math.floor(cy - r)); y <= Math.min(this.height - 1, Math.ceil(cy + r)); y++) {
+        for (let x = Math.max(0, Math.floor(cx - r)); x <= Math.min(this.width - 1, Math.ceil(cx + r)); x++) {
+          if ((x + 0.5 - cx) ** 2 + (y + 0.5 - cy) ** 2 <= r * r) out[y * this.width + x] = 1;
+        }
+      }
+    }
+    this.smoke = flat.length > 0 ? out : null;
   }
 
   /** Forgets everything seen so far. */
@@ -218,8 +246,8 @@ export class VisionGrid {
     if (x < 0 || y < 0 || x >= this.width || y >= this.height) return true;
     if (x >= this.ox0 && x <= this.ox1 && y >= this.oy0 && y <= this.oy1) return false;
     const i = y * this.width + x;
-    // Rock and buildings block sight; liquid (water, lava, a void) is open to the eye.
-    return (this.t.passable[i] !== 1 && this.t.depth[i] === 0) || this.t.occupied[i] !== 0;
+    // Rock, buildings and smoke block sight; liquid (water, lava, a void) is open to the eye.
+    return (this.t.passable[i] !== 1 && this.t.depth[i] === 0) || this.t.occupied[i] !== 0 || (this.smoke !== null && this.smoke[i] !== 0);
   }
 
   /**

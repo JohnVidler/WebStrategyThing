@@ -9,6 +9,7 @@ import {
   mapStarts,
   devClear,
   devDamage,
+  devWeapons,
   devPaintTerrain,
   devFinishSites,
   devGive,
@@ -50,6 +51,7 @@ import {
   type MapDefinition,
 } from '@wst/engine';
 import { WebSocket } from 'ws';
+import { payloadBytes, traffic } from './traffic';
 
 /** How long a disconnected player's base is kept for them to come back to. */
 const RECONNECT_GRACE_MS = 60_000;
@@ -404,7 +406,9 @@ export class Match {
     this.send(player, { t: 'blueprints', list: this.sim.blueprints.all().map(toInfo) });
     this.send(player, this.pauseMessage());
     const view = this.fog && !player.spectating ? player.interest.reset(this.visibleTo(player)) : undefined;
-    player.socket.send(encodeTick(this.sim.world, this.sim.tick, [], true, view));
+    const full = encodeTick(this.sim.world, this.sim.tick, [], true, view);
+    traffic.out += payloadBytes(full);
+    player.socket.send(full);
   }
 
   /** A returning player gets everything the owner-only channels would have told them. */
@@ -527,10 +531,11 @@ export class Match {
     for (const p of this.players.values()) {
       if (p.socket.readyState !== WebSocket.OPEN) continue;
       if (p.spectating) unfiltered ??= encodeTick(this.sim.world, this.sim.tick, this.sim.events, false, undefined, this.sim.alerts);
-      p.socket.send(
+      const frame =
         (p.spectating ? unfiltered : shared) ??
-          encodeTick(this.sim.world, this.sim.tick, this.sim.events, false, p.interest.update(this.visibleTo(p), this.sim.world.despawned), this.sim.alerts),
-      );
+        encodeTick(this.sim.world, this.sim.tick, this.sim.events, false, p.interest.update(this.visibleTo(p), this.sim.world.despawned), this.sim.alerts);
+      traffic.out += payloadBytes(frame);
+      p.socket.send(frame);
       const amount = this.sim.pool(p.id);
       const capacity = this.sim.poolCapacity(p.id);
       if (`${amount}/${capacity}` !== p.lastCredits) {
@@ -962,6 +967,20 @@ export class Match {
         // Mixed selections: units whose class lacks the button refuse quietly.
         for (const e of msg.units) ignoreRefused(() => this.sim.issueButton(player.id, e, msg.name, msg.x, msg.y, msg.target, msg.queue));
         return;
+      case 'control':
+        for (const e of msg.units) ignoreRefused(() => this.sim.issueControl(player.id, e, msg.name, msg.value));
+        return;
+      case 'controlValues': {
+        // Own living units only: another player's variables are never shown.
+        const values: number[][] = [];
+        for (const e of msg.units) {
+          if (!this.sim.world.isAlive(e) || !this.sim.unit.has(e) || this.sim.unit.f.owner[e] !== player.id) continue;
+          const v = this.sim.controlValues(e);
+          if (v.length) values.push([e, ...v]);
+        }
+        this.send(player, { t: 'controlValues', values });
+        return;
+      }
       case 'demolish':
         for (const e of msg.units) ignoreRefused(() => this.sim.demolish(player.id, e));
         return;
@@ -1100,6 +1119,11 @@ export class Match {
       case 'damage':
         note(`Hurt ${devDamage(this.sim, cmd.ids, cmd.amount)} of ${cmd.ids.length} selected things by ${cmd.amount}.`, cmd.ids.length > 0);
         return;
+      case 'weapons': {
+        const n = devWeapons(this.sim, cmd.action, cmd.ids, cmd.x, cmd.y);
+        note(cmd.action === 'smoke' ? `Dropped ${n} smoke clouds.` : n > 0 ? `Done on ${n} of ${cmd.ids.length} selected things.` : 'Nothing selected could do that (a railgun needs a target; drone bays need a carrier).', n > 0);
+        return;
+      }
       case 'heal':
         note(`Restored ${devHeal(this.sim, cmd.owner)} units and buildings.`);
         return;
@@ -1157,13 +1181,19 @@ export class Match {
   }
 
   private send(player: Player, msg: ServerMessage): void {
-    if (player.socket.readyState === WebSocket.OPEN) player.socket.send(JSON.stringify(msg));
+    if (player.socket.readyState !== WebSocket.OPEN) return;
+    const text = JSON.stringify(msg);
+    traffic.out += payloadBytes(text);
+    player.socket.send(text);
   }
 
   private broadcast(msg: ServerMessage): void {
     const text = JSON.stringify(msg);
+    const size = payloadBytes(text);
     for (const p of this.players.values()) {
-      if (p.socket.readyState === WebSocket.OPEN) p.socket.send(text);
+      if (p.socket.readyState !== WebSocket.OPEN) continue;
+      traffic.out += size;
+      p.socket.send(text);
     }
   }
 }

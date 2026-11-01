@@ -15,7 +15,7 @@ describe('notify(text, kind)', () => {
   };
 
   it('takes text in quotes and a NOTE_* kind', () => {
-    const src = "on(Spawned, () => {\n  notify('Low power', NOTE_WARN);\n});\n";
+    const src = "on(Spawned, () => {\n  self.notify('Low power', NOTE_WARN);\n});\n";
     const parsed = parseText(src, FLOW_HOST);
     expect(parsed.errors.map((e) => e.message)).toEqual([]);
     expect(printText(parsed.doc, FLOW_HOST)).toBe(src);
@@ -53,7 +53,7 @@ describe('notify(text, kind)', () => {
 });
 
 describe('alert(text, duration_ms)', () => {
-  const text = "on(Spawned, () => {\n  alert('Hello, it\\'s me', 2500);\n});\n";
+  const text = "on(Spawned, () => {\n  self.alert('Hello, it\\'s me', 2500);\n});\n";
 
   it('takes text in quotes and round-trips through the printer', () => {
     const parsed = parseText(text, FLOW_HOST);

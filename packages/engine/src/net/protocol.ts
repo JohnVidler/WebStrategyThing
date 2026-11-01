@@ -51,6 +51,10 @@ export type ClientMessage =
   | { t: 'command'; units: number[]; task: number; x: number; y: number; target: number; queue: boolean }
   /** A class-declared button, by name: applies to the units whose class declares it. */
   | { t: 'button'; units: number[]; name: string; x: number; y: number; target: number; queue: boolean }
+  /** Move a slider or toggle a class program declares (`slider(...)`, `toggle(...)`): sets the variable it is bound to on each unit whose class has it. */
+  | { t: 'control'; units: number[]; name: string; value: number }
+  /** Ask for the current values of the controls of own units (the side panel polls this while a unit with controls is selected). */
+  | { t: 'controlValues'; units: number[] }
   | { t: 'produce'; building: number; blueprint: number }
   /** Remove the item at `index` (0 = the one being built) from a factory's queue; its matter is refunded. */
   | { t: 'dequeue'; building: number; index: number }
@@ -121,6 +125,8 @@ export type ServerMessage =
    * turns two answers into rates), at server tick `tick`. Null when the unit has no running program.
    */
   | { t: 'cpuProfile'; unit: number; tick: number; profile: CpuProfile | null }
+  /** Answer to controlValues: per own unit with controls, [entity, value of each control in the order its class declares them]. */
+  | { t: 'controlValues'; values: number[][] }
   /** Result of a loadDesigns request. */
   | { t: 'designsLoaded'; reason: 'session' | 'upload' | 'reset'; defined: number; updated: number; retired: number; errors: string[] }
   | { t: 'error'; message: string }
@@ -277,6 +283,12 @@ export function parseClientMessage(raw: unknown): ClientMessage | null {
       if (!isUnitList(m.units) || typeof m.name !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]{0,31}$/.test(m.name)) return null;
       if (!isInt(m.x) || !isInt(m.y) || !isInt(m.target)) return null;
       return { t: m.t, units: m.units, name: m.name, x: m.x, y: m.y, target: m.target, queue: m.queue === true };
+    case 'control':
+      if (!isUnitList(m.units) || typeof m.name !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]{0,31}$/.test(m.name) || !isInt(m.value) || Math.abs(m.value) > 2 ** 30) return null;
+      return { t: m.t, units: m.units, name: m.name, value: m.value };
+    case 'controlValues':
+      if (!isUnitList(m.units)) return null;
+      return { t: m.t, units: m.units };
     case 'stop':
       if (!isUnitList(m.units)) return null;
       return { t: m.t, units: m.units, queue: m.queue === true };

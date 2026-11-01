@@ -137,12 +137,12 @@ describe('graph operations keep the program expressible as text', () => {
     const [a, b, c] = ids(p);
     // a -> c: b is left over, loose.
     p = connectExec(p, { k: 'next', stmt: a }, c);
-    expect(shape(p)).toBe('on(Idle, () => {\n  fire(0);\n  moveTo(1, 2);\n});\n|1 chains|0 exprs'.replace('|1 chains', '|1 chains'));
+    expect(shape(p)).toBe('on(Idle, () => {\n  self.modules.weapon.fire(0);\n  self.moveTo(1, 2);\n});\n|1 chains|0 exprs'.replace('|1 chains', '|1 chains'));
     expect(p.scratch.chains[0].map((s) => s.id)).toEqual([b]);
     roundTrips(p);
     // Wire the loose node back in after a: the former follower (c) becomes loose instead.
     p = connectExec(p, { k: 'next', stmt: a }, b);
-    expect(textOf(p)).toBe('on(Idle, () => {\n  fire(0);\n  stop();\n});\n');
+    expect(textOf(p)).toBe('on(Idle, () => {\n  self.modules.weapon.fire(0);\n  self.stop();\n});\n');
     expect(p.scratch.chains).toHaveLength(1);
     expect(p.scratch.chains[0].map((s) => s.id)).toEqual([c]);
     roundTrips(p);
@@ -152,11 +152,11 @@ describe('graph operations keep the program expressible as text', () => {
     let p = base();
     const [a, b, c] = ids(p);
     p = disconnectExec(p, { k: 'next', stmt: a });
-    expect(textOf(p)).toBe('on(Idle, () => {\n  fire(0);\n});\n');
+    expect(textOf(p)).toBe('on(Idle, () => {\n  self.modules.weapon.fire(0);\n});\n');
     expect(p.scratch.chains[0].map((s) => s.id)).toEqual([b, c]);
     p = base();
     p = deleteNode(p, b);
-    expect(textOf(p)).toBe('on(Idle, () => {\n  fire(0);\n  moveTo(1, 2);\n});\n');
+    expect(textOf(p)).toBe('on(Idle, () => {\n  self.modules.weapon.fire(0);\n  self.moveTo(1, 2);\n});\n');
     expect(p.scratch.chains).toHaveLength(0);
     roundTrips(p);
   });
@@ -173,12 +173,12 @@ describe('graph operations keep the program expressible as text', () => {
     const [branch, after] = ids(p);
     const added = addStatement(p, { k: 'call', fn: 'fire', argc: 1 });
     p = connectExec(added.program, { k: 'else', stmt: branch }, added.id);
-    expect(textOf(p)).toContain('} else {\n    fire(0);\n  }');
+    expect(textOf(p)).toContain('} else {\n    self.modules.weapon.fire(0);\n  }');
     const w = addStatement(p, { k: 'while', });
     p = connectExec(w.program, { k: 'next', stmt: after }, w.id);
     const body = addStatement(p, { k: 'call', fn: 'fire', argc: 1 });
     p = connectExec(body.program, { k: 'body', stmt: w.id }, body.id);
-    expect(textOf(p)).toContain('while (0) {\n    fire(0);\n  }');
+    expect(textOf(p)).toContain('while (0) {\n    self.modules.weapon.fire(0);\n  }');
     roundTrips(p);
     // Deleting a branch keeps its chains as loose pieces.
     p = deleteNode(p, branch);
@@ -193,7 +193,7 @@ describe('graph operations keep the program expressible as text', () => {
     expect(g.edges.some((e) => e.from.node === go.id && e.from.key === 'out:arrived')).toBe(true);
     const next = addStatement(p, { k: 'call', fn: 'fire', argc: 1 });
     p = connectExec(next.program, { k: 'outcome', stmt: go.id, name: 'blocked' }, next.id);
-    expect(textOf(p)).toContain('blocked: () => {\n      fire(0);\n    },');
+    expect(textOf(p)).toContain('blocked: () => {\n      self.modules.weapon.fire(0);\n    },');
     roundTrips(p);
     // Cutting the only wire out of a pin drops the empty chain from the text.
     p = deleteNode(p, p.doc.handlers[0].body[0].k === 'call' ? Object.values(p.doc.handlers[0].body[0].outcomes!)[1][0].id : '');
@@ -208,7 +208,7 @@ describe('graph operations keep the program expressible as text', () => {
     // Event parameter into a literal input, and the call result into another: both become references.
     p = connectData(p, { k: 'local', name: 'ty' }, { owner: move, path: 'args.0' });
     p = connectData(p, { k: 'local', name: 'd' }, { owner: move, path: 'args.1' });
-    expect(textOf(p)).toContain('moveTo(ty, d);');
+    expect(textOf(p)).toContain('self.moveTo(ty, d);');
     // A value is only available after the node that makes it.
     const early = addStatement(p, { k: 'call', fn: 'fire', argc: 1 });
     expect(() => connectData(early.program, { k: 'local', name: 'd' }, { owner: early.id, path: 'args.0' })).toThrow(/not available here/);
@@ -217,7 +217,7 @@ describe('graph operations keep the program expressible as text', () => {
     const plus = addExpression(p, { k: 'bin', op: '+' });
     p = connectData(plus.program, { k: 'local', name: 'tx' }, { owner: parsePlus(plus.id), path: 'a' });
     p = connectData(p, { k: 'node', id: plus.id }, { owner: move, path: 'args.0' });
-    expect(textOf(p)).toContain('moveTo(tx + 0, d);');
+    expect(textOf(p)).toContain('self.moveTo(tx + 0, d);');
     expect(p.scratch.exprs).toHaveLength(0);
     roundTrips(p);
     const stop = ids(p)[2];
@@ -230,11 +230,11 @@ describe('graph operations keep the program expressible as text', () => {
     const [move, drop] = ids(p);
     const cut = disconnectData(p, { owner: move, path: 'args.0' });
     p = cut.program;
-    expect(textOf(p)).toContain('moveTo(0, 3);');
+    expect(textOf(p)).toContain('self.moveTo(0, 3);');
     expect(p.scratch.exprs).toHaveLength(1);
     expect(cut.detached).toBeDefined();
     p = connectData(p, { k: 'node', id: cut.detached! }, { owner: drop, path: 'args.0' });
-    expect(textOf(p)).toContain('fire(1 + 2);');
+    expect(textOf(p)).toContain('self.modules.weapon.fire(1 + 2);');
     expect(p.scratch.exprs).toHaveLength(0);
     roundTrips(p);
     expect(() => connectData(p, { k: 'node', id: exprNodeId(drop, 'args.0') }, { owner: drop, path: 'args.0.a' })).toThrow(/feed itself/);
@@ -244,9 +244,9 @@ describe('graph operations keep the program expressible as text', () => {
     let p = program('on(Idle, () => {\n  fire(0);\n});\n');
     const [drop] = ids(p);
     p = setLiteral(p, { owner: drop, path: 'args.0' }, '7', FLOW_HOST);
-    expect(textOf(p)).toContain('fire(7);');
+    expect(textOf(p)).toContain('self.modules.weapon.fire(7);');
     p = setLiteral(p, { owner: drop, path: 'args.0' }, 'MOVE', FLOW_HOST);
-    expect(textOf(p)).toContain('fire(MOVE);');
+    expect(textOf(p)).toContain('self.modules.weapon.fire(MOVE);');
     expect(() => setLiteral(p, { owner: drop, path: 'args.0' }, 'banana', FLOW_HOST)).toThrow(/not a whole number/);
     p = setConfig(p, p.doc.handlers[0].id, 'interval', 4);
     expect(textOf(p)).toContain('on(Idle, { interval: 4 }');
@@ -258,7 +258,7 @@ describe('graph operations keep the program expressible as text', () => {
     const [existing] = ids(p);
     p = setLiteral(p, { owner: existing, path: 'args.0' }, 'Fuel low', FLOW_HOST);
     p = setLiteral(p, { owner: existing, path: 'args.1' }, 'NOTE_WARN', FLOW_HOST);
-    expect(textOf(p)).toContain("notify('Fuel low', NOTE_WARN);");
+    expect(textOf(p)).toContain("self.notify('Fuel low', NOTE_WARN);");
     roundTrips(p);
     for (const [fn, second] of [['notify', 'NOTE_ERROR'], ['alert', '1500']] as const) {
       const text = FLOW_HOST.api.find((b) => b.name === fn)!.text;

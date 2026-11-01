@@ -217,11 +217,21 @@ export const MANUAL: ManualPage[] = [
       If the battery runs flat under a hit, the emitter blows up in a blast as big as the energy it was holding, and hurts the unit or building it was protecting.</p>
       <p>A shield never aims itself: a program points it. The <code>ShieldGuard</code> block (<code>use(ShieldGuard)</code>) turns it to the nearest incoming shell or missile, or else the nearest enemy its sensor sees, and the <b>Shield Tower</b> building and <b>Aegis</b> escort unit both run it. To do it your own way use <code>config.shieldAngle(degrees)</code> (0 is east, 90 south), <code>config.shieldArc(degrees)</code> and <code>config.shieldRange(tiles)</code>, with <code>incomingBearing()</code>, <code>bearing(h)</code> and <code>shieldUp()</code> to help decide.
       Switching the module off in the Modules list drops the shield. Tesla pulses and flak ignore it.</p>
+      <h2>Smoke, point defence, railguns, ion guns and drones</h2>
+      <ul>
+        <li><b>Flak</b> now shoots down enemy aircraft as well as missiles. A <code>Detected</code> block can watch for <code>AIR</code> (missiles and aircraft), <code>MISSILE</code> or <code>FLIER</code>.</li>
+        <li><b>Smoke launcher</b>: <code>smoke(degrees)</code> throws three canisters that make clouds blocking sight for 15 seconds (sensors, the fog and spotlights; lasers lose half their damage). It uses no matter, then rests 30 seconds. Radar and radio see straight through. The <code>SmokeScreen</code> block throws smoke towards whoever hurts the unit; the <b>Smoke Screen</b> unit carries one.</li>
+        <li><b>Point defence</b> shoots incoming missiles and cannon shells within 3 tiles by itself, for a little energy a shot, and does not use the weapon slot. The <b>Guardian</b> carries one.</li>
+        <li><b>Railgun</b> (heavy hulls and up): charges for 5 seconds in plain sight, then fires a line through up to four enemies, stopped by rock and shields. The charge spoils if the carrier takes a beating, is stunned, loses its target or starts to move. <code>charging(unit)</code> tells a program one is coming. The <b>Longbow</b> carries one.</li>
+        <li><b>Ion gun</b> (medium hulls and up): no damage, but its bolt holds one module of the target down for 6 seconds (the kind <code>config.aim</code> names, else a random one). 350 energy a shot; the target is immune to another bolt for 4 seconds afterwards. The <b>Disruptor</b> carries one.</li>
+        <li><b>Drone bay</b> (heavy hulls and up): builds up to two small drones (a micro or light unit class) from the carrier's cargo and battery. Choose with <code>config.droneClass("Wasp")</code>, send them out with <code>launchDrones()</code> and call them home with <code>recallDrones()</code>; the <code>DroneBay</code> block does all three. Docked drones cannot be seen or hurt, and die with the carrier. The <b>Hive</b> carries one.</li>
+      </ul>
       <h2>Seeing: fog, sensors and radar</h2>
       <ul>
         <li>Every unit and building sees a short distance. A <b>sensor</b> module sees further, and also lets the unit's program <i>react</i> to what it sees (a <code>Detected</code> block, see <a href="#/events">Events</a>).</li>
         <li><b>Radar</b> is a module with a spinning dish. A program fires a pulse with <code>radarPulse(energy)</code>: the more energy spent, the bigger the range, and every unit and building inside shows as a blip that slowly fades.
         A <b>Radar Tower</b> pings on its own.</li>
+        <li>A <b>spotlight</b> throws a narrow beam that shows everything it falls on, however dark or foggy, and it never stops showing it: rock and buildings still cast shadows. The beam is 4 tiles long for every point of energy it is paid each tick (5 lights 20 tiles, 10 lights 40), so more power peers further. A spotlight dims as its building's stored energy falls below 100, and goes out at 30. A <b>Spotlight Tower</b> follows the nearest enemy its sensor finds; with none in sight it pans left and right across the way out from home, away from your own units and buildings and towards the fog, and turns back rather than shine on your own units. It wants a power link. To drive one yourself use <code>config.lightAngle(degrees)</code> and <code>config.lightPower(energy)</code> (0 switches it off), with <code>lightHeading()</code>, <code>lightOn()</code>, <code>outwardBearing()</code> (the way away from home) and <code>lightBlocked(degrees)</code> (an allied unit would be lit).</li>
       </ul>
       <h2>Talking: radio and laser links</h2>
       <p>Units and buildings can message each other. A <b>radio</b> reaches allies with a radio within 12 tiles, through rock. A <b>laser link</b> reaches 40 tiles but needs a clear line of sight.
@@ -255,10 +265,10 @@ export const MANUAL: ManualPage[] = [
         <tr><th>Group</th><th>Modules</th></tr>
         <tr><td>Compute</td><td><b>CPU</b> (cycles per tick: the speed of thinking) and <b>memory</b> (how many variables a program can keep).</td></tr>
         <tr><td>Movement</td><td>Small, large and turbo <b>motors</b>, and the flying <b>rotor</b>. Heavier units need stronger motors to keep up. Every ground unit can wade shallow water, slowly; the <b>amphibious drive</b> wades deep water as well, and the <b>hover skirt</b> skims over water at full speed and can cross lava (which scorches it). Only fliers cross a chasm.</td></tr>
-        <tr><td>Weapons &amp; armour</td><td>Gun, cannon, laser, tesla, missiles, flak, flamethrower, armour plate, shield emitter.</td></tr>
-        <tr><td>Sensors &amp; radar</td><td>Short and long <b>sensors</b>, and <b>radar</b>.</td></tr>
+        <tr><td>Weapons &amp; armour</td><td>Gun, cannon, laser, tesla, missiles, flak, flamethrower, railgun, ion gun, armour plate, shield emitter, smoke launcher and point defence.</td></tr>
+        <tr><td>Sensors &amp; radar</td><td>Short and long <b>sensors</b>, <b>radar</b>, and the <b>spotlight</b>.</td></tr>
         <tr><td>Radio &amp; laser links</td><td>Short-range <b>radio</b> and long-range <b>laser link</b>.</td></tr>
-        <tr><td>Industry</td><td>Cargo bay, build arm / crane, repair beam, factory, silo.</td></tr>
+        <tr><td>Industry</td><td>Cargo bay, build arm / crane, repair beam, factory, silo, drone bay.</td></tr>
         <tr><td>Power</td><td>Battery cells and banks, charging pad, solar panel, wind turbine, energy antennas.</td></tr>
       </table>
       <p>Every module costs energy to use and adds mass. The <a href="#/parts">Parts catalogue</a> has the numbers.</p>

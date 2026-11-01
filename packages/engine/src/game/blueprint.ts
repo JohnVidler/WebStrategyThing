@@ -1,11 +1,21 @@
 import type { FlowProgram } from '../flow/compile';
 import { PARTS, SLOT_CODES, SWITCHABLE, TIER_NAMES, type PartDef, type WeaponKind } from './parts';
-import { DEFAULT_WADE, ANTENNA_THROUGHPUT_PER_TILE, BASE_LINK_RANGE, BASE_STACK, MAX_CLASSES_EVER_PER_PLAYER, MOBILE_SOLAR_INTEGRITY_PERCENT, MOBILE_SOLAR_MASS_FACTOR, MODULE_HP_BASE, MODULE_HP_PER_MASS, BUILD_TIME_BASE, BUILD_TIME_PER_MASS, COST_PER_MASS, CYCLE_COST, factoryTierBit, PRODUCTION_ENERGY_BY_SLOT, PRODUCTION_ENERGY_PER_MODULE, REPAIR_ARMOR_MULTIPLIER, REPAIR_MATTER_PER_HP, sizeCostMultiplier, SPEED_FACTOR, TILE } from './rules';
+import { DEFAULT_WADE, HARVEST_REFERENCE_RADIUS,ANTENNA_THROUGHPUT_PER_TILE, BASE_LINK_RANGE, BASE_STACK, MAX_CLASSES_EVER_PER_PLAYER, MOBILE_SOLAR_INTEGRITY_PERCENT, MOBILE_SOLAR_MASS_FACTOR, MODULE_HP_BASE, MODULE_HP_PER_MASS, BUILD_TIME_BASE, BUILD_TIME_PER_MASS, COST_PER_MASS, CYCLE_COST, factoryTierBit, PRODUCTION_ENERGY_BY_SLOT, PRODUCTION_ENERGY_PER_MODULE, REPAIR_ARMOR_MULTIPLIER, REPAIR_MATTER_PER_HP, sizeCostMultiplier, SPEED_FACTOR, TILE } from './rules';
 import { TESLA_COOLDOWN, TESLA_RANGE, type MissileTuning } from './rules';
 
 /** Converts total thrust / mass into sub-tile units per tick. */
 /** Module on/off state is a 32-bit mask, one bit per part. */
 export const MAX_PARTS = 32;
+
+/** Most weapons any class can carry. */
+export const MAX_WEAPONS = 4;
+/** Most weapons a mobile chassis of each size tier (micro to colossus) can carry; a building carries up to its footprint. */
+export const WEAPONS_BY_SIZE: readonly number[] = [1, 2, 2, 3, 4, 4];
+
+/** How many weapons a frame may carry. */
+export function maxWeapons(frame: PartDef): number {
+  return frame.structure ? Math.min(MAX_WEAPONS, frame.footprint ?? 1) : (WEAPONS_BY_SIZE[frame.size ?? 0] ?? 1);
+}
 /** Buildings without an antenna link to others within this many tiles (edge to edge). */
 
 /** Capability bits, also exposed to scripts (CAN_MOVE, CAN_FIGHT, ...). */
@@ -26,6 +36,10 @@ export const Caps = {
   Radio: 8192,
   Laser: 16384,
   Shield: 32768,
+  Light: 65536,
+  Smoke: 131072,
+  Defence: 262144,
+  Hangar: 524288,
 } as const;
 
 export class BlueprintError extends Error {
@@ -39,6 +53,17 @@ export class BlueprintError extends Error {
  * Derived once per (blueprint, module mask), then shared read-only by every
  * unit of that class with those modules switched on.
  */
+export interface WeaponStats {
+  readonly range: number;
+  readonly damage: number;
+  readonly cooldown: number;
+  readonly use: number;
+  readonly kind: WeaponKind;
+  readonly matter: number;
+  /** Missile launchers only. */
+  readonly missile: MissileTuning | null;
+}
+
 export interface BlueprintStats {
   readonly hp: number;
   readonly mass: number;
@@ -52,16 +77,13 @@ export interface BlueprintStats {
   readonly sensorRange: number;
   /** Sensor tier (0 = no sensor): how much a Detected block may configure. */
   readonly sensorTier: number;
-  readonly weapon: {
-    readonly range: number;
-    readonly damage: number;
-    readonly cooldown: number;
-    readonly use: number;
-    readonly kind: WeaponKind;
-    readonly matter: number;
-    /** Missile launchers only. */
-    readonly missile: MissileTuning | null;
-  } | null;
+  /** The first weapon that works, or null (what most code means by "the weapon"). */
+  readonly weapon: WeaponStats | null;
+  /**
+   * Every weapon module in the order they were added, null where one is switched off or broken, so an index always
+   * means the same module. Entity state for weapon i lives in `sim.weaponStores[i]`.
+   */
+  readonly weapons: readonly (WeaponStats | null)[];
   readonly cargo: number;
   readonly harvestRate: number;
   readonly structure: boolean;
@@ -122,6 +144,17 @@ export interface BlueprintStats {
     readonly maxRange: number;
     readonly use: number;
   } | null;
+  /** A working spotlight: the energy per tick it starts at and the most a program may set; null without one. */
+  readonly light: {
+    readonly power: number;
+    readonly maxPower: number;
+  } | null;
+  /** A working smoke launcher: the energy per volley; null without one. */
+  readonly smoke: { readonly use: number } | null;
+  /** Working point-defence modules and the energy each shot costs; null without one. */
+  readonly defence: { readonly modules: number; readonly use: number } | null;
+  /** Working drone bays; null without one. */
+  readonly hangar: { readonly modules: number } | null;
   readonly caps: number;
   /** Credits to produce one. */
   readonly cost: number;
@@ -204,8 +237,13 @@ function validate(defs: PartDef[]): PartDef {
   const frame = chassis[0];
   const slots = frame.slots ?? 0;
   if (defs.length - 1 > slots) throw new BlueprintError(`${frame.name} holds ${slots} modules, got ${defs.length - 1}`);
-  if (defs.filter((d) => d.weapon).length > 1) throw new BlueprintError('Only one weapon per class (for now)');
+  const weaponCap = maxWeapons(frame);
+  if (defs.filter((d) => d.weapon).length > weaponCap) {
+    throw new BlueprintError(`${frame.name} carries at most ${weaponCap} weapon${weaponCap === 1 ? '' : 's'}`);
+  }
   if (defs.filter((d) => d.shield).length > 1) throw new BlueprintError('Only one shield emitter per class');
+  if (defs.filter((d) => d.light).length > 1) throw new BlueprintError('Only one spotlight per class');
+  if (defs.filter((d) => d.slot === 'smoke').length > 1) throw new BlueprintError('Only one smoke launcher per class');
   const structure = frame.structure === true;
   for (const d of defs) {
     if (structure && d.mobileOnly) throw new BlueprintError(`${d.name} only fits mobile units`);
@@ -246,8 +284,11 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
   let sensor = 0, sensorUse = 0, sensorTier = 0, cargo = 0, rate = 0, cargoUse = 0;
   let factory = false, factoryModules = 0, factoryTiers = 0, factoryUse = 0, silo = 0, charge = 0, solar = 0, wind = 0, steam = 0, steamTurbines = 0, antenna = 0, antennas = 0, banks = 0;
   let radioRange = 0, radioUse = 0, laserRange = 0, laserUse = 0, buildRate = 0, builderUse = 0, radarMax = 0, buildEnergy = 0, repairRate = 0, repairUse = 0, armorHp = 0;
-  let weapon: BlueprintStats['weapon'] = null;
+  let weapon: WeaponStats | null = null;
+  const weapons: (WeaponStats | null)[] = [];
   let shield: BlueprintStats['shield'] = null;
+  let light: BlueprintStats['light'] = null;
+  let smoke: BlueprintStats['smoke'] = null, defence: BlueprintStats['defence'] = null, hangar: BlueprintStats['hangar'] = null;
 
   defs.forEach((d, i) => {
     // Passive properties: always present.
@@ -262,6 +303,7 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
     if (d.slot === 'battery' && d.structureOnly) banks++;
     silo += d.storage ?? 0;
     const on = !(SWITCHABLE.has(d.slot) && (off >>> i) & 1);
+    if (d.slot === 'weapon') weapons.push(null);
     if (!on) return;
     switch (d.slot) {
       case 'cpu':
@@ -286,8 +328,8 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
           sensorTier = d.sensorTier ?? 1;
         }
         break;
-      case 'weapon':
-        weapon = Object.freeze({
+      case 'weapon': {
+        const made: WeaponStats = Object.freeze({
           range: d.weapon!.kind === 'tesla' ? TESLA_RANGE : d.weapon!.range * TILE,
           damage: d.weapon!.damage,
           cooldown: d.weapon!.kind === 'tesla' ? TESLA_COOLDOWN : d.weapon!.cooldown,
@@ -296,7 +338,10 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
           matter: d.weapon!.matter ?? 0,
           missile: d.weapon!.missile ?? null,
         });
+        weapons[weapons.length - 1] = made;
+        weapon ??= made;
         break;
+      }
       case 'cargo':
         cargo += d.cargo ?? 0;
         rate += d.harvestRate ?? 0;
@@ -351,6 +396,18 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
           use: d.use ?? 0,
         });
         break;
+      case 'light':
+        light = Object.freeze({ power: d.light!.power, maxPower: d.light!.maxPower });
+        break;
+      case 'smoke':
+        smoke = Object.freeze({ use: d.use ?? 0 });
+        break;
+      case 'defence':
+        defence = Object.freeze({ modules: (defence?.modules ?? 0) + 1, use: d.use ?? 0 });
+        break;
+      case 'hangar':
+        hangar = Object.freeze({ modules: (hangar?.modules ?? 0) + 1 });
+        break;
     }
   });
 
@@ -372,7 +429,11 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
     (repairRate > 0 ? Caps.Repair : 0) |
     (radioRange > 0 ? Caps.Radio : 0) |
     (laserRange > 0 ? Caps.Laser : 0) |
-    (shield ? Caps.Shield : 0);
+    (shield ? Caps.Shield : 0) |
+    (light ? Caps.Light : 0) |
+    (smoke ? Caps.Smoke : 0) |
+    (defence ? Caps.Defence : 0) |
+    (hangar ? Caps.Hangar : 0);
 
   // Big hulls (heavy and up) cost exponentially more matter and production energy; buildings are not scaled.
   const sizeScale = structure ? 1 : sizeCostMultiplier(frame.size ?? 0);
@@ -388,8 +449,9 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
     sensorRange: sensor * TILE,
     sensorTier,
     weapon,
+    weapons: Object.freeze(weapons),
     cargo,
-    harvestRate: rate,
+    harvestRate: rate > 0 && !structure ? Math.max(1, Math.round((rate * (frame.radius ?? HARVEST_REFERENCE_RADIUS)) / HARVEST_REFERENCE_RADIUS)) : rate,
     structure,
     footprint: structure ? (frame.footprint ?? 1) : 0,
     area: structure ? (frame.shape ? frame.shape.join('').split('X').length - 1 : (frame.footprint ?? 1) ** 2) : 0,
@@ -423,6 +485,10 @@ export function deriveStats(parts: readonly string[], off = 0): BlueprintStats {
     repairRate,
     repairUse,
     shield,
+    light,
+    smoke,
+    defence,
+    hangar,
     repairMatterPerHp: hp > 0 ? (REPAIR_MATTER_PER_HP * (hp - armorHp + armorHp * REPAIR_ARMOR_MULTIPLIER)) / hp : 0,
     caps,
     cost: Math.round((COST_PER_MASS * mass + CYCLE_COST * fullCycles) * sizeScale),

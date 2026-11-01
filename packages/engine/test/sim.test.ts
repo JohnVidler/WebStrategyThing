@@ -17,6 +17,7 @@ import {
   Resource,
   RESOURCE_REGEN_INTERVAL_TICKS,
   visibleTo,
+  viewersOf,
   Position,
   Simulation,
   StorageMode,
@@ -495,6 +496,18 @@ on(Button, { label: 'Lay mine', aim: true }, () => {});`));
 });
 
 describe('construction and resources', () => {
+  it('an unfinished site sees nothing until it is complete', () => {
+    const { sim, own, cls } = makeMatch();
+    const [builder] = own(1, 'Builder');
+    const site = sim.placeBlueprint(1, cls(1, 'Resource Silo').id, 10, 3, [builder], false);
+    const mine = () => viewersOf(sim.world, 1, (e) => sim.stats(e)).filter((v) => Math.abs(v.x - sim.pos.f.x[site]) < 1 && Math.abs(v.y - sim.pos.f.y[site]) < 1);
+    expect(sim.isSite(site)).toBe(true);
+    expect(mine()).toHaveLength(0);
+    for (let t = 0; t < 600 && sim.isSite(site); t++) run(sim, 1);
+    expect(sim.isSite(site)).toBe(false);
+    expect(mine().length).toBeGreaterThan(0);
+  });
+
   it('builders construct a placed blueprint from the common pool', () => {
     const { sim, own, cls } = makeMatch();
     const [builder] = own(1, 'Builder');
@@ -602,8 +615,26 @@ describe('construction and resources', () => {
     const [hq] = own(1, 'HQ');
     const x = Math.round(sim.pos.f.x[hq] / TILE);
     const y = Math.round(sim.pos.f.y[hq] / TILE);
-    expect(() => sim.placeBlueprint(1, silo, 22, 22, [], false)).toThrow(/vision/);
-    expect(() => sim.placeBlueprint(1, silo, Math.max(0, x - 2), y, [], false)).not.toThrow(/vision/);
+    expect(() => sim.placeBlueprint(1, silo, 22, 22, [], false)).toThrow(/explored/);
+    expect(() => sim.placeBlueprint(1, silo, Math.max(0, x - 2), y, [], false)).not.toThrow(/explored/);
+  });
+
+  it('with fog on, buildings can also be placed on ground seen before', () => {
+    const { sim, cls, own } = makeMatch();
+    sim.requirePlacementVision = true;
+    const silo = cls(1, 'Resource Silo').id;
+    const [hq] = own(1, 'HQ');
+    const [scout] = own(1, 'Scout');
+    expect(() => sim.placeBlueprint(1, silo, 22, 22, [], false)).toThrow(/explored/);
+    const px = sim.pos.f.x[hq];
+    const py = sim.pos.f.y[hq];
+    sim.pos.f.x[scout] = 22.5 * TILE;
+    sim.pos.f.y[scout] = 22.5 * TILE;
+    sim.step();
+    sim.step();
+    sim.pos.f.x[scout] = px;
+    sim.pos.f.y[scout] = py;
+    expect(() => sim.placeBlueprint(1, silo, 22, 22, [], false)).not.toThrow(/explored/);
   });
 
   it('retired classes cannot be produced or placed until restored', () => {

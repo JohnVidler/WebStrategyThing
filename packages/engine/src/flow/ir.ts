@@ -91,6 +91,23 @@ export interface VarDecl {
   readonly note?: string;
 }
 
+/**
+ * A control the player sees in the side panel while a unit of the class is selected, bound to one variable:
+ * a slider (any whole number from `min` to `max` in steps of `step`) or a toggle (0 or 1). The variable's
+ * start value (`let`) is the control's initial value; the program just reads the variable.
+ */
+export interface ControlDecl {
+  /** The variable it sets. */
+  readonly name: string;
+  readonly kind: 'slider' | 'toggle';
+  readonly label: string;
+  readonly min: number;
+  readonly max: number;
+  readonly step: number;
+  /** Comment lines written above the declaration. */
+  readonly note?: string;
+}
+
 /** Editor-only data: never needed to run the program. */
 export interface FlowViews {
   readonly graph?: {
@@ -118,6 +135,8 @@ export interface FlowDoc {
   readonly handlers: readonly Handler[];
   /** Built-in blocks in use; they expand into more variables and handlers when the program is checked and compiled. */
   readonly blocks?: readonly BlockUse[];
+  /** Side-panel controls for variables (sliders and toggles). */
+  readonly controls?: readonly ControlDecl[];
   readonly views?: FlowViews;
 }
 
@@ -192,6 +211,10 @@ const isConfigValue = (v: unknown): boolean => isNum(v) || isStr(v) || (Array.is
 function shapeProblem(doc: Record<string, unknown>): string | null {
   if (doc.blocks !== undefined && !Array.isArray(doc.blocks)) return 'blocks must be a list';
   for (const v of doc.vars as unknown[]) if (!isObj(v) || !isStr(v.name) || !isNum(v.init)) return 'Every variable needs a name and a start value';
+  if (doc.controls !== undefined && !Array.isArray(doc.controls)) return 'controls must be a list';
+  for (const c of (doc.controls ?? []) as unknown[]) {
+    if (!isObj(c) || !isStr(c.name) || !isStr(c.label) || (c.kind !== 'slider' && c.kind !== 'toggle') || !isNum(c.min) || !isNum(c.max) || !isNum(c.step)) return 'Malformed control';
+  }
   for (const b of (doc.blocks ?? []) as unknown[]) {
     if (!isObj(b) || !isStr(b.id) || !isStr(b.block) || !isObj(b.settings) || !Object.values(b.settings).every(isConfigValue)) return 'Malformed block use';
   }

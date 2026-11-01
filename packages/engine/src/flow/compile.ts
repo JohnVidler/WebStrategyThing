@@ -5,7 +5,7 @@ import { CUSTOM_EVENT_BASE, customEventDef, customEventNames, EVENT_BY_NAME, Eve
 import type { FlowHost } from './host';
 import { ListTerm } from './lists';
 import { expandBlocks } from './text';
-import { FlowError, isBoolExpr, isTextExpr, parseDoc, textParts, type ConfigValue, type Expr, type FlowDoc, type Handler, type Stmt } from './ir';
+import { FlowError, isBoolExpr, isTextExpr, parseDoc, textParts, type ConfigValue, type ControlDecl, type Expr, type FlowDoc, type Handler, type Stmt } from './ir';
 
 /**
  * Programs compile to a flat instruction list of [op, arg, cost] triples. Control flow
@@ -103,6 +103,11 @@ export interface ProgramButton {
   readonly handler: number;
 }
 
+/** A slider or toggle the player gets for a variable (see `controls.ts`): its declaration, and the variable's slot in a unit's memory. */
+export interface ProgramControl extends ControlDecl {
+  readonly slot: number;
+}
+
 /** Compiled program: immutable and shared by every unit of a class; per-unit state is in run.ts. */
 export interface FlowProgram {
   /** The stored text (JSON) this was compiled from. */
@@ -120,6 +125,8 @@ export interface FlowProgram {
   /** Event id -> indices of the handlers for it. */
   readonly byEvent: readonly (readonly number[])[];
   readonly buttons: readonly ProgramButton[];
+  /** Side-panel sliders and toggles, in the order written. */
+  readonly controls: readonly ProgramControl[];
   /** Outcome tables of long-running calls: for each outcome, the instruction its chain starts at (or -1). */
   readonly tables: readonly Int32Array[];
   /** The handler each outcome table belongs to. */
@@ -494,6 +501,7 @@ export function compileDoc(written: FlowDoc, host: FlowHost, source: string, res
     handlers,
     byEvent,
     buttons,
+    controls: (doc.controls ?? []).map((c) => ({ ...c, slot: varIndex.get(c.name)! })),
     tables,
     tableHandler,
     strings,

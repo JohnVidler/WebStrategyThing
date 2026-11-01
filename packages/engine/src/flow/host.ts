@@ -31,6 +31,23 @@ export interface BuiltinSig {
   /** Documentation metadata. */
   readonly group?: string;
   readonly args?: readonly string[];
+  /**
+   * Where the call lives in the object tree programs see, such as `self.hp` or `self.modules.weapon.fire`. The text
+   * form reads and writes this; the flat `name(...)` still reads, and is what the graph and the VM use.
+   */
+  readonly member?: string;
+  /** Written without parentheses, as a read-only property (`self.hp`). */
+  readonly prop?: boolean;
+}
+
+/** How a call is written in the text form: its place in the object tree if it has one, else `config.name` or `name`. */
+export function callSyntax(b: Pick<BuiltinSig, 'name' | 'kind' | 'member' | 'prop'>): string {
+  return b.member ?? (b.kind === 'config' ? `config.${b.name}` : b.name);
+}
+
+/** `callSyntax` with its call brackets (none for a property): `self.hp`, `self.modules.weapon.fire(h)`. */
+export function callSignature(b: Pick<BuiltinSig, 'name' | 'kind' | 'member' | 'prop' | 'args'>): string {
+  return b.prop ? callSyntax(b) : `${callSyntax(b)}(${(b.args ?? []).join(', ')})`;
 }
 
 /** A host function exposed to programs. Flow knows nothing about the game; it only calls these. */
@@ -49,4 +66,6 @@ export interface FlowHost {
   readonly constants: ReadonlyMap<string, number>;
   /** Hotkeys that Button blocks may not use, with what uses them. */
   readonly reservedKeys?: ReadonlyMap<string, string>;
+  /** Other names a module goes by in `self.modules[...]` (`gun` for `weapon`). The text form always prints the real name. */
+  readonly moduleAliases?: ReadonlyMap<string, string>;
 }

@@ -16,6 +16,11 @@ const SOLAR = 0x2b5fa8;
 const SOLAR_SEAM = 0x0f2347;
 const LASER = 0x5ee6ff;
 const TESLA = 0xa98bff;
+const SMOKE_GREY = 0xb5bcc8;
+const PD_GREEN = 0x7dff9a;
+const DRONE_AMBER = 0xffc247;
+const RAIL_BLUE = 0x8fd8ff;
+const ION_VIOLET = 0xc27bff;
 const WARN = 0xff8a5c;
 /** Gun metal: pale, and outlined dark, so barrels stand out from any hull colour. */
 const GUN = 0xe6ecf5;
@@ -41,7 +46,7 @@ export interface Look {
   readonly motor: 'none' | 'small' | 'large' | 'huge' | 'rotor' | 'legs';
   /** Legs, by the strongest pair fitted. */
   readonly legs: 'none' | 'light' | 'heavy' | 'colossus';
-  readonly weapon: 'none' | 'gun' | 'cannon' | 'laser' | 'tesla' | 'missile' | 'flak' | 'flame';
+  readonly weapon: 'none' | 'gun' | 'cannon' | 'laser' | 'tesla' | 'missile' | 'flak' | 'flame' | 'rail' | 'ion';
   /** Mass of the weapon module: heavier guns get bigger turret housings. */
   readonly weaponMass: number;
   /** How many weapon modules: a building shows one turret for each it has room for. */
@@ -53,6 +58,11 @@ export interface Look {
   readonly builders: number;
   readonly repairers: number;
   readonly shields: number;
+  readonly lights: number;
+  /** Smoke launchers, point-defence modules and drone bays: small marks on a vehicle's hull. */
+  readonly smokers: number;
+  readonly defenders: number;
+  readonly hangars: number;
   readonly sensor: 'none' | 'short' | 'long';
   readonly batteries: number;
   readonly cpu: 'none' | 'basic' | 'fast' | 'quantum';
@@ -114,6 +124,10 @@ export function lookOf(parts: readonly string[]): Look {
     builders: count('builder'),
     repairers: count('repair'),
     shields: count('shield'),
+    lights: count('light'),
+    smokers: count('smoke'),
+    defenders: count('defence'),
+    hangars: count('hangar'),
     sensor,
     batteries: count('battery'),
     cpu,
@@ -435,6 +449,29 @@ function drawUnit(g: Graphics, l: Look, colour: number, tex: number, gait?: numb
     for (let i = 0; i < n; i++) g.rect((i - (n - 1) / 2) * r * 0.32 - r * 0.1, r * 0.55 * len, r * 0.2, r * 0.3).fill(ENERGY);
   }
 
+  // Smoke launcher: a rack of three grey canister tubes on the left flank, nozzles up.
+  if (l.smokers > 0) {
+    for (let i = -1; i <= 1; i++) {
+      g.roundRect(-r * 0.95, -r * 0.1 * len + i * r * 0.24, r * 0.34, r * 0.18, 2).fill(DARK).stroke({ width: 1, color: SMOKE_GREY });
+      g.circle(-r * 0.78, -r * 0.01 * len + i * r * 0.24, r * 0.05).fill(SMOKE_GREY);
+    }
+  }
+  // Point defence: a small twin-barrelled mount on the right flank, so a unit that carries one is not mistaken for a plain gun.
+  if (l.defenders > 0) {
+    const px = r * 0.62, py = -r * 0.12 * len;
+    g.circle(px, py, r * 0.2).fill(DARK).stroke({ width: 1.5, color: PD_GREEN });
+    for (const dx of [-0.07, 0.07]) g.rect(px + dx * r - 1, py - r * 0.5, 2, r * 0.4).fill(PD_GREEN);
+  }
+  // Drone bay: a hatch in the deck with hazard chevrons.
+  if (l.hangars > 0) {
+    const w = r * 0.9, hh = r * 0.7 * len;
+    g.roundRect(-w / 2, r * 0.05 * len, w, hh, 2).fill(DARK).stroke({ width: 1.5, color: DRONE_AMBER });
+    for (let i = 0; i < 3; i++) {
+      const y = r * 0.05 * len + hh * (0.2 + i * 0.27);
+      g.moveTo(-w * 0.3, y + hh * 0.1).lineTo(0, y).lineTo(w * 0.3, y + hh * 0.1).stroke({ width: 1.2, color: DRONE_AMBER });
+    }
+  }
+
   // Build arm: a jointed arm with a claw, out to the front-right.
   if (l.builders > 0) {
     g.moveTo(r * 0.2, -r * 0.1).lineTo(r * 0.75, -r * 0.55).lineTo(r * 1.15, -r * 0.4).stroke({ width: 2.5, color: ENERGY });
@@ -589,6 +626,25 @@ function drawTurret(g: Graphics, kind: Look['weapon'], r: number, mass = 0): voi
       g.circle(0, -r * 1.12 * BARREL, Math.max(1.5, r * 0.1)).fill(0xffa030);
       break;
     }
+    case 'rail': {
+      // Two long parallel rails on a broad mount with glowing coil rings along them: the longest barrel on the field.
+      const hr = housingRadius(r, mass, 0.3);
+      housing(g, hr, RAIL_BLUE);
+      const len = r * 1.7 * BARREL;
+      for (const x of [-0.09, 0.09]) g.rect(x * r - 1.6, -len, 3.2, len - hr * 0.2).fill(GUN).stroke({ width: 1, color: DARK });
+      for (const k of [0.35, 0.6, 0.85]) g.rect(-r * 0.2, -len * k - 1.5, r * 0.4, 3).fill(RAIL_BLUE);
+      g.rect(-r * 0.14, -len - 1, r * 0.28, 3).fill(0xffffff);
+      break;
+    }
+    case 'ion': {
+      // A violet emitter dish on a short boom: it throws no shell, so it is drawn as a lens with a bright core.
+      const hr = housingRadius(r, mass, 0.28);
+      housing(g, hr, ION_VIOLET);
+      g.rect(-r * 0.07, -r * 1.0 * BARREL, r * 0.14, r * 1.0 * BARREL - hr * 0.2).fill(DARK).stroke({ width: 1, color: ION_VIOLET });
+      g.ellipse(0, -r * 1.05 * BARREL, r * 0.3, r * 0.18).fill(DARK).stroke({ width: 1.5, color: ION_VIOLET });
+      g.circle(0, -r * 1.05 * BARREL, Math.max(1.5, r * 0.09)).fill(0xffffff);
+      break;
+    }
     case 'laser':
       housing(g, housingRadius(r, mass, 0.26), LASER);
       g.poly([0, -r * 1.2 * BARREL, r * 0.18, -r * 0.3, -r * 0.18, -r * 0.3]).fill(LASER).stroke({ width: 1.5, color: DARK });
@@ -653,7 +709,7 @@ function drawSolarPanel(g: Graphics, x: number, y: number, w: number, h: number)
 }
 
 type Glyph = (g: Graphics, cx: number, cy: number, s: number) => void;
-type GlyphKind = 'weapon' | 'factory' | 'builder' | 'repair' | 'shield' | 'solar' | 'wind' | 'steam' | 'charger' | 'silo' | 'battery' | 'antenna' | 'sensor' | 'cpu';
+type GlyphKind = 'weapon' | 'factory' | 'builder' | 'repair' | 'shield' | 'light' | 'solar' | 'wind' | 'steam' | 'charger' | 'silo' | 'battery' | 'antenna' | 'sensor' | 'cpu';
 type KindGlyph = Glyph & { kind: GlyphKind };
 
 /** Small module symbols that fill a building's cells. Highest priority first. */
@@ -707,6 +763,15 @@ function glyphs(l: Look): KindGlyph[] {
       g.circle(cx, cy, s * 0.36).stroke({ width: 1.2, color: SHIELD_GLYPH, alpha: 0.9 });
       g.circle(cx, cy, s * 0.14).fill(0xe6f6ff);
       for (const r of [0.82, 1]) g.arc(cx, cy, s * r, -2.2, -0.94).stroke({ width: 1.5, color: SHIELD_GLYPH, alpha: r === 1 ? 0.55 : 0.85 });
+    });
+  }
+  if (l.lights > 0) {
+    add('light', (g, cx, cy, s) => {
+      // A lamp: a dark housing with a warm glass lens and a bright filament, and short rays out of the front.
+      g.circle(cx, cy, s * 0.62).fill(DARK).stroke({ width: 1.5, color: STEEL });
+      g.circle(cx, cy, s * 0.4).fill({ color: 0xffe9a8, alpha: 0.85 });
+      g.circle(cx, cy, s * 0.16).fill(0xffffff);
+      for (const a of [-0.5, 0, 0.5]) g.moveTo(cx + Math.cos(a) * s * 0.7, cy + Math.sin(a) * s * 0.7).lineTo(cx + Math.cos(a) * s * 1.05, cy + Math.sin(a) * s * 1.05).stroke({ width: 1.2, color: 0xffe9a8, alpha: 0.8 });
     });
   }
   if (l.solar > 0) {
@@ -1059,6 +1124,7 @@ const TWIN: readonly Lamp[] = [{ side: -0.4, power: 1 }, { side: 0.4, power: 1 }
 /** Each body type has its own lamps: one to three, of different strength, some lopsided. */
 const LAMPS: Readonly<Record<string, readonly Lamp[]>> = {
   'chassis.micro': [{ side: 0, power: 0.55 }],
+  'chassis.drone': [{ side: 0, power: 0.55 }],
   'chassis.light': TWIN,
   'chassis.medium': [{ side: -0.5, power: 0.9 }, { side: 0.5, power: 0.9 }],
   'chassis.heavy': [{ side: -0.5, power: 1 }, { side: 0.5, power: 1 }],
