@@ -106,7 +106,7 @@ describe('bot difficulty levels', () => {
     // Score is what a side owns (stored matter plus the cost of everything built); measured on this seed it climbs with every level.
     const scores = [0, 2, 4, 5].map((l) => at(l, 4500).sim.score(2));
     for (let i = 1; i < scores.length; i++) expect(scores[i]).toBeGreaterThan(scores[i - 1]);
-  });
+  }, 30_000); // four full matches of 4500 ticks: about 6 s, over the 5 s default
 
   it('Hard plays exactly as the AI did before levels', () => {
     const a = at(4, 1500).sim;
